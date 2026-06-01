@@ -26,7 +26,7 @@ Exercise modes (2–5) also work on a PC or laptop with a webcam.
 
 ```bash
 git clone https://github.com/jyubon/Fitness-Robot  
-cd FitnessProject
+cd Fitness-Robot
 ```
 
 ### 2. Create a virtual environment and install dependencies
