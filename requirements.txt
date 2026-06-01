@@ -1,0 +1,4 @@
+# Python 3.9–3.12 required (MediaPipe supported range)
+# On Raspberry Pi OS, pip will use piwheels for ARM-compatible wheels.
+mediapipe>=0.10.9
+numpy>=1.24
