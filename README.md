@@ -1,4 +1,4 @@
-# Fitness-Robot
+# Fitness Project
 
 Raspberry Pi fitness and robot-following app using MediaPipe pose detection and ESP32 UDP control.
 
@@ -26,7 +26,7 @@ Exercise modes (2–5) also work on a PC or laptop with a webcam.
 
 ```bash
 git clone https://github.com/jyubon/Fitness-Robot  
-cd Fitness-Robot
+cd FitnessProject
 ```
 
 ### 2. Create a virtual environment and install dependencies
@@ -41,24 +41,27 @@ pip install -r requirements.txt
 
 Requires **Python 3.9–3.12**. On Raspberry Pi OS, `pip` will use [piwheels](https://www.piwheels.org/) for ARM-compatible packages.
 
-### 3. Download the pose model (required)
+### 3. Download the MediaPipe models (required)
 
-The MediaPipe model file is not included in this repo. Download it into the project root and save it as `pose_landmarker.task`:
+The MediaPipe model files are not included in this repo. Download them into the project root and save them as `pose_landmarker.task` and `hand_landmarker.task`.
 
 **Linux / Raspberry Pi** (lite model recommended for speed on Pi):
 
 ```bash
 wget -O pose_landmarker.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+wget -O hand_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" -OutFile "pose_landmarker.task"
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" -OutFile "hand_landmarker.task"
 ```
 
-The script looks for `pose_landmarker.task` in the **directory you run the command from**. For other model sizes (full, heavy), see the [MediaPipe Pose Landmarker documentation](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker).
+The script looks for both `.task` files in the **directory you run the command from**. For other pose model sizes (full, heavy), see the [MediaPipe Pose Landmarker documentation](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker).
 
 ### 4. Configure
 
@@ -87,7 +90,8 @@ FitnessProject/
 ├── requirements.txt
 ├── README.md
 ├── .gitignore
-└── pose_landmarker.task  # Download separately (gitignored)
+├── pose_landmarker.task  # Download separately (gitignored)
+└── hand_landmarker.task  # Download separately (gitignored)
 ```
 
 ## Troubleshooting
@@ -95,6 +99,7 @@ FitnessProject/
 | Problem | Fix |
 |---|---|
 | `FileNotFoundError: pose_landmarker.task` | Run the model download step above |
+| `FileNotFoundError: hand_landmarker.task` | Run the model download step above |
 | Camera not opening | Change `CAMERA_INDEX` in `person_raspi.py` |
 | Robot not moving | Update `ESP32_IP`; ensure Pi and ESP32 are on the same WiFi |
 | Slow performance on Pi | Use the lite model; lower `CAMERA_WIDTH` and `CAMERA_HEIGHT` |
