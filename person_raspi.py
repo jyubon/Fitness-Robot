@@ -589,6 +589,7 @@ def run_pushups():
             if not ret:
                 break
 
+            frame = cv2.flip(frame, 1)
             image = frame
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
 
@@ -619,7 +620,6 @@ def run_pushups():
             cv2.putText(image, "press Q to quit", (15, 88),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.3, TEXT_DIM, 1)
 
-            image = cv2.flip(image, 1)
             cv2.imshow('Push-ups', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
