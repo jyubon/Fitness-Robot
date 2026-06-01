@@ -640,33 +640,44 @@ def show_palm_stop_message(window_name, image):
 
 def run_bicep_curls():
     """Bicep curl counter with form detection for both arms."""
+    CURL_UP_ANGLE = 45
+    CURL_DOWN_ANGLE = 140
+    CURL_LOWER_PROMPT_ANGLE = 55
+    ELBOW_FLARE_THRESHOLD = 0.16
+
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
             return "N/A", ACCENT_RED, "---"
 
-        angle = calculate_angle(shoulder, elbow, wrist)
+        angle = calculate_angle_3d(shoulder, elbow, wrist)
 
-        flare_error = abs(shoulder[0] - elbow[0]) > 0.1
+        elbow_offset = np.linalg.norm(
+            np.array([shoulder[0] - elbow[0], shoulder[2] - elbow[2]])
+        )
+        flare_error = elbow_offset > ELBOW_FLARE_THRESHOLD
         color = ACCENT_GREEN
-        feedback = "GOOD"
+        feedback = "EXTEND ARM" if state_dict['stage'] == "unknown" else "GOOD"
 
         if flare_error:
             feedback = "TUCK ELBOW"
             color = ACCENT_ORANGE
 
-        if angle > 150:
+        if angle > CURL_DOWN_ANGLE:
             state_dict['stage'] = "down"
             if not flare_error:
                 feedback = "CURL UP"
-        if angle < 30 and state_dict['stage'] == "down":
+        elif angle < CURL_UP_ANGLE and state_dict['stage'] == "down":
             state_dict['stage'] = "up"
             if not flare_error:
                 state_dict['counter'] += 1
                 feedback = "GOOD"
-        elif angle < 35 and not flare_error:
+        elif (
+                state_dict['stage'] != "unknown" and
+                angle < CURL_LOWER_PROMPT_ANGLE and
+                not flare_error):
             feedback = "LOWER SLOWLY"
 
-        bar_val = np.interp(angle, (30, 150), (100, 0))
+        bar_val = np.interp(angle, (CURL_UP_ANGLE, CURL_DOWN_ANGLE), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
         bar_y_top = 100
         bar_h = 120
@@ -686,11 +697,13 @@ def run_bicep_curls():
         return feedback, color, state_dict['stage'].upper()
 
     arms = {
-        'left': {'counter': 0, 'stage': 'down'},
-        'right': {'counter': 0, 'stage': 'down'}
+        'left': {'counter': 0, 'stage': 'unknown'},
+        'right': {'counter': 0, 'stage': 'unknown'}
     }
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Bicep Curls', 1280, 720)
 
@@ -723,12 +736,29 @@ def run_bicep_curls():
             if results.pose_landmarks and len(results.pose_landmarks) > 0:
                 lm = results.pose_landmarks[0]
 
-                l_s, l_e, l_w = get_pt(lm, 11), get_pt(lm, 13), get_pt(lm, 15)
-                r_s, r_e, r_w = get_pt(lm, 12), get_pt(lm, 14), get_pt(lm, 16)
+                l_s = get_pt(lm, 11, use_z=True)
+                l_e = get_pt(lm, 13, use_z=True)
+                l_w = get_pt(lm, 15, use_z=True)
+                r_s = get_pt(lm, 12, use_z=True)
+                r_e = get_pt(lm, 14, use_z=True)
+                r_w = get_pt(lm, 16, use_z=True)
 
-                l_fb, l_clr, l_stg = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
-                if l_fb == "GOOD" and r_fb == "GOOD":
+                l_fb, l_clr, l_stg = process_arm(
+                    l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h
+                )
+                r_fb, r_clr, r_stg = process_arm(
+                    r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h
+                )
+                if l_fb == "N/A" or r_fb == "N/A":
+                    missing = []
+                    if l_fb == "N/A":
+                        missing.append("LEFT")
+                    if r_fb == "N/A":
+                        missing.append("RIGHT")
+                    arm_label = "ARMS" if len(missing) > 1 else "ARM"
+                    feedback_lines = [f"SHOW {' & '.join(missing)} {arm_label}"]
+                    feedback_color = ACCENT_ORANGE
+                elif l_fb == "GOOD" and r_fb == "GOOD":
                     feedback_lines = ["GOOD CURL FORM"]
                     feedback_color = ACCENT_GREEN
                 else:
@@ -1352,7 +1382,7 @@ def main():
     print("\n✅ Done!")
 
 
-if __name__ == "__main__":
+def show_mode_menu():
     print("\n═══════════════════════════════════════════")
     print("  FITNESS PROJECT - Mode Selection")
     print("═══════════════════════════════════════════")
@@ -1361,18 +1391,27 @@ if __name__ == "__main__":
     print("  3. Push-ups")
     print("  4. Squats")
     print("  5. Plank")
+    print("  Q. Quit")
     print("═══════════════════════════════════════════")
-    choice = input("  Enter choice (1-5): ").strip()
+    return input("  Enter choice (1-5, Q): ").strip().lower()
 
-    if choice == "1":
-        main()
-    elif choice == "2":
-        run_bicep_curls()
-    elif choice == "3":
-        run_pushups()
-    elif choice == "4":
-        run_squats()
-    elif choice == "5":
-        run_plank()
-    else:
-        print("  Invalid choice. Exiting.")
+
+if __name__ == "__main__":
+    while True:
+        choice = show_mode_menu()
+
+        if choice == "1":
+            main()
+        elif choice == "2":
+            run_bicep_curls()
+        elif choice == "3":
+            run_pushups()
+        elif choice == "4":
+            run_squats()
+        elif choice == "5":
+            run_plank()
+        elif choice == "q":
+            print("  Exiting.")
+            break
+        else:
+            print("  Invalid choice. Please try again.")
