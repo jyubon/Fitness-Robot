@@ -148,19 +148,19 @@ def calculate_command(person_x, shoulder_width):
 
     # 8-direction matrix
     matrix = {
-        ("FAR",   "LEFT"):   ("FWD_LEFT",  f"↖"),
-        ("FAR",   "CENTER"): ("FORWARD",   f"↑"),
-        ("FAR",   "RIGHT"):  ("FWD_RIGHT", f"↗"),
-        ("GOOD",  "LEFT"):   ("LEFT",      f"←"),
-        ("GOOD",  "CENTER"): ("STOP",      f"●"),
-        ("GOOD",  "RIGHT"):  ("RIGHT",     f"→"),
-        ("CLOSE", "LEFT"):   ("BWD_LEFT",  f"↙"),
-        ("CLOSE", "CENTER"): ("BACKWARD",  f"↓"),
-        ("CLOSE", "RIGHT"):  ("BWD_RIGHT", f"↘"),
+        ("FAR",   "LEFT"):   "FWD_LEFT",
+        ("FAR",   "CENTER"): "FORWARD",
+        ("FAR",   "RIGHT"):  "FWD_RIGHT",
+        ("GOOD",  "LEFT"):   "LEFT",
+        ("GOOD",  "CENTER"): "STOP",
+        ("GOOD",  "RIGHT"):  "RIGHT",
+        ("CLOSE", "LEFT"):   "BWD_LEFT",
+        ("CLOSE", "CENTER"): "BACKWARD",
+        ("CLOSE", "RIGHT"):  "BWD_RIGHT",
     }
 
-    command, arrow = matrix.get((d_zone, h_zone), ("STOP", "●"))
-    state = (f"{arrow} {command} "
+    command = matrix.get((d_zone, h_zone), "STOP")
+    state = (f"{command} "
              f"(x:{person_x:.2f} w:{shoulder_width:.3f})")
 
     return command, state, d_zone, h_zone
@@ -171,28 +171,28 @@ def calculate_command(person_x, shoulder_width):
 # ═══════════════════════════════════════════════════════
 
 CMD_COLORS = {
-    'FORWARD':   (0, 255, 0),
-    'BACKWARD':  (0, 0, 255),
-    'LEFT':      (0, 255, 255),
-    'RIGHT':     (255, 0, 255),
-    'FWD_LEFT':  (0, 255, 128),
-    'FWD_RIGHT': (128, 255, 0),
-    'BWD_LEFT':  (128, 0, 255),
-    'BWD_RIGHT': (255, 0, 128),
-    'STOP':      (128, 128, 128),
-    'SEARCH':    (128, 128, 255),
+    'FORWARD':   (180, 220, 80),
+    'BACKWARD':  (100, 100, 220),
+    'LEFT':      (210, 190, 80),
+    'RIGHT':     (200, 120, 200),
+    'FWD_LEFT':  (180, 210, 100),
+    'FWD_RIGHT': (160, 200, 120),
+    'BWD_LEFT':  (180, 100, 200),
+    'BWD_RIGHT': (140, 100, 210),
+    'STOP':      (140, 140, 140),
+    'SEARCH':    (100, 170, 230),
 }
 
-ACCENT_GREEN  = (72, 245, 66)
-ACCENT_RED    = (66, 66, 245)
-ACCENT_ORANGE = (66, 165, 245)
-ACCENT_CYAN   = (245, 210, 66)
-TEXT_WHITE     = (230, 230, 230)
-TEXT_DIM       = (160, 160, 160)
-PANEL_BG      = (20, 20, 20)
+ACCENT_GREEN  = (150, 215, 95)
+ACCENT_RED    = (95, 95, 210)
+ACCENT_ORANGE = (80, 175, 225)
+ACCENT_CYAN   = (200, 185, 100)
+TEXT_WHITE     = (235, 235, 240)
+TEXT_DIM       = (155, 155, 165)
+PANEL_BG      = (25, 25, 30)
 
-SKELETON_LANDMARK = (200, 220, 245)
-SKELETON_LINE     = (180, 180, 60)
+SKELETON_LANDMARK = (190, 210, 235)
+SKELETON_LINE     = (170, 170, 90)
 
 
 def draw_glass_panel(frame, x, y, w, h, alpha=0.65, color=(20, 20, 20), radius=12):
@@ -219,13 +219,38 @@ def draw_glass_panel(frame, x, y, w, h, alpha=0.65, color=(20, 20, 20), radius=1
     frame[y:y2, x:x2] = sub
 
 
+def _draw_mini_arrow(frame, cx, cy, command, color, size=5):
+    """Draw a small direction arrow or stop dot for zone grid cells."""
+    if command == 'STOP':
+        cv2.circle(frame, (cx, cy), 2, color, -1)
+        return
+
+    directions = {
+        'FORWARD':   (0, -size),
+        'BACKWARD':  (0,  size),
+        'LEFT':      (-size, 0),
+        'RIGHT':     ( size, 0),
+        'FWD_LEFT':  (-size + 2, -size + 2),
+        'FWD_RIGHT': ( size - 2, -size + 2),
+        'BWD_LEFT':  (-size + 2,  size - 2),
+        'BWD_RIGHT': ( size - 2,  size - 2),
+    }
+
+    dx, dy = directions.get(command, (0, 0))
+    if dx == 0 and dy == 0:
+        return
+
+    end = (cx + dx, cy + dy)
+    cv2.arrowedLine(frame, (cx, cy), end, color, 1, tipLength=0.5)
+
+
 def draw_direction_indicator(frame, command, cx, cy, size=40):
     """Draw compass rose direction indicator."""
     pad = size + 10
     draw_glass_panel(frame, cx - pad, cy - pad, pad * 2, pad * 2,
                      alpha=0.7, radius=pad)
 
-    cv2.circle(frame, (cx, cy), size + 3, (60, 60, 60), 1)
+    cv2.circle(frame, (cx, cy), size + 3, (65, 65, 70), 1)
 
     directions = {
         'FORWARD':   (0, -size),
@@ -241,7 +266,7 @@ def draw_direction_indicator(frame, command, cx, cy, size=40):
 
     for cmd, (dx, dy) in directions.items():
         pos = (cx + dx, cy + dy)
-        cv2.circle(frame, pos, 4, (50, 50, 50), -1)
+        cv2.circle(frame, pos, 4, (55, 55, 60), -1)
 
     if command in directions:
         dx, dy = directions[command]
@@ -270,9 +295,9 @@ def draw_zone_grid(frame, d_zone, h_zone, gx, gy):
         [("BWD_LEFT","CLOSE","LEFT"),  ("BACKWARD","CLOSE","CENTER"),("BWD_RIGHT","CLOSE","RIGHT")],
     ]
     labels = [
-        ["↖FL", "↑FW", "↗FR"],
-        ["←L",  "●ST", "→R"],
-        ["↙BL", "↓BW", "↘BR"],
+        ["FL", "FW", "FR"],
+        ["L",  "ST", "R"],
+        ["BL", "BW", "BR"],
     ]
 
     for row in range(3):
@@ -291,9 +316,12 @@ def draw_zone_grid(frame, d_zone, h_zone, gx, gy):
             else:
                 txt_color = (100, 100, 100)
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (50, 50, 50), 1)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (55, 55, 60), 1)
+            cx = x1 + cell_w // 2
+            cy = y1 + 8
+            _draw_mini_arrow(frame, cx, cy, cmd, txt_color, size=4)
             cv2.putText(frame, labels[row][col],
-                        (x1 + 3, y1 + cell_h - 6),
+                        (x1 + 3, y1 + cell_h - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.28,
                         txt_color, 1)
 
@@ -308,21 +336,21 @@ def draw_frame(frame, command, state, person_x,
     zone_r = int(CENTER_ZONE_RIGHT * w)
 
     ov = frame.copy()
-    cv2.rectangle(ov, (0, 0), (zone_l, h), (255, 0, 0), -1)
-    cv2.addWeighted(ov, 0.08, frame, 0.92, 0, frame)
+    cv2.rectangle(ov, (0, 0), (zone_l, h), (200, 140, 60), -1)
+    cv2.addWeighted(ov, 0.06, frame, 0.94, 0, frame)
 
     ov = frame.copy()
-    cv2.rectangle(ov, (zone_r, 0), (w, h), (0, 0, 255), -1)
-    cv2.addWeighted(ov, 0.08, frame, 0.92, 0, frame)
+    cv2.rectangle(ov, (zone_r, 0), (w, h), (80, 80, 200), -1)
+    cv2.addWeighted(ov, 0.06, frame, 0.94, 0, frame)
 
-    cv2.line(frame, (zone_l, 0), (zone_l, h), (255, 255, 0), 1)
-    cv2.line(frame, (zone_r, 0), (zone_r, h), (255, 255, 0), 1)
+    cv2.line(frame, (zone_l, 0), (zone_l, h), (180, 180, 80), 1)
+    cv2.line(frame, (zone_r, 0), (zone_r, h), (180, 180, 80), 1)
 
     # Person position dot
     if person_x is not None:
         px = int(person_x * w)
-        cv2.circle(frame, (px, h // 2), 14, (0, 255, 255), 1)
-        cv2.circle(frame, (px, h // 2), 8, (0, 255, 255), -1)
+        cv2.circle(frame, (px, h // 2), 14, (130, 220, 220), 1)
+        cv2.circle(frame, (px, h // 2), 8, (130, 220, 220), -1)
         cv2.circle(frame, (px, h // 2), 8, (0, 0, 0), 1)
 
     # Top bar
@@ -792,14 +820,14 @@ def run_plank():
 
             draw_skeleton(image, results)
 
-            ring_cx, ring_cy, ring_r = 55, 60, 38
-            draw_glass_panel(image, 5, 5, 230, ring_r * 2 + 20,
+            ring_cx, ring_cy, ring_r = 55, 88, 38
+            draw_glass_panel(image, 5, 5, 230, ring_r * 2 + 50,
                              alpha=0.65, radius=10)
 
             state_color = ACCENT_GREEN if in_plank else ACCENT_ORANGE
             state_text = "HOLD" if in_plank else "GET IN POSITION"
 
-            cv2.putText(image, "PLANK", (15, 24),
+            cv2.putText(image, "PLANK", (15, 28),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
 
             cv2.ellipse(image, (ring_cx, ring_cy), (ring_r, ring_r),
@@ -820,10 +848,10 @@ def run_plank():
                         (ring_cx - tw // 2, ring_cy + 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1, cv2.LINE_AA)
 
-            cv2.putText(image, state_text, (ring_cx + ring_r + 12, 55),
+            cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, state_color, 1, cv2.LINE_AA)
             cv2.putText(image, f"Total: {plank_timer:.1f}s",
-                        (ring_cx + ring_r + 12, 78),
+                        (ring_cx + ring_r + 12, ring_cy + 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
 
             cv2.imshow('Plank', image)
