@@ -88,11 +88,11 @@ def calculate_distance(a, b):
     return np.linalg.norm(np.array(a) - np.array(b))
 
 
-def check_plank(shoulder, hip, ankle, threshold=0.1):
-    """Check if body is in plank position by alignment of shoulder-hip-ankle."""
-    shoulder_hip_distance = calculate_distance(shoulder, hip)
-    hip_ankle_distance = calculate_distance(hip, ankle)
-    return shoulder_hip_distance < threshold and hip_ankle_distance < threshold
+def check_plank(shoulder, hip, ankle, threshold=160):
+    """Check if body is in plank position by shoulder-hip-ankle angle."""
+    if shoulder is None or hip is None or ankle is None:
+        return False
+    return calculate_angle(shoulder, hip, ankle) >= threshold
 
 
 # ═══════════════════════════════════════════════════════
@@ -220,6 +220,41 @@ def draw_glass_panel(frame, x, y, w, h, alpha=0.65, color=(20, 20, 20), radius=1
     blended = cv2.addWeighted(panel, alpha, sub, 1 - alpha, 0)
     np.copyto(sub, blended, where=(mask[..., None] == 255))
     frame[y:y2, x:x2] = sub
+
+
+def draw_feedback_panel(image, title, lines, color, x=5, y=100, width=300):
+    """Draw exercise form feedback without covering the main stat panel."""
+    clean_lines = [line for line in lines if line]
+    if not clean_lines:
+        return
+
+    height = 32 + (len(clean_lines) * 24)
+    draw_glass_panel(image, x, y, width, height, alpha=0.68, radius=10)
+    cv2.rectangle(image, (x, y), (x + 4, y + height), color, -1)
+    cv2.putText(image, title, (x + 14, y + 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
+
+    for idx, line in enumerate(clean_lines[:3]):
+        cv2.putText(image, line, (x + 14, y + 48 + idx * 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 1, cv2.LINE_AA)
+
+
+def get_body_alignment_feedback(shoulder, hip, ankle, good_message="GOOD FORM"):
+    """Classify shoulder-hip-ankle alignment for plank and push-up posture."""
+    if shoulder is None or hip is None or ankle is None:
+        return False, "SHOW FULL BODY", ACCENT_ORANGE
+
+    body_angle = calculate_angle(shoulder, hip, ankle)
+    line_y = (shoulder[1] + ankle[1]) / 2.0
+    hip_offset = hip[1] - line_y
+
+    if body_angle >= 160:
+        return True, good_message, ACCENT_GREEN
+    if hip_offset < -0.05:
+        return False, "LOWER HIPS", ACCENT_ORANGE
+    if hip_offset > 0.05:
+        return False, "RAISE HIPS", ACCENT_ORANGE
+    return False, "FIX YOUR POSTURE", ACCENT_ORANGE
 
 
 def _draw_mini_arrow(frame, cx, cy, command, color, size=5):
@@ -621,10 +656,15 @@ def run_bicep_curls():
 
         if angle > 150:
             state_dict['stage'] = "down"
+            if not flare_error:
+                feedback = "CURL UP"
         if angle < 30 and state_dict['stage'] == "down":
             state_dict['stage'] = "up"
             if not flare_error:
                 state_dict['counter'] += 1
+                feedback = "GOOD"
+        elif angle < 35 and not flare_error:
+            feedback = "LOWER SLOWLY"
 
         bar_val = np.interp(angle, (30, 150), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
@@ -671,6 +711,8 @@ def run_bicep_curls():
             frame = cv2.flip(frame, 1)
             img_h, img_w, _ = frame.shape
             image = frame
+            feedback_lines = ["SHOW BOTH ARMS"]
+            feedback_color = ACCENT_ORANGE
 
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
             hand_results, hand_timestamp_ms = detect_hand_frame(
@@ -686,6 +728,12 @@ def run_bicep_curls():
 
                 l_fb, l_clr, l_stg = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
                 r_fb, r_clr, r_stg = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+                if l_fb == "GOOD" and r_fb == "GOOD":
+                    feedback_lines = ["GOOD CURL FORM"]
+                    feedback_color = ACCENT_GREEN
+                else:
+                    feedback_lines = [f"LEFT: {l_fb}", f"RIGHT: {r_fb}"]
+                    feedback_color = ACCENT_ORANGE
 
                 draw_skeleton(image, results)
 
@@ -703,6 +751,8 @@ def run_bicep_curls():
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
 
+            draw_feedback_panel(image, "FORM FEEDBACK", feedback_lines,
+                                feedback_color, y=132, width=280)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Bicep Curls', image)
@@ -735,7 +785,7 @@ def run_pushups():
             counter += 1
             print(f"  Push-ups Count: {counter}")
 
-        return stage, counter
+        return stage, counter, nose_shoulder_dist
 
     pushup_counter = 0
     pushup_stage = 'up'
@@ -757,6 +807,9 @@ def run_pushups():
 
             frame = cv2.flip(frame, 1)
             image = frame
+            pushup_depth = None
+            feedback_lines = ["SHOW FULL BODY"]
+            feedback_color = ACCENT_ORANGE
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
             hand_results, hand_timestamp_ms = detect_hand_frame(
                 hand_landmarker, image, hand_timestamp_ms
@@ -769,11 +822,33 @@ def run_pushups():
                     nose = get_pt(lm, 0)
                     left_shoulder = get_pt(lm, 11)
                     right_shoulder = get_pt(lm, 12)
+                    left_hip = get_pt(lm, 23)
+                    right_hip = get_pt(lm, 24)
+                    left_ankle = get_pt(lm, 27)
+                    right_ankle = get_pt(lm, 28)
                     if nose and left_shoulder and right_shoulder:
-                        pushup_stage, pushup_counter = count_pushups(
+                        pushup_stage, pushup_counter, pushup_depth = count_pushups(
                             nose, [left_shoulder, right_shoulder],
                             pushup_stage, pushup_counter
                         )
+                        shoulder = left_shoulder or right_shoulder
+                        hip = left_hip or right_hip
+                        ankle = left_ankle or right_ankle
+                        aligned, align_msg, align_color = get_body_alignment_feedback(
+                            shoulder, hip, ankle, "GOOD BODY LINE"
+                        )
+                        if not aligned:
+                            feedback_lines = [align_msg]
+                            feedback_color = align_color
+                        elif pushup_depth < 0.22:
+                            feedback_lines = ["PUSH BACK UP"]
+                            feedback_color = ACCENT_CYAN
+                        elif pushup_depth > 0.38:
+                            feedback_lines = ["GO LOWER"]
+                            feedback_color = ACCENT_ORANGE
+                        else:
+                            feedback_lines = ["GOOD PUSH-UP FORM"]
+                            feedback_color = ACCENT_GREEN
             except Exception:
                 pass
 
@@ -790,6 +865,8 @@ def run_pushups():
             cv2.putText(image, "press Q to quit", (15, 88),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.3, TEXT_DIM, 1)
 
+            draw_feedback_panel(image, "FORM FEEDBACK", feedback_lines,
+                                feedback_color, y=100, width=260)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Push-ups', image)
@@ -843,6 +920,8 @@ def run_squats():
 
             current_hip_angle = 180
             posture_correct = False
+            squat_feedback = "SHOW FULL BODY"
+            feedback_color = ACCENT_ORANGE
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
@@ -874,6 +953,18 @@ def run_squats():
                             down_angle = SQUAT_DOWN_ANGLE
 
                         posture_correct = stage == "up"
+                        if current_hip_angle < SQUAT_DOWN_ANGLE:
+                            squat_feedback = "GOOD DEPTH"
+                            feedback_color = ACCENT_GREEN
+                        elif stage == "down":
+                            squat_feedback = "STAND TALL"
+                            feedback_color = ACCENT_CYAN
+                        elif current_hip_angle < 145:
+                            squat_feedback = "GO LOWER"
+                            feedback_color = ACCENT_ORANGE
+                        else:
+                            squat_feedback = "GOOD POSTURE"
+                            feedback_color = ACCENT_GREEN
 
                     draw_skeleton(image, results)
             except Exception:
@@ -913,6 +1004,8 @@ def run_squats():
                         (gauge_cx - 18, gauge_cy + gauge_r + 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
 
+            draw_feedback_panel(image, "FORM FEEDBACK", [squat_feedback],
+                                feedback_color, y=100, width=260)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Squats', image)
@@ -966,6 +1059,8 @@ def run_plank():
                 break
 
             image = frame
+            plank_feedback = "SHOW FULL BODY"
+            feedback_color = ACCENT_ORANGE
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
             hand_results, hand_timestamp_ms = detect_hand_frame(
                 hand_landmarker, image, hand_timestamp_ms
@@ -983,6 +1078,9 @@ def run_plank():
                             left_shoulder, left_hip, left_ankle, in_plank, start_time
                         )
                         plank_timer += elapsed_time
+                        _, plank_feedback, feedback_color = get_body_alignment_feedback(
+                            left_shoulder, left_hip, left_ankle, "GOOD HOLD"
+                        )
             except Exception:
                 pass
 
@@ -1022,6 +1120,8 @@ def run_plank():
                         (ring_cx + ring_r + 12, ring_cy + 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
 
+            draw_feedback_panel(image, "FORM FEEDBACK", [plank_feedback],
+                                feedback_color, y=ring_r * 2 + 63, width=260)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Plank', image)
