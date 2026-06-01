@@ -34,6 +34,9 @@ FRAME_SKIP    = 1              # Process every frame on RPi4
 
 # ─── MediaPipe ───
 MODEL_PATH = "pose_landmarker.task"
+HAND_MODEL_PATH = "hand_landmarker.task"
+PALM_STOP_REQUIRED_FRAMES = 12
+PALM_STOP_MIN_HAND_SIZE = 0.12
 
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
 CENTER_ZONE_LEFT  = 0.42
@@ -469,12 +472,131 @@ def detect_pose_frame(landmarker, frame_bgr, timestamp_ms):
     return results, timestamp_ms
 
 
+def create_hand_landmarker(det_conf=0.6, track_conf=0.6):
+    """Create a HandLandmarker using the MediaPipe Tasks API."""
+    options = vision.HandLandmarkerOptions(
+        base_options=mp_tasks.BaseOptions(model_asset_path=HAND_MODEL_PATH),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=det_conf,
+        min_hand_presence_confidence=det_conf,
+        min_tracking_confidence=track_conf,
+    )
+    return vision.HandLandmarker.create_from_options(options)
+
+
+def detect_hand_frame(hand_landmarker, frame_bgr, timestamp_ms):
+    """Run hand detection on a BGR frame; returns (results, new_timestamp_ms)."""
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    timestamp_ms += 33
+    results = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+    return results, timestamp_ms
+
+
 def get_pt(lm, idx, min_vis=0.5, use_z=False):
     """Get landmark [x,y] or [x,y,z] if visible, else None."""
     p = lm[idx]
     if p.visibility <= min_vis:
         return None
     return [p.x, p.y, p.z] if use_z else [p.x, p.y]
+
+
+def _hand_point(hand_landmarks, idx):
+    pt = hand_landmarks[idx]
+    return np.array([pt.x, pt.y])
+
+
+def is_open_palm_stop(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
+    """Return True when MediaPipe Hands sees a clear open palm."""
+    if not hand_results.hand_landmarks:
+        return False
+
+    for hand_landmarks in hand_results.hand_landmarks:
+        points = [_hand_point(hand_landmarks, idx) for idx in range(21)]
+        xs = [pt[0] for pt in points]
+        ys = [pt[1] for pt in points]
+        hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
+        if hand_size < min_hand_size:
+            continue
+
+        wrist = points[0]
+        fingers = [
+            (5, 6, 8),    # index
+            (9, 10, 12),  # middle
+            (13, 14, 16), # ring
+            (17, 18, 20), # pinky
+        ]
+        extended = 0
+        for mcp_idx, pip_idx, tip_idx in fingers:
+            mcp = points[mcp_idx]
+            pip = points[pip_idx]
+            tip = points[tip_idx]
+            if (calculate_distance(tip, wrist) > calculate_distance(pip, wrist) * 1.08 and
+                    calculate_distance(tip, mcp) > calculate_distance(pip, mcp)):
+                extended += 1
+
+        thumb_tip = points[4]
+        thumb_ip = points[3]
+        index_mcp = points[5]
+        thumb_extended = (
+            calculate_distance(thumb_tip, wrist) > calculate_distance(points[2], wrist) * 1.05 and
+            calculate_distance(thumb_tip, index_mcp) > calculate_distance(thumb_ip, index_mcp)
+        )
+
+        fingertip_spread = max(points[idx][0] for idx in (4, 8, 12, 16, 20)) - min(
+            points[idx][0] for idx in (4, 8, 12, 16, 20)
+        )
+        if extended >= 4 and thumb_extended and fingertip_spread > hand_size * 0.35:
+            return True
+
+    return False
+
+
+def update_palm_stop_frames(hand_results, stop_frames):
+    """Debounce palm stop so one accidental frame does not quit the exercise."""
+    if is_open_palm_stop(hand_results):
+        return stop_frames + 1
+    return 0
+
+
+def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES):
+    """Draw palm-stop progress while an exercise is active."""
+    h, w = image.shape[:2]
+    panel_w = 205
+    x = max(5, w - panel_w - 5)
+    y = h - 58
+    draw_glass_panel(image, x, y, panel_w, 53, alpha=0.65, radius=10)
+
+    progress = min(stop_frames / required_frames, 1.0)
+    color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE if stop_frames else TEXT_DIM
+    cv2.putText(image, "PALM STOP", (x + 10, y + 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+
+    label = "STOPPING" if progress >= 1.0 else "HOLD PALM" if stop_frames else "SHOW PALM"
+    cv2.putText(image, label, (x + 10, y + 42),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
+
+    bar_x, bar_y = x + 108, y + 34
+    bar_w, bar_h = 82, 8
+    cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                  (40, 40, 40), -1)
+    cv2.rectangle(image, (bar_x, bar_y),
+                  (bar_x + int(bar_w * progress), bar_y + bar_h),
+                  color, -1)
+    cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                  (60, 60, 60), 1)
+
+
+def show_palm_stop_message(window_name, image):
+    """Show a brief confirmation before leaving the exercise window."""
+    h, w = image.shape[:2]
+    draw_glass_panel(image, w // 2 - 145, h // 2 - 30,
+                     290, 60, alpha=0.78, radius=12)
+    cv2.putText(image, "PALM STOP DETECTED", (w // 2 - 120, h // 2 + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, ACCENT_GREEN, 2, cv2.LINE_AA)
+    cv2.imshow(window_name, image)
+    cv2.waitKey(500)
 
 
 # ═══════════════════════════════════════════════════════
@@ -535,7 +657,10 @@ def run_bicep_curls():
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
+    hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
+    hand_timestamp_ms = 0
+    palm_stop_frames = 0
 
     try:
         while cap.isOpened():
@@ -548,6 +673,10 @@ def run_bicep_curls():
             image = frame
 
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            hand_results, hand_timestamp_ms = detect_hand_frame(
+                hand_landmarker, image, hand_timestamp_ms
+            )
+            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
 
             if results.pose_landmarks and len(results.pose_landmarks) > 0:
                 lm = results.pose_landmarks[0]
@@ -574,11 +703,17 @@ def run_bicep_curls():
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
 
+            draw_palm_stop_status(image, palm_stop_frames)
+            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Bicep Curls', image)
+                break
+
             cv2.imshow('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
         landmarker.close()
+        hand_landmarker.close()
 
     cap.release()
     cv2.destroyAllWindows()
@@ -609,7 +744,10 @@ def run_pushups():
     print("💪 Push-up Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
+    hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
+    hand_timestamp_ms = 0
+    palm_stop_frames = 0
 
     try:
         while cap.isOpened():
@@ -620,6 +758,10 @@ def run_pushups():
             frame = cv2.flip(frame, 1)
             image = frame
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            hand_results, hand_timestamp_ms = detect_hand_frame(
+                hand_landmarker, image, hand_timestamp_ms
+            )
+            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
@@ -648,12 +790,18 @@ def run_pushups():
             cv2.putText(image, "press Q to quit", (15, 88),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.3, TEXT_DIM, 1)
 
+            draw_palm_stop_status(image, palm_stop_frames)
+            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Push-ups', image)
+                break
+
             cv2.imshow('Push-ups', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
         landmarker.close()
+        hand_landmarker.close()
 
     cap.release()
     cv2.destroyAllWindows()
@@ -675,7 +823,10 @@ def run_squats():
     print("🦵 Squat Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
+    hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
+    hand_timestamp_ms = 0
+    palm_stop_frames = 0
 
     try:
         while cap.isOpened():
@@ -685,6 +836,10 @@ def run_squats():
 
             image = frame
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            hand_results, hand_timestamp_ms = detect_hand_frame(
+                hand_landmarker, image, hand_timestamp_ms
+            )
+            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
 
             current_hip_angle = 180
             posture_correct = False
@@ -758,12 +913,18 @@ def run_squats():
                         (gauge_cx - 18, gauge_cy + gauge_r + 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
 
+            draw_palm_stop_status(image, palm_stop_frames)
+            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Squats', image)
+                break
+
             cv2.imshow('Squats', image)
 
             if cv2.waitKey(5) & 0xFF == ord('q'):
                 break
     finally:
         landmarker.close()
+        hand_landmarker.close()
 
     cap.release()
     cv2.destroyAllWindows()
@@ -793,7 +954,10 @@ def run_plank():
     print("🧘 Plank Timer Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
+    hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
+    hand_timestamp_ms = 0
+    palm_stop_frames = 0
 
     try:
         while cap.isOpened():
@@ -803,6 +967,10 @@ def run_plank():
 
             image = frame
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            hand_results, hand_timestamp_ms = detect_hand_frame(
+                hand_landmarker, image, hand_timestamp_ms
+            )
+            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
@@ -854,12 +1022,18 @@ def run_plank():
                         (ring_cx + ring_r + 12, ring_cy + 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
 
+            draw_palm_stop_status(image, palm_stop_frames)
+            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Plank', image)
+                break
+
             cv2.imshow('Plank', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
         landmarker.close()
+        hand_landmarker.close()
 
     cap.release()
     cv2.destroyAllWindows()
