@@ -5,17 +5,22 @@ os.environ['GLOG_minloglevel'] = '3'
 import cv2
 import mediapipe as mp
 import numpy as np
+import sounddevice as sd
+from scipy.io.wavfile import write
 from google import genai
 from google.genai import types
 import serial
 import json
 import time
+import threading
+import queue
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+import api_keys
 
-# 1. Initialize the new client with your real API key
-client = genai.Client(api_key="AIzaSyC_omTzQj25mB84B9ay1ENgNnoq1xo4Pro")
+# 1. Initialize the new client with the API key from api_keys.py
+client = genai.Client(api_key=api_keys.GEMINI_API_KEY)
 
 # Initialize serial connection
 SERIAL_PORT = '/dev/ttyS0'
@@ -29,6 +34,10 @@ try:
 except Exception as e:
     print(f"Failed to connect to Serial Port: {e}")
     ser = None
+
+# ─── Shared State for Voice-Driven Exercise Switching ───
+stop_exercise = threading.Event()
+command_queue = queue.Queue()
 
 # ─── Configuration & Constants for Exercises ───
 CAMERA_INDEX = 0
@@ -289,7 +298,7 @@ def run_bicep_curls() -> str:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
 
             cv2.imshow('Bicep Curls', image)
-            if cv2.waitKey(10) & 0xFF == ord('q'):
+            if cv2.waitKey(10) & 0xFF == ord('q') or stop_exercise.is_set():
                 break
     finally:
         landmarker.close()
@@ -369,7 +378,7 @@ def run_pushups() -> str:
 
             cv2.imshow('Push-ups', image)
 
-            if cv2.waitKey(10) & 0xFF == ord('q'):
+            if cv2.waitKey(10) & 0xFF == ord('q') or stop_exercise.is_set():
                 break
     finally:
         landmarker.close()
@@ -484,7 +493,7 @@ def run_squats() -> str:
 
             cv2.imshow('Squats', image)
 
-            if cv2.waitKey(5) & 0xFF == ord('q'):
+            if cv2.waitKey(5) & 0xFF == ord('q') or stop_exercise.is_set():
                 break
     finally:
         landmarker.close()
@@ -585,7 +594,7 @@ def run_plank() -> str:
 
             cv2.imshow('Plank', image)
 
-            if cv2.waitKey(10) & 0xFF == ord('q'):
+            if cv2.waitKey(10) & 0xFF == ord('q') or stop_exercise.is_set():
                 break
     finally:
         landmarker.close()
@@ -596,47 +605,684 @@ def run_plank() -> str:
     print(f"\n✅ {summary}")
     return summary
 
-# Configuration
+# ─── Person Following / Tracking Helpers & Tool ───
+
+CMD_COLORS = {
+    'FORWARD':   (180, 220, 80),
+    'BACKWARD':  (100, 100, 220),
+    'LEFT':      (210, 190, 80),
+    'RIGHT':     (200, 120, 200),
+    'FWD_LEFT':  (180, 210, 100),
+    'FWD_RIGHT': (160, 200, 120),
+    'BWD_LEFT':  (180, 100, 200),
+    'BWD_RIGHT': (140, 100, 210),
+    'STOP':      (140, 140, 140),
+    'SEARCH':    (100, 170, 230),
+}
+
+def _draw_mini_arrow(frame, cx, cy, command, color, size=5):
+    """Draw a small direction arrow or stop dot for zone grid cells."""
+    if command == 'STOP':
+        cv2.circle(frame, (cx, cy), 2, color, -1)
+        return
+
+    directions = {
+        'FORWARD':   (0, -size),
+        'BACKWARD':  (0,  size),
+        'LEFT':      (-size, 0),
+        'RIGHT':     ( size, 0),
+        'FWD_LEFT':  (-size + 2, -size + 2),
+        'FWD_RIGHT': ( size - 2, -size + 2),
+        'BWD_LEFT':  (-size + 2,  size - 2),
+        'BWD_RIGHT': ( size - 2,  size - 2),
+    }
+
+    dx, dy = directions.get(command, (0, 0))
+    if dx == 0 and dy == 0:
+        return
+
+    end = (cx + dx, cy + dy)
+    cv2.arrowedLine(frame, (cx, cy), end, color, 1, tipLength=0.5)
+
+def draw_direction_indicator(frame, command, cx, cy, size=40):
+    """Draw compass rose direction indicator."""
+    pad = size + 10
+    draw_glass_panel(frame, cx - pad, cy - pad, pad * 2, pad * 2,
+                     alpha=0.7, radius=pad)
+
+    cv2.circle(frame, (cx, cy), size + 3, (65, 65, 70), 1)
+
+    directions = {
+        'FORWARD':   (0, -size),
+        'BACKWARD':  (0,  size),
+        'LEFT':      (-size, 0),
+        'RIGHT':     ( size, 0),
+        'FWD_LEFT':  (-size + 8, -size + 8),
+        'FWD_RIGHT': ( size - 8, -size + 8),
+        'BWD_LEFT':  (-size + 8,  size - 8),
+        'BWD_RIGHT': ( size - 8,  size - 8),
+        'STOP':      (0, 0),
+    }
+
+    for cmd, (dx, dy) in directions.items():
+        pos = (cx + dx, cy + dy)
+        cv2.circle(frame, pos, 4, (55, 55, 60), -1)
+
+    if command in directions:
+        dx, dy = directions[command]
+        active = (cx + dx, cy + dy)
+        color  = CMD_COLORS.get(command, (255, 255, 255))
+        cv2.circle(frame, active, 6, color, -1)
+        cv2.circle(frame, active, 9, color, 1)
+        if command != 'STOP':
+            cv2.arrowedLine(frame, (cx, cy), active,
+                            color, 2, tipLength=0.4)
+
+    cv2.circle(frame, (cx, cy), 3, TEXT_WHITE, -1)
+
+def draw_zone_grid(frame, d_zone, h_zone, gx, gy):
+    """Draw 3x3 zone grid."""
+    cell_w, cell_h = 38, 22
+    total_w, total_h = cell_w * 3, cell_h * 3
+
+    draw_glass_panel(frame, gx - 3, gy - 3, total_w + 6, total_h + 6,
+                     alpha=0.7, radius=6)
+
+    grid = [
+        [("FWD_LEFT","FAR","LEFT"),   ("FORWARD","FAR","CENTER"),   ("FWD_RIGHT","FAR","RIGHT")],
+        [("LEFT","GOOD","LEFT"),       ("STOP","GOOD","CENTER"),     ("RIGHT","GOOD","RIGHT")],
+        [("BWD_LEFT","CLOSE","LEFT"),  ("BACKWARD","CLOSE","CENTER"),("BWD_RIGHT","CLOSE","RIGHT")],
+    ]
+    labels = [
+        ["FL", "FW", "FR"],
+        ["L",  "ST", "R"],
+        ["BL", "BW", "BR"],
+    ]
+
+    for row in range(3):
+        for col in range(3):
+            x1 = gx + col * cell_w
+            y1 = gy + row * cell_h
+            x2 = x1 + cell_w - 1
+            y2 = y1 + cell_h - 1
+
+            cmd, dz, hz = grid[row][col]
+
+            if dz == d_zone and hz == h_zone:
+                color = CMD_COLORS.get(cmd, (255, 255, 255))
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
+                txt_color = (0, 0, 0)
+            else:
+                txt_color = (100, 100, 100)
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (55, 55, 60), 1)
+            cx = x1 + cell_w // 2
+            cy = y1 + 8
+            _draw_mini_arrow(frame, cx, cy, cmd, txt_color, size=4)
+            cv2.putText(frame, labels[row][col],
+                        (x1 + 3, y1 + cell_h - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28,
+                        txt_color, 1)
+
+def draw_frame(frame, command, state, person_x, shoulder_width, fps, d_zone, h_zone):
+    """Draw all overlay elements."""
+    h, w = frame.shape[:2]
+
+    # Zone overlays
+    CENTER_ZONE_LEFT  = 0.42
+    CENTER_ZONE_RIGHT = 0.58
+    TOO_CLOSE = 0.43
+    TOO_FAR   = 0.18
+
+    zone_l = int(CENTER_ZONE_LEFT * w)
+    zone_r = int(CENTER_ZONE_RIGHT * w)
+
+    ov = frame.copy()
+    cv2.rectangle(ov, (0, 0), (zone_l, h), (200, 140, 60), -1)
+    cv2.addWeighted(ov, 0.06, frame, 0.94, 0, frame)
+
+    ov = frame.copy()
+    cv2.rectangle(ov, (zone_r, 0), (w, h), (80, 80, 200), -1)
+    cv2.addWeighted(ov, 0.06, frame, 0.94, 0, frame)
+
+    cv2.line(frame, (zone_l, 0), (zone_l, h), (180, 180, 80), 1)
+    cv2.line(frame, (zone_r, 0), (zone_r, h), (180, 180, 80), 1)
+
+    # Person position dot
+    if person_x is not None:
+        px = int(person_x * w)
+        cv2.circle(frame, (px, h // 2), 14, (130, 220, 220), 1)
+        cv2.circle(frame, (px, h // 2), 8, (130, 220, 220), -1)
+        cv2.circle(frame, (px, h // 2), 8, (0, 0, 0), 1)
+
+    # Top bar
+    draw_glass_panel(frame, 0, 0, w, 50, alpha=0.7, radius=0)
+    cmd_color = CMD_COLORS.get(command, TEXT_WHITE)
+    cv2.putText(frame, command, (12, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, cmd_color, 2)
+    cv2.putText(frame, f"FPS:{fps:.0f}", (12, 43),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1)
+
+    # Detection indicator with glow
+    dot = ACCENT_GREEN if person_x is not None else ACCENT_RED
+    cv2.circle(frame, (w - 15, 15), 12, dot, 1)
+    cv2.circle(frame, (w - 15, 15), 7, dot, -1)
+
+    # State text
+    if person_x is not None:
+        cv2.putText(frame, state, (w // 2 - 40, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                    TEXT_DIM, 1)
+
+    # Compass (top right)
+    draw_direction_indicator(frame, command, w - 30, 95, size=25)
+
+    # Zone grid (bottom left)
+    draw_zone_grid(frame, d_zone, h_zone, 5, h - 75)
+
+    # Distance bar (bottom)
+    if shoulder_width is not None:
+        bar_start = 125
+        bar_end   = w - 5
+        bar_y     = h - 22
+        bar_h     = 14
+        bar_max   = TOO_CLOSE + 0.15
+        bar_pct   = min(shoulder_width / bar_max, 1.0)
+        bar_w     = int(bar_pct * (bar_end - bar_start))
+
+        if shoulder_width > TOO_CLOSE:
+            bc = ACCENT_RED
+        elif shoulder_width < TOO_FAR:
+            bc = ACCENT_ORANGE
+        else:
+            bc = ACCENT_GREEN
+
+        draw_glass_panel(frame, bar_start - 3, bar_y - 14,
+                         bar_end - bar_start + 6, bar_h + 17,
+                         alpha=0.6, radius=6)
+
+        cv2.rectangle(frame, (bar_start, bar_y),
+                      (bar_end, bar_y + bar_h), (40, 40, 40), -1)
+        cv2.rectangle(frame, (bar_start, bar_y),
+                      (bar_start + bar_w, bar_y + bar_h), bc, -1)
+
+        fm = int((TOO_FAR / bar_max) * (bar_end - bar_start)) + bar_start
+        cm = int((TOO_CLOSE / bar_max) * (bar_end - bar_start)) + bar_start
+        cv2.line(frame, (fm, bar_y - 2), (fm, bar_y + bar_h + 2),
+                 ACCENT_ORANGE, 1)
+        cv2.line(frame, (cm, bar_y - 2), (cm, bar_y + bar_h + 2),
+                 ACCENT_RED, 1)
+
+        cv2.putText(frame, f"DIST: {shoulder_width:.3f}",
+                    (bar_start, bar_y - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                    TEXT_DIM, 1)
+
+def run_person_tracking() -> str:
+    """
+    Start the person tracking and following session using the camera.
+    The robot will detect the user and send movement commands (FORWARD, BACKWARD, LEFT, RIGHT, etc.)
+    to follow the user, keeping them at a calibrated distance.
+    Returns a summary when the tracking session ends.
+    """
+    import socket
+    
+    # ─── ESP32 ───
+    ESP32_IP   = "10.249.231.70"
+    ESP32_PORT = 8888
+
+    # ─── Camera ───
+    CAMERA_WIDTH  = 320
+    CAMERA_HEIGHT = 240
+    FRAME_SKIP    = 1
+
+    # ─── Following Thresholds ───
+    CENTER_ZONE_LEFT  = 0.42
+    CENTER_ZONE_RIGHT = 0.58
+    TOO_CLOSE = 0.43
+    TOO_FAR   = 0.18
+
+    # ─── Timing ───
+    LOST_PERSON_TIMEOUT = 1.5
+
+    # ─── Display & Debug ───
+    SHOW_WINDOW  = True
+    WINDOW_SCALE = 2.0
+    DEBUG    = True
+    SHOW_FPS = True
+
+    # Initialize UDP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    
+    state_dict = {
+        'current_command': "STOP",
+        'last_command_time': 0.0
+    }
+
+    def send_command(command):
+        now = time.time()
+        if (command != state_dict['current_command'] or
+                now - state_dict['last_command_time'] > 1.0):
+            try:
+                sock.sendto(
+                    command.encode('utf-8'),
+                    (ESP32_IP, ESP32_PORT)
+                )
+                if DEBUG and command != state_dict['current_command']:
+                    print(f"  📡 → ESP32: {command}")
+            except Exception:
+                pass
+            state_dict['current_command'] = command
+            state_dict['last_command_time'] = now
+
+    def calculate_command(person_x, shoulder_width):
+        if person_x < CENTER_ZONE_LEFT:
+            h_zone = "LEFT"
+        elif person_x > CENTER_ZONE_RIGHT:
+            h_zone = "RIGHT"
+        else:
+            h_zone = "CENTER"
+
+        if shoulder_width > TOO_CLOSE:
+            d_zone = "CLOSE"
+        elif shoulder_width < TOO_FAR:
+            d_zone = "FAR"
+        else:
+            d_zone = "GOOD"
+
+        matrix = {
+            ("FAR",   "LEFT"):   "FWD_LEFT",
+            ("FAR",   "CENTER"): "FORWARD",
+            ("FAR",   "RIGHT"):  "FWD_RIGHT",
+            ("GOOD",  "LEFT"):   "LEFT",
+            ("GOOD",  "CENTER"): "STOP",
+            ("GOOD",  "RIGHT"):  "RIGHT",
+            ("CLOSE", "LEFT"):   "BWD_LEFT",
+            ("CLOSE", "CENTER"): "BACKWARD",
+            ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+        }
+
+        command = matrix.get((d_zone, h_zone), "STOP")
+        state = f"{command} (x:{person_x:.2f} w:{shoulder_width:.3f})"
+        return command, state, d_zone, h_zone
+
+    # ─── MediaPipe Tasks API Setup ───
+    landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
+    timestamp_ms = 0
+    print("✅ MediaPipe loaded")
+
+    # ─── Camera ───
+    print("\nOpening camera...")
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(CAMERA_INDEX)
+
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    for _ in range(5):
+        cap.read()
+
+    aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"✅ Camera: {aw}x{ah}")
+
+    print()
+    print("🚀 8-Direction Person Following Active!")
+    print("  Press Q to quit")
+    print()
+
+    if SHOW_WINDOW:
+        cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
+
+    fps          = 0
+    fps_counter  = 0
+    fps_time     = time.time()
+    frame_counter = 0
+
+    command        = "STOP"
+    state          = "STARTING"
+    person_x       = None
+    shoulder_width = None
+    d_zone         = "GOOD"
+    h_zone         = "CENTER"
+    last_results   = None
+    lost_since     = None
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            frame_counter += 1
+
+            if frame_counter % FRAME_SKIP == 0:
+                timestamp_ms += 33
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                mp_image  = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=frame_rgb
+                )
+
+                results      = landmarker.detect_for_video(mp_image, timestamp_ms)
+                last_results = results
+
+                person_x       = None
+                shoulder_width = None
+
+                if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    lm        = results.pose_landmarks[0]
+                    l_shoulder = lm[11]
+                    r_shoulder = lm[12]
+                    l_hip      = lm[23]
+                    r_hip      = lm[24]
+
+                    shoulder_ok = (
+                        l_shoulder.visibility > 0.2 and
+                        r_shoulder.visibility > 0.2
+                    )
+
+                    hip_ok = (
+                        l_hip.visibility > 0.2 and
+                        r_hip.visibility > 0.2
+                    )
+
+                    if shoulder_ok:
+                        shoulder_center = (l_shoulder.x + r_shoulder.x) / 2
+                        shoulder_width = abs(l_shoulder.x - r_shoulder.x)
+
+                        if hip_ok:
+                            hip_center = (l_hip.x + r_hip.x) / 2
+                            person_x = shoulder_center * 0.6 + hip_center * 0.4
+                        else:
+                            person_x = shoulder_center
+
+                        lost_since = None
+                        command, state, d_zone, h_zone = calculate_command(person_x, shoulder_width)
+                        send_command(command)
+                else:
+                    now = time.time()
+                    if lost_since is None:
+                        lost_since = now
+                        send_command("STOP")
+                        command = "STOP"
+                        state   = "LOST"
+                    elif now - lost_since > LOST_PERSON_TIMEOUT:
+                        send_command("SEARCH")
+                        command = "SEARCH"
+                        state   = "SEARCHING..."
+
+                    d_zone = "GOOD"
+                    h_zone = "CENTER"
+
+                if (DEBUG and SHOW_FPS and
+                        frame_counter % (30 * FRAME_SKIP) == 0):
+                    det = "👤" if person_x is not None else "❌"
+                    print(f"  {det} FPS:{fps:.0f} | CMD:{command:10s} | {state}")
+
+            if last_results:
+                draw_skeleton(frame, last_results)
+
+            draw_frame(frame, command, state, person_x, shoulder_width, fps, d_zone, h_zone)
+
+            if SHOW_WINDOW:
+                scale_w = int(CAMERA_WIDTH  * WINDOW_SCALE)
+                scale_h = int(CAMERA_HEIGHT * WINDOW_SCALE)
+                display = cv2.resize(frame, (scale_w, scale_h))
+                cv2.imshow('Person Follower', display)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or stop_exercise.is_set():
+                    break
+
+            fps_counter += 1
+            if time.time() - fps_time >= 1.0:
+                fps         = fps_counter
+                fps_counter = 0
+                fps_time    = time.time()
+    finally:
+        send_command("STOP")
+        time.sleep(0.2)
+        cap.release()
+        cv2.destroyAllWindows()
+        landmarker.close()
+        sock.close()
+
+    print("\n✅ Done!")
+    return "Person tracking session completed."
+
+def calibrate_mic(sample_rate=16000, duration=1.0):
+    """
+    Record ambient noise for `duration` seconds and return the average RMS.
+    This is used to auto-set the speech detection threshold.
+    """
+    print("🔇 Calibrating microphone... Please stay quiet for 1 second.")
+    audio = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
+    sd.wait()
+    ambient_rms = float(np.sqrt(np.mean(audio**2)))
+    print(f"   Ambient noise RMS: {ambient_rms:.5f}")
+    return ambient_rms
+
+
+def record_voice_command(filename="voice_command.wav", sample_rate=16000,
+                         threshold=0.03, silence_seconds=1.8, max_duration=6.0):
+    """
+    Listens for speech on the default microphone.
+    - Waits until audio RMS exceeds `threshold` (speech start).
+    - Records until `silence_seconds` of quiet OR `max_duration` is reached.
+    - Saves the recording to `filename` and returns the path.
+    """
+    print("\n🎧 Listening... Speak your command now.")
+
+    chunk_size = 1024
+    chunks_per_sec = sample_rate / chunk_size
+    max_silent_chunks = int(silence_seconds * chunks_per_sec)
+    max_total_chunks  = int(max_duration * chunks_per_sec)
+
+    audio_buffer = []
+    recording = False
+    silent_chunks = 0
+    total_chunks  = 0
+
+    with sd.InputStream(samplerate=sample_rate, channels=1,
+                        blocksize=chunk_size, dtype='float32') as stream:
+        while True:
+            data, _ = stream.read(chunk_size)
+            rms = float(np.sqrt(np.mean(data**2)))
+
+            if not recording:
+                # Waiting for speech to start
+                if rms > threshold:
+                    print("🎙️  Speech detected! Recording...")
+                    recording = True
+                    audio_buffer.extend(data.flatten())
+                    silent_chunks = 0
+                    total_chunks = 1
+            else:
+                audio_buffer.extend(data.flatten())
+                total_chunks += 1
+
+                if rms < threshold:
+                    silent_chunks += 1
+                else:
+                    silent_chunks = 0
+
+                # Stop conditions
+                if silent_chunks >= max_silent_chunks:
+                    print("✅ End of speech detected.")
+                    break
+                if total_chunks >= max_total_chunks:
+                    print(f"✅ Max recording time ({max_duration}s) reached.")
+                    break
+
+    # Convert float32 buffer → 16-bit WAV
+    audio_np = np.array(audio_buffer, dtype='float32')
+    audio_int16 = (audio_np * 32767).astype(np.int16)
+    write(filename, sample_rate, audio_int16)
+    duration_sec = len(audio_np) / sample_rate
+    print(f"   Recorded {duration_sec:.1f}s of audio.")
+    return filename
+
+
+# ═══════════════════════════════════════════════════════
+#  EXERCISE DISPATCH MAP
+# ═══════════════════════════════════════════════════════
+
+EXERCISE_MAP = {
+    "BICEP_CURLS":     run_bicep_curls,
+    "PUSHUPS":         run_pushups,
+    "SQUATS":          run_squats,
+    "PLANK":           run_plank,
+    "PERSON_TRACKING": run_person_tracking,
+}
+
+EXERCISE_KEYWORDS = ", ".join(EXERCISE_MAP.keys())
+
+
+# ═══════════════════════════════════════════════════════
+#  GEMINI CONFIGURATION
+# ═══════════════════════════════════════════════════════
+
 config = types.GenerateContentConfig(
     system_instruction=(
-        "You are the fitness robot. Map user input to hardware tools. "
-        "You can perform several exercises (bicep curls, pushups, squats, plank) and provide feedback. "
-        "Use the tools to trigger movements, start exercise sessions, or send alerts based on user commands."
+        "You are the fitness robot voice controller. "
+        "When the user speaks, determine what they want to do. "
+        f"If they want to start or switch to an exercise, reply with EXACTLY one of these keywords on its own line: {EXERCISE_KEYWORDS}. "
+        "If they want to stop or exit, reply with STOP. "
+        "You may add a short motivational sentence AFTER the keyword. "
+        "For hardware commands (motor, movement, watch alerts), use the provided tools. "
+        "Keep replies very short."
     ),
-    temperature=0.7,
+    temperature=0.3,
     tools=[
         trigger_robot_movement,
         send_watch_alert,
         send_motor_command,
-        run_bicep_curls,
-        run_pushups,
-        run_squats,
-        run_plank
     ],
 )
 
-# Start the chat using the new client
 chat = client.chats.create(
-    model="gemini-2.5-flash-lite", # Updated to the latest fast model
+    model="gemini-2.5-flash-lite",
     config=config
 )
 
-# Terminal loop
-print("=" * 50)
-print("Fitness Robot Terminal Controller Activated.")
-print("=" * 50)
 
-while True:
-    user_command = input("\nYou: ")
-    if user_command.strip().lower() == 'exit':
-        break
-    if not user_command.strip():
-        continue
-        
-    # Send the message
-    response = chat.send_message(user_command)
-    
-    # In the new SDK, function calls are handled differently, 
-    # but the chat.send_message still processes the text return.
-    if response.text:
-        print(f"Robot: {response.text}")
+# ═══════════════════════════════════════════════════════
+#  VOICE LISTENER (Background Thread)
+# ═══════════════════════════════════════════════════════
+
+def voice_listener_thread(speech_threshold):
+    """
+    Runs in a daemon thread. Waits for the user to press Enter,
+    then records a voice command, sends it to Gemini, and dispatches.
+    """
+    while True:
+        try:
+            input("\n🎤 Press ENTER to give a voice command...")
+
+            wav_file = record_voice_command(
+                threshold=speech_threshold,
+                silence_seconds=1.8,
+                max_duration=6.0
+            )
+
+            print("⏳ Uploading voice to Gemini...")
+            gemini_audio_file = client.files.upload(file=wav_file)
+
+            print("🧠 Processing voice command...")
+            response = chat.send_message([
+                gemini_audio_file,
+                "Listen to this voice command. If they want an exercise or tracking, "
+                f"respond with the keyword ({EXERCISE_KEYWORDS} or STOP). "
+                "Add a short motivational line after."
+            ])
+
+            # Cleanup temp audio
+            if os.path.exists(wav_file):
+                os.remove(wav_file)
+
+            if not response.text:
+                continue
+
+            reply = response.text.strip()
+            print(f"\n🤖 Robot: {reply}")
+
+            # Check if Gemini returned an exercise keyword
+            reply_upper = reply.upper()
+            for keyword in EXERCISE_MAP:
+                if keyword in reply_upper:
+                    print(f"\n🔄 Switching to: {keyword}")
+                    stop_exercise.set()          # signal current exercise to stop
+                    # Drain any old commands
+                    while not command_queue.empty():
+                        try:
+                            command_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    command_queue.put(keyword)    # queue the new exercise
+                    break
+
+            # Check for STOP command
+            if "STOP" in reply_upper and not any(k in reply_upper for k in EXERCISE_MAP):
+                print("\n⏹️  Stop requested.")
+                stop_exercise.set()
+                command_queue.put("STOP")
+
+        except Exception as e:
+            print(f"\n[VOICE ERROR]: {e}")
+            time.sleep(2)
+
+
+# ═══════════════════════════════════════════════════════
+#  MAIN (Calibrate → Start Listener → Dispatch Exercises)
+# ═══════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    # Calibrate microphone
+    ambient_rms = calibrate_mic()
+    SPEECH_THRESHOLD = max(ambient_rms * 2.5, 0.01)
+    print(f"✅ Speech threshold set to: {SPEECH_THRESHOLD:.5f}")
+
+    # Start voice listener as a daemon background thread
+    listener = threading.Thread(
+        target=voice_listener_thread,
+        args=(SPEECH_THRESHOLD,),
+        daemon=True
+    )
+    listener.start()
+    print("✅ Voice listener started (background thread)")
+
+    print()
+    print("=" * 60)
+    print("  Fitness Robot — Voice Controller")
+    print("  Press ENTER to speak a command (even mid-exercise).")
+    print("  Say 'stop' to idle, press Ctrl+C to exit.")
+    print("=" * 60)
+
+    try:
+        while True:
+            print("\n⏸️  Idle — waiting for voice command...")
+            # Block until the voice listener queues a command
+            cmd = command_queue.get()
+
+            if cmd == "STOP":
+                continue
+
+            if cmd in EXERCISE_MAP:
+                stop_exercise.clear()  # reset the stop signal
+                exercise_fn = EXERCISE_MAP[cmd]
+                print(f"\n▶️  Starting {cmd}...")
+                try:
+                    result = exercise_fn()
+                    print(f"📊 {result}")
+                except Exception as e:
+                    print(f"[EXERCISE ERROR]: {e}")
+
+    except KeyboardInterrupt:
+        stop_exercise.set()
+        print("\n\n🛑 Shutting down. Goodbye!")

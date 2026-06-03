@@ -4,5 +4,6 @@ __pycache__/
 *.py[cod]
 *.task
 .env
+api_keys.py
 .DS_Store
 Thumbs.db

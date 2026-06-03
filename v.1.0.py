@@ -1,7 +1,8 @@
 import google.generativeai as genai
+import api_keys
 
-#API KEY
-genai.configure(api_key="AIzaSyCHKsna8ei-FX1aD4ZAZuSZutGSRvt66wU")
+#API KEY loaded from api_keys.py
+genai.configure(api_key=api_keys.GEMINI_API_KEY)
 
 # Tools Definitions
 def trigger_robot_movement(animation_name: str):
@@ -21,7 +22,7 @@ def send_watch_alert(alert_type: str):
     print(f"\n[HARDWARE COMMAND] Sending '{alert_type}' to ESP32-C3 (Watch)...")
 
 #System Instructions for Gemini
-genai.configure(api_key="YOUR_GEMINI_API_KEY")
+genai.configure(api_key=api_keys.GEMINI_API_KEY)
 
 # Tell the model exactly how to behave
 system_prompt = """
