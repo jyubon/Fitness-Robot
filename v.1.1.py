@@ -208,7 +208,7 @@ def run_bicep_curls() -> str:
     """
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
-            return "N/A", ACCENT_RED, "---"
+            return "N/A", ACCENT_RED, "---", False
 
         angle = calculate_angle(shoulder, elbow, wrist)
 
