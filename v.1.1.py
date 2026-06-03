@@ -226,6 +226,9 @@ def run_bicep_curls() -> str:
             state_dict['stage'] = "up"
             if not flare_error:
                 state_dict['counter'] += 1
+                return feedback, color, state_dict['stage'].upper(), False
+            else:
+                return feedback, color, state_dict['stage'].upper(), True
 
         bar_val = np.interp(angle, (30, 150), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
@@ -244,12 +247,14 @@ def run_bicep_curls() -> str:
         cv2.rectangle(image, (bar_x, bar_y_top),
                       (bar_x + 14, bar_y_top + bar_h), (60, 60, 60), 1)
 
-        return feedback, color, state_dict['stage'].upper()
+        return feedback, color, state_dict['stage'].upper(), False
 
     arms = {
         'left': {'counter': 0, 'stage': 'down'},
         'right': {'counter': 0, 'stage': 'down'}
     }
+    tuck_count = 0              # shared counter across both arms
+    form_warning_until = 0      # timestamp until which to show warning on screen
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
@@ -278,8 +283,14 @@ def run_bicep_curls() -> str:
                 l_s, l_e, l_w = get_pt(lm, 11), get_pt(lm, 13), get_pt(lm, 15)
                 r_s, r_e, r_w = get_pt(lm, 12), get_pt(lm, 14), get_pt(lm, 16)
 
-                l_fb, l_clr, l_stg = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+                l_fb, l_clr, l_stg, l_bad = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
+                r_fb, r_clr, r_stg, r_bad = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+
+                # Increment shared tuck counter if EITHER arm had a bad-form rep
+                if l_bad or r_bad:
+                    tuck_count += 1
+                elif l_fb == "GOOD" and r_fb == "GOOD":
+                    tuck_count = 0   # reset on a clean frame
 
                 draw_skeleton(image, results)
 
@@ -296,6 +307,19 @@ def run_bicep_curls() -> str:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+
+                # After 3 bad-form reps from either arm, show warning
+                if tuck_count >= 3:
+                    form_warning_until = time.time() + 4
+                    tuck_count = 0
+                    print("\n⚠️  Gemini: Drop your weight and focus on your form!")
+
+            # Show warning banner on screen
+            if time.time() < form_warning_until:
+                warn_msg = "Drop your weight and focus on your form!"
+                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, radius=10)
+                cv2.putText(image, warn_msg, (15, img_h - 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
 
             cv2.imshow('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q') or stop_exercise.is_set():
