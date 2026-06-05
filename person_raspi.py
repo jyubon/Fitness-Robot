@@ -50,7 +50,8 @@ LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
 SHOW_WINDOW  = True
-WINDOW_SCALE = 2.0           # 320x240 → 640x480
+DISPLAY_WIDTH  = 480
+DISPLAY_HEIGHT = 320
 
 # ─── Debug ───
 DEBUG    = True
@@ -228,15 +229,22 @@ def draw_feedback_panel(image, title, lines, color, x=5, y=100, width=300):
     if not clean_lines:
         return
 
-    height = 32 + (len(clean_lines) * 24)
+    h, w = image.shape[:2]
+    width = min(width, w - x - 5)
+    line_h = 18 if h <= 240 else 24
+    title_y = y + 18 if h <= 240 else y + 22
+    text_y = y + 38 if h <= 240 else y + 48
+    font_scale = 0.42 if h <= 240 else 0.52
+    title_scale = 0.38 if h <= 240 else 0.45
+    height = 26 + (len(clean_lines[:3]) * line_h)
     draw_glass_panel(image, x, y, width, height, alpha=0.68, radius=10)
     cv2.rectangle(image, (x, y), (x + 4, y + height), color, -1)
-    cv2.putText(image, title, (x + 14, y + 22),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
+    cv2.putText(image, title, (x + 10, title_y),
+                cv2.FONT_HERSHEY_SIMPLEX, title_scale, TEXT_DIM, 1, cv2.LINE_AA)
 
     for idx, line in enumerate(clean_lines[:3]):
-        cv2.putText(image, line, (x + 14, y + 48 + idx * 24),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 1, cv2.LINE_AA)
+        cv2.putText(image, line, (x + 10, text_y + idx * line_h),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
 
 
 def get_body_alignment_feedback(shoulder, hip, ankle, good_message="GOOD FORM"):
@@ -411,14 +419,14 @@ def draw_frame(frame, command, state, person_x,
                     TEXT_DIM, 1)
 
     # Compass (top right)
-    draw_direction_indicator(frame, command, w - 30, 95, size=25)
+    draw_direction_indicator(frame, command, w - 25, 82, size=20)
 
     # Zone grid (bottom left)
     draw_zone_grid(frame, d_zone, h_zone, 5, h - 75)
 
     # Distance bar (bottom)
     if shoulder_width is not None:
-        bar_start = 125
+        bar_start = min(125, int(w * 0.42))
         bar_end   = w - 5
         bar_y     = h - 22
         bar_h     = 14
@@ -537,6 +545,22 @@ def get_pt(lm, idx, min_vis=0.5, use_z=False):
     return [p.x, p.y, p.z] if use_z else [p.x, p.y]
 
 
+def set_camera_resolution(cap):
+    """Use a small capture frame that fits the 480x320 display target."""
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+
+
+def setup_display_window(window_name):
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+
+
+def show_frame(window_name, image):
+    display = cv2.resize(image, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+    cv2.imshow(window_name, display)
+
+
 def _hand_point(hand_landmarks, idx):
     pt = hand_landmarks[idx]
     return np.array([pt.x, pt.y])
@@ -598,22 +622,27 @@ def update_palm_stop_frames(hand_results, stop_frames):
 def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES):
     """Draw palm-stop progress while an exercise is active."""
     h, w = image.shape[:2]
-    panel_w = 205
+    compact = h <= 240
+    panel_w = 180 if compact else 205
+    panel_h = 45 if compact else 53
     x = max(5, w - panel_w - 5)
-    y = h - 58
-    draw_glass_panel(image, x, y, panel_w, 53, alpha=0.65, radius=10)
+    y = h - panel_h - 5
+    draw_glass_panel(image, x, y, panel_w, panel_h, alpha=0.65, radius=10)
 
     progress = min(stop_frames / required_frames, 1.0)
     color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE if stop_frames else TEXT_DIM
-    cv2.putText(image, "PALM STOP", (x + 10, y + 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+    cv2.putText(image, "PALM STOP", (x + 8, y + 17),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                color, 1, cv2.LINE_AA)
 
     label = "STOPPING" if progress >= 1.0 else "HOLD PALM" if stop_frames else "SHOW PALM"
-    cv2.putText(image, label, (x + 10, y + 42),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
+    cv2.putText(image, label, (x + 8, y + 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                TEXT_WHITE, 1, cv2.LINE_AA)
 
-    bar_x, bar_y = x + 108, y + 34
-    bar_w, bar_h = 82, 8
+    bar_x = x + (95 if compact else 108)
+    bar_y = y + (29 if compact else 34)
+    bar_w, bar_h = (70, 7) if compact else (82, 8)
     cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
                   (40, 40, 40), -1)
     cv2.rectangle(image, (bar_x, bar_y),
@@ -626,11 +655,15 @@ def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED
 def show_palm_stop_message(window_name, image):
     """Show a brief confirmation before leaving the exercise window."""
     h, w = image.shape[:2]
-    draw_glass_panel(image, w // 2 - 145, h // 2 - 30,
-                     290, 60, alpha=0.78, radius=12)
-    cv2.putText(image, "PALM STOP DETECTED", (w // 2 - 120, h // 2 + 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, ACCENT_GREEN, 2, cv2.LINE_AA)
-    cv2.imshow(window_name, image)
+    panel_w = min(220, w - 20)
+    panel_h = 48 if h <= 240 else 60
+    x = w // 2 - panel_w // 2
+    y = h // 2 - panel_h // 2
+    draw_glass_panel(image, x, y, panel_w, panel_h, alpha=0.78, radius=12)
+    cv2.putText(image, "PALM STOP DETECTED", (x + 16, y + panel_h // 2 + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42 if h <= 240 else 0.55,
+                ACCENT_GREEN, 1 if h <= 240 else 2, cv2.LINE_AA)
+    show_frame(window_name, image)
     cv2.waitKey(500)
 
 
@@ -678,21 +711,23 @@ def run_bicep_curls():
             feedback = "LOWER SLOWLY"
 
         bar_val = np.interp(angle, (CURL_UP_ANGLE, CURL_DOWN_ANGLE), (100, 0))
-        bar_x = img_w - 35 if side_name == "Left" else img_w - 18
-        bar_y_top = 100
-        bar_h = 120
+        bar_w = 10 if img_h <= 240 else 14
+        bar_gap = 15 if img_h <= 240 else 17
+        bar_x = img_w - (bar_gap * 2) if side_name == "Left" else img_w - bar_gap
+        bar_y_top = int(img_h * 0.42)
+        bar_h = int(img_h * 0.34) if img_h <= 240 else 120
         fill_h = int(bar_val * bar_h / 100)
 
         draw_glass_panel(image, bar_x - 3, bar_y_top - 18,
-                         20, bar_h + 30, alpha=0.6, radius=6)
+                         bar_w + 6, bar_h + 30, alpha=0.6, radius=6)
         cv2.putText(image, side_name[0], (bar_x, bar_y_top - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
         cv2.rectangle(image, (bar_x, bar_y_top),
-                      (bar_x + 14, bar_y_top + bar_h), (40, 40, 40), -1)
+                      (bar_x + bar_w, bar_y_top + bar_h), (40, 40, 40), -1)
         cv2.rectangle(image, (bar_x, bar_y_top + bar_h - fill_h),
-                      (bar_x + 14, bar_y_top + bar_h), color, -1)
+                      (bar_x + bar_w, bar_y_top + bar_h), color, -1)
         cv2.rectangle(image, (bar_x, bar_y_top),
-                      (bar_x + 14, bar_y_top + bar_h), (60, 60, 60), 1)
+                      (bar_x + bar_w, bar_y_top + bar_h), (60, 60, 60), 1)
 
         return feedback, color, state_dict['stage'].upper()
 
@@ -702,10 +737,8 @@ def run_bicep_curls():
     }
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Bicep Curls', 1280, 720)
+    set_camera_resolution(cap)
+    setup_display_window('Bicep Curls')
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
@@ -767,28 +800,26 @@ def run_bicep_curls():
 
                 draw_skeleton(image, results)
 
-                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
+                draw_glass_panel(image, 5, 5, 205, 90, alpha=0.65, radius=10)
                 cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
                 cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
-                cv2.putText(image, l_fb, (120, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
-                cv2.putText(image, r_fb, (120, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
-                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, l_clr, 2)
+                cv2.putText(image, l_fb, (100, 58),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, l_clr, 1)
+                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 82),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, r_clr, 2)
+                cv2.putText(image, r_fb, (100, 82),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, r_clr, 1)
 
             draw_feedback_panel(image, "FORM FEEDBACK", feedback_lines,
-                                feedback_color, y=132, width=280)
+                                feedback_color, y=98, width=205)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Bicep Curls', image)
                 break
 
-            cv2.imshow('Bicep Curls', image)
+            show_frame('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
@@ -821,6 +852,8 @@ def run_pushups():
     pushup_stage = 'up'
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
+    set_camera_resolution(cap)
+    setup_display_window('Push-ups')
     print("💪 Push-up Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -896,13 +929,13 @@ def run_pushups():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.3, TEXT_DIM, 1)
 
             draw_feedback_panel(image, "FORM FEEDBACK", feedback_lines,
-                                feedback_color, y=100, width=260)
+                                feedback_color, y=95, width=205)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Push-ups', image)
                 break
 
-            cv2.imshow('Push-ups', image)
+            show_frame('Push-ups', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
@@ -924,8 +957,8 @@ def run_squats():
     down_angle = SQUAT_DOWN_ANGLE
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    set_camera_resolution(cap)
+    setup_display_window('Squats')
 
     print("🦵 Squat Counter Active! Press Q to quit.")
 
@@ -1003,21 +1036,21 @@ def run_squats():
             img_h, img_w = image.shape[:2]
 
             # Main stats panel
-            draw_glass_panel(image, 5, 5, 250, 85, alpha=0.65, radius=10)
+            draw_glass_panel(image, 5, 5, 205, 75, alpha=0.65, radius=10)
             accent = ACCENT_GREEN if posture_correct else ACCENT_RED
-            cv2.rectangle(image, (5, 5), (9, 90), accent, -1)
+            cv2.rectangle(image, (5, 5), (9, 80), accent, -1)
             cv2.putText(image, "SQUATS", (18, 26),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
             cv2.putText(image, str(counter), (18, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, TEXT_WHITE, 2, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, TEXT_WHITE, 2, cv2.LINE_AA)
             cv2.putText(image, "reps", (80, 65),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
-            cv2.putText(image, stage.upper(), (140, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, accent, 2, cv2.LINE_AA)
+            cv2.putText(image, stage.upper(), (130, 65),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, accent, 2, cv2.LINE_AA)
 
             # Arc gauge for hip angle
-            gauge_cx, gauge_cy = img_w - 60, 60
-            gauge_r = 40
+            gauge_r = 28 if img_h <= 240 else 40
+            gauge_cx, gauge_cy = img_w - gauge_r - 20, gauge_r + 20
             draw_glass_panel(image, gauge_cx - gauge_r - 8, 5,
                              gauge_r * 2 + 16, gauge_r * 2 + 25,
                              alpha=0.6, radius=10)
@@ -1028,20 +1061,21 @@ def run_squats():
             cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
                         0, 360 - sweep, 360, accent, 3)
             cv2.putText(image, f"{int(current_hip_angle)}",
-                        (gauge_cx - 15, gauge_cy + 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 1, cv2.LINE_AA)
+                        (gauge_cx - 13, gauge_cy + 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45 if img_h <= 240 else 0.55,
+                        TEXT_WHITE, 1, cv2.LINE_AA)
             cv2.putText(image, "angle",
                         (gauge_cx - 18, gauge_cy + gauge_r + 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
 
             draw_feedback_panel(image, "FORM FEEDBACK", [squat_feedback],
-                                feedback_color, y=100, width=260)
+                                feedback_color, y=86, width=205)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Squats', image)
                 break
 
-            cv2.imshow('Squats', image)
+            show_frame('Squats', image)
 
             if cv2.waitKey(5) & 0xFF == ord('q'):
                 break
@@ -1074,6 +1108,8 @@ def run_plank():
         return in_plank_state, plank_start, 0
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
+    set_camera_resolution(cap)
+    setup_display_window('Plank')
     print("🧘 Plank Timer Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1116,8 +1152,8 @@ def run_plank():
 
             draw_skeleton(image, results)
 
-            ring_cx, ring_cy, ring_r = 55, 88, 38
-            draw_glass_panel(image, 5, 5, 230, ring_r * 2 + 50,
+            ring_cx, ring_cy, ring_r = 42, 72, 28
+            draw_glass_panel(image, 5, 5, 205, ring_r * 2 + 42,
                              alpha=0.65, radius=10)
 
             state_color = ACCENT_GREEN if in_plank else ACCENT_ORANGE
@@ -1145,19 +1181,19 @@ def run_plank():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1, cv2.LINE_AA)
 
             cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, state_color, 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, state_color, 1, cv2.LINE_AA)
             cv2.putText(image, f"Total: {plank_timer:.1f}s",
                         (ring_cx + ring_r + 12, ring_cy + 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_WHITE, 1, cv2.LINE_AA)
 
             draw_feedback_panel(image, "FORM FEEDBACK", [plank_feedback],
-                                feedback_color, y=ring_r * 2 + 63, width=260)
+                                feedback_color, y=ring_r * 2 + 50, width=205)
             draw_palm_stop_status(image, palm_stop_frames)
             if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                 show_palm_stop_message('Plank', image)
                 break
 
-            cv2.imshow('Plank', image)
+            show_frame('Plank', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
@@ -1198,8 +1234,7 @@ def main():
 
     cap.set(cv2.CAP_PROP_FOURCC,
             cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    set_camera_resolution(cap)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
@@ -1234,7 +1269,7 @@ def main():
     print()
 
     if SHOW_WINDOW:
-        cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
+        setup_display_window('Person Follower')
 
     fps          = 0
     fps_counter  = 0
@@ -1356,10 +1391,7 @@ def main():
                    shoulder_width, fps, d_zone, h_zone)
 
         if SHOW_WINDOW:
-            scale_w = int(CAMERA_WIDTH  * WINDOW_SCALE)
-            scale_h = int(CAMERA_HEIGHT * WINDOW_SCALE)
-            display = cv2.resize(frame, (scale_w, scale_h))
-            cv2.imshow('Person Follower', display)
+            show_frame('Person Follower', frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
