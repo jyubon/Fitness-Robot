@@ -13,7 +13,8 @@ import cv2
 import mediapipe as mp
 import time
 import numpy as np
-import socket
+import serial
+import json
 import signal
 import sys
 
@@ -22,12 +23,12 @@ import sys
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════
 
-# ─── ESP32 ───
-ESP32_IP   = "10.249.231.70"   # ← Your ESP32 IP
-ESP32_PORT = 8888
+# ─── ESP32 Serial (UART 5 - GPIO 12/13) ───
+SERIAL_PORT = "/dev/ttyAMA1"
+BAUD_RATE = 115200
 
-# ─── Camera (C270) ───
-CAMERA_INDEX  = 0
+# ─── Camera (2K Webcam) ───
+CAMERA_INDEX  = 1
 CAMERA_WIDTH  = 320            # Lower = faster on RPi4
 CAMERA_HEIGHT = 240
 FRAME_SKIP    = 1              # Process every frame on RPi4
@@ -93,14 +94,18 @@ def check_plank(shoulder, hip, ankle, threshold=0.1):
 
 
 # ═══════════════════════════════════════════════════════
-#  ESP32 UDP SENDER
+#  ESP32 SERIAL SENDER
 # ═══════════════════════════════════════════════════════
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setblocking(False)
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)
+    print(f"✅ Serial → {SERIAL_PORT} @ {BAUD_RATE} baud")
+except Exception as e:
+    print(f"❌ Failed to open serial port: {e}")
+    ser = None
+
 current_command  = "STOP"
 last_command_time = 0
-print(f"✅ UDP → {ESP32_IP}:{ESP32_PORT}")
-
 
 def send_command(command):
     """Send command to ESP32 only when changed."""
@@ -109,15 +114,19 @@ def send_command(command):
 
     if (command != current_command or
             now - last_command_time > 1.0):
-        try:
-            sock.sendto(
-                command.encode('utf-8'),
-                (ESP32_IP, ESP32_PORT)
-            )
+        if ser and ser.is_open:
+            try:
+                payload = {"cmd": command, "spd": 0}
+                message = json.dumps(payload) + '\n'
+                ser.write(message.encode('utf-8'))
+                ser.flush()
+                if DEBUG and command != current_command:
+                    print(f"  📡 → ESP32 (Serial): {message.strip()}")
+            except Exception as e:
+                print(f"  [TX ERROR] {e}")
+        else:
             if DEBUG and command != current_command:
-                print(f"  📡 → ESP32: {command}")
-        except Exception:
-            pass
+                print(f"  ⚠️ Serial not open, would send: {command}")
 
         current_command   = command
         last_command_time = now
@@ -485,11 +494,13 @@ def run_bicep_curls():
     """Bicep curl counter with form detection for both arms."""
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
-            return "N/A", ACCENT_RED, "---"
+            return "N/A", ACCENT_RED, "---", False, False
 
         angle = calculate_angle(shoulder, elbow, wrist)
 
-        flare_error = abs(shoulder[0] - elbow[0]) > 0.1
+        # Only evaluate flare/tuck error when forearm is coming up (arm is bent)
+        forearm_up = angle < 135
+        flare_error = (abs(shoulder[0] - elbow[0]) > 0.070) and forearm_up
         color = ACCENT_GREEN
         feedback = "GOOD"
 
@@ -501,8 +512,11 @@ def run_bicep_curls():
             state_dict['stage'] = "down"
         if angle < 30 and state_dict['stage'] == "down":
             state_dict['stage'] = "up"
+            state_dict['counter'] += 1
             if not flare_error:
-                state_dict['counter'] += 1
+                return feedback, color, state_dict['stage'].upper(), False, True
+            else:
+                return feedback, color, state_dict['stage'].upper(), True, False
 
         bar_val = np.interp(angle, (30, 150), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
@@ -521,12 +535,14 @@ def run_bicep_curls():
         cv2.rectangle(image, (bar_x, bar_y_top),
                       (bar_x + 14, bar_y_top + bar_h), (60, 60, 60), 1)
 
-        return feedback, color, state_dict['stage'].upper()
+        return feedback, color, state_dict['stage'].upper(), False, False
 
     arms = {
         'left': {'counter': 0, 'stage': 'down'},
         'right': {'counter': 0, 'stage': 'down'}
     }
+    tuck_count = 0
+    form_warning_until = 0
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
@@ -555,8 +571,16 @@ def run_bicep_curls():
                 l_s, l_e, l_w = get_pt(lm, 11), get_pt(lm, 13), get_pt(lm, 15)
                 r_s, r_e, r_w = get_pt(lm, 12), get_pt(lm, 14), get_pt(lm, 16)
 
-                l_fb, l_clr, l_stg = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+                l_fb, l_clr, l_stg, l_bad, l_good = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
+                r_fb, r_clr, r_stg, r_bad, r_good = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+
+                if l_bad:
+                    tuck_count += 1
+                if r_bad:
+                    tuck_count += 1
+
+                if l_good or r_good:
+                    tuck_count = 0
 
                 draw_skeleton(image, results)
 
@@ -573,6 +597,17 @@ def run_bicep_curls():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+
+                if tuck_count >= 4:
+                    form_warning_until = time.time() + 4
+                    tuck_count = 0
+                    print("\n⚠️  Gemini: Drop your weight and focus on your form!")
+
+            if time.time() < form_warning_until:
+                warn_msg = "Drop your weight and focus on your form!"
+                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, radius=10)
+                cv2.putText(image, warn_msg, (15, img_h - 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
 
             cv2.imshow('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
@@ -906,6 +941,28 @@ def main():
     ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"✅ Camera: {aw}x{ah}")
 
+    # Verify serial connection status
+    if ser and ser.is_open:
+        print("⏳ Verifying connection to ESP32...")
+        try:
+            ser.write(json.dumps({"cmd": "PING", "spd": 0}).encode('utf-8') + b'\n')
+            ser.flush()
+            
+            ping_start = time.time()
+            verified = False
+            while time.time() - ping_start < 2.0:
+                if ser.in_waiting:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if "PONG" in line:
+                        verified = True
+                        break
+            if verified:
+                print("✅ Connection verified! ESP32 is responding.")
+            else:
+                print("⚠️  Connection timeout: No PONG response from ESP32.")
+        except Exception as e:
+            print(f"⚠️  Connection verification failed: {e}")
+
     # Signal handler
     def shutdown(sig, frame):
         print("\n🛑 Stopping...")
@@ -914,7 +971,7 @@ def main():
         cap.release()
         cv2.destroyAllWindows()
         landmarker.close()
-        sock.close()
+        if ser: ser.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -1074,7 +1131,7 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
     landmarker.close()
-    sock.close()
+    if ser: ser.close()
     print("\n✅ Done!")
 
 
