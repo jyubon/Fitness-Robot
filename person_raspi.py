@@ -23,8 +23,8 @@ import sys
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════
 
-# ─── ESP32 Serial (UART 5 - GPIO 12/13) ───
-SERIAL_PORT = "/dev/ttyAMA1"
+# ─── ESP32 Serial (Default UART - GPIO 14/15) ───
+SERIAL_PORT = "/dev/serial0"
 BAUD_RATE = 115200
 
 # ─── Camera (2K Webcam) ───
@@ -50,8 +50,20 @@ COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
-SHOW_WINDOW  = True
+SHOW_WINDOW  = False
 WINDOW_SCALE = 2.0           # 320x240 → 640x480
+
+if not SHOW_WINDOW:
+    # Headless Mode: Mock cv2 window functions to prevent Qt display errors
+    cv2.imshow = lambda *args, **kwargs: None
+    cv2.namedWindow = lambda *args, **kwargs: None
+    cv2.resizeWindow = lambda *args, **kwargs: None
+    cv2.destroyAllWindows = lambda *args, **kwargs: None
+    def mock_waitkey(delay=0):
+        if delay > 0:
+            time.sleep(delay / 1000.0)
+        return 255
+    cv2.waitKey = mock_waitkey
 
 # ─── Debug ───
 DEBUG    = True
@@ -131,8 +143,7 @@ def send_command(command):
             now - last_command_time > 1.0):
         if ser and ser.is_open:
             try:
-                payload = {"cmd": command, "spd": 0}
-                message = json.dumps(payload) + '\n'
+                message = f"MOTOR:{command}\n"
                 ser.write(message.encode('utf-8'))
                 ser.flush()
                 if DEBUG and command != current_command:
@@ -170,17 +181,17 @@ def calculate_command(person_x, shoulder_width):
     else:
         d_zone = "GOOD"
 
-    # 8-direction matrix
+    # 8-direction matrix matching esp_commands.ino
     matrix = {
-        ("FAR",   "LEFT"):   "FWD_LEFT",
-        ("FAR",   "CENTER"): "FORWARD",
-        ("FAR",   "RIGHT"):  "FWD_RIGHT",
+        ("FAR",   "LEFT"):   "VEER_LEFT",
+        ("FAR",   "CENTER"): "FWD",
+        ("FAR",   "RIGHT"):  "VEER_RIGHT",
         ("GOOD",  "LEFT"):   "LEFT",
         ("GOOD",  "CENTER"): "STOP",
         ("GOOD",  "RIGHT"):  "RIGHT",
-        ("CLOSE", "LEFT"):   "BWD_LEFT",
-        ("CLOSE", "CENTER"): "BACKWARD",
-        ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+        ("CLOSE", "LEFT"):   "VEER_LEFT",
+        ("CLOSE", "CENTER"): "BACK",
+        ("CLOSE", "RIGHT"):  "VEER_RIGHT",
     }
 
     command = matrix.get((d_zone, h_zone), "STOP")
@@ -199,10 +210,8 @@ CMD_COLORS = {
     'BACKWARD':  (100, 100, 220),
     'LEFT':      (210, 190, 80),
     'RIGHT':     (200, 120, 200),
-    'FWD_LEFT':  (180, 210, 100),
-    'FWD_RIGHT': (160, 200, 120),
-    'BWD_LEFT':  (180, 100, 200),
-    'BWD_RIGHT': (140, 100, 210),
+    'VEER_LEFT':  (180, 210, 100),
+    'VEER_RIGHT': (160, 200, 120),
     'STOP':      (140, 140, 140),
     'SEARCH':    (100, 170, 230),
 }
@@ -616,8 +625,11 @@ def show_palm_stop_message(window_name, image):
     scale_w = int(w * WINDOW_SCALE)
     scale_h = int(h * WINDOW_SCALE)
     display = cv2.resize(image, (scale_w, scale_h))
-    cv2.imshow(window_name, display)
-    cv2.waitKey(500)
+    if SHOW_WINDOW:
+        cv2.imshow(window_name, display)
+        cv2.waitKey(500)
+    else:
+        time.sleep(0.5)
 
 
 def detect_pose_frame(landmarker, frame_bgr, timestamp_ms):
@@ -642,21 +654,65 @@ def get_pt(lm, idx, min_vis=0.5, use_z=False):
 # ═══════════════════════════════════════════════════════
 session_errors = set()
 last_printed_errors = {}
+consecutive_errors = {}
+last_error_time = {}
 
 def clear_session_errors():
     """Clear session error tracking."""
-    global session_errors, last_printed_errors
+    global session_errors, last_printed_errors, consecutive_errors, last_error_time
     session_errors = set()
     last_printed_errors = {}
+    consecutive_errors = {}
+    last_error_time = {}
+
+def play_audio_for_error(err_msg):
+    track = 0
+    if "GET IN POSITION" in err_msg or "Align horizontally" in err_msg: track = 1
+    elif "Don't go too deep in squats" in err_msg: track = 2
+    elif "Equalize both hands" in err_msg: track = 3
+    elif "Extend arms straight and directly in front of you" in err_msg: track = 4
+    elif "Form a straight line with body" in err_msg: track = 5
+    elif "Keep feet at shoulder distance" in err_msg: track = 6
+    elif "Look in front of you" in err_msg: track = 7
+    elif "Slow down! Curling too fast" in err_msg: track = 8
+    elif "Stand at shoulder width and keep knees in front of body" in err_msg: track = 9
+    elif "Tuck elbow closer to your body" in err_msg: track = 10
+    elif "Do not swing arm" in err_msg or "Keep hands in straight position without swinging" in err_msg: track = 11
+
+    if track > 0:
+        if ser and ser.is_open:
+            try:
+                # Send AUDIO command for esp_commands.ino
+                audio_cmd = f"AUDIO:{track}\n"
+                ser.write(audio_cmd.encode('utf-8'))
+                ser.flush()
+                print(f"  🔊 Triggered Audio: Track {track}")
+            except Exception as e:
+                print(f"  [TX ERROR] Failed to send audio: {e}")
 
 def log_session_error(err_msg, cooldown=3.0):
     """Log an error to the session errors set and print it with a cooldown."""
-    global session_errors, last_printed_errors
+    global session_errors, last_printed_errors, consecutive_errors, last_error_time
     session_errors.add(err_msg)
     now = time.time()
+    
+    # Reset consecutive count if error hasn't happened in 6 seconds
+    if err_msg in last_error_time and now - last_error_time[err_msg] > 6.0:
+        consecutive_errors[err_msg] = 0
+        
+    last_error_time[err_msg] = now
+
     if err_msg not in last_printed_errors or now - last_printed_errors[err_msg] > cooldown:
         print(f"  [SESSION WARNING] {err_msg}")
         last_printed_errors[err_msg] = now
+        
+        # Increment consecutive error count (each print is 1 consecutive occurence)
+        consecutive_errors[err_msg] = consecutive_errors.get(err_msg, 0) + 1
+        
+        # Play audio if it happened 3 times consecutively
+        if consecutive_errors[err_msg] >= 3:
+            play_audio_for_error(err_msg)
+            consecutive_errors[err_msg] = 0
 
 def print_session_error_summary():
     """Print a summary of all unique errors logged in the session."""
@@ -680,15 +736,6 @@ def run_bicep_curls():
 
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
-<<<<<<< HEAD
-            return "N/A", ACCENT_RED, "---", False, False
-
-        angle = calculate_angle(shoulder, elbow, wrist)
-
-        # Only evaluate flare/tuck error when forearm is coming up (arm is bent)
-        forearm_up = angle < 135
-        flare_error = (abs(shoulder[0] - elbow[0]) > 0.070) and forearm_up
-=======
             return "N/A", ACCENT_RED, "---", False
 
         angle = calculate_angle(shoulder, elbow, wrist)
@@ -698,8 +745,9 @@ def run_bicep_curls():
             if abs(wrist[0] - elbow[0]) > 0.08:
                 swing_error = True
 
-        flare_error = abs(shoulder[0] - elbow[0]) > 0.1
->>>>>>> 2c4cab3e3cb9e8eaf75551c537dbc8dc33f5f012
+        # Only evaluate flare/tuck error when forearm is coming up (arm is bent)
+        forearm_up = angle < 135
+        flare_error = (abs(shoulder[0] - elbow[0]) > 0.070) and forearm_up
         color = ACCENT_GREEN
         feedback = "GOOD"
 
@@ -716,16 +764,8 @@ def run_bicep_curls():
             state_dict['stage'] = "down"
         if angle < 30 and state_dict['stage'] == "down":
             state_dict['stage'] = "up"
-<<<<<<< HEAD
-            state_dict['counter'] += 1
-            if not flare_error:
-                return feedback, color, state_dict['stage'].upper(), False, True
-            else:
-                return feedback, color, state_dict['stage'].upper(), True, False
-=======
             if not flare_error and not swing_error:
                 state_dict['counter'] += 1
->>>>>>> 2c4cab3e3cb9e8eaf75551c537dbc8dc33f5f012
 
         bar_val = np.interp(angle, (30, 150), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
@@ -744,20 +784,12 @@ def run_bicep_curls():
         cv2.rectangle(image, (bar_x, bar_y_top),
                       (bar_x + 14, bar_y_top + bar_h), (60, 60, 60), 1)
 
-<<<<<<< HEAD
-        return feedback, color, state_dict['stage'].upper(), False, False
-=======
         return feedback, color, state_dict['stage'].upper(), swing_error
->>>>>>> 2c4cab3e3cb9e8eaf75551c537dbc8dc33f5f012
 
     arms = {
         'left': {'counter': 0, 'stage': 'down'},
         'right': {'counter': 0, 'stage': 'down'}
     }
-<<<<<<< HEAD
-    tuck_count = 0
-    form_warning_until = 0
-=======
     curl_timestamps = []
     warning_active_until = 0.0
     last_console_warning_time = 0.0
@@ -772,7 +804,6 @@ def run_bicep_curls():
     left_reps_at_set_start = 0
     right_reps_at_set_start = 0
     last_uneven_warning_time = 0.0
->>>>>>> 2c4cab3e3cb9e8eaf75551c537dbc8dc33f5f012
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
@@ -831,18 +862,6 @@ def run_bicep_curls():
                 l_s, l_e, l_w = get_pt(lm, 12), get_pt(lm, 14), get_pt(lm, 16)
                 r_s, r_e, r_w = get_pt(lm, 11), get_pt(lm, 13), get_pt(lm, 15)
 
-<<<<<<< HEAD
-                l_fb, l_clr, l_stg, l_bad, l_good = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg, r_bad, r_good = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
-
-                if l_bad:
-                    tuck_count += 1
-                if r_bad:
-                    tuck_count += 1
-
-                if l_good or r_good:
-                    tuck_count = 0
-=======
                 prev_l_cnt = arms['left']['counter']
                 prev_r_cnt = arms['right']['counter']
 
@@ -870,7 +889,6 @@ def run_bicep_curls():
                     if now - last_console_warning_time > 2.0:
                         log_session_error("Slow down! Curling too fast")
                         last_console_warning_time = now
->>>>>>> 2c4cab3e3cb9e8eaf75551c537dbc8dc33f5f012
 
                 draw_skeleton(image, results)
 
@@ -888,18 +906,6 @@ def run_bicep_curls():
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
 
-<<<<<<< HEAD
-                if tuck_count >= 4:
-                    form_warning_until = time.time() + 4
-                    tuck_count = 0
-                    print("\n⚠️  Gemini: Drop your weight and focus on your form!")
-
-            if time.time() < form_warning_until:
-                warn_msg = "Drop your weight and focus on your form!"
-                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, radius=10)
-                cv2.putText(image, warn_msg, (15, img_h - 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
-=======
             # Show slow down warning banner on screen
             if time.time() < warning_active_until:
                 flash = int(time.time() * 5) % 2 == 0
@@ -986,7 +992,6 @@ def run_bicep_curls():
                 if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                     show_palm_stop_message('Bicep Curls', image)
                     break
->>>>>>> 2c4cab3e3cb9e8eaf75551c537dbc8dc33f5f012
 
             cv2.imshow('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
@@ -999,7 +1004,8 @@ def run_bicep_curls():
         print_session_error_summary()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Bicep Curls Done! Left: {arms['left']['counter']} | Right: {arms['right']['counter']}")
 
 
@@ -1114,6 +1120,7 @@ def run_pushups():
                             if not is_body_straight:
                                 log_session_error("Form a straight line with body")
                         else:
+                            log_session_error("Align horizontally GET IN POSITION")
                             if reps_in_set > 0 and not set_ended:
                                 set_ended = True
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
@@ -1171,7 +1178,8 @@ def run_pushups():
             hand_landmarker.close()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Push-ups Done! Total: {pushup_counter}")
 
 
@@ -1482,7 +1490,8 @@ def run_squats():
         print_session_error_summary()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Squats Done! Total Reps: {counter}")
 
 
@@ -1590,6 +1599,7 @@ def run_plank():
                             if is_looking_around:
                                 log_session_error("Look in front of you")
                         else:
+                            log_session_error("Align horizontally GET IN POSITION")
                             in_plank = False
                             start_time = None
             except Exception:
@@ -1675,7 +1685,8 @@ def run_plank():
         print_session_error_summary()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Plank Done! Total Time: {plank_timer:.2f}s")
 
 
@@ -1723,7 +1734,7 @@ def main():
     if ser and ser.is_open:
         print("⏳ Verifying connection to ESP32...")
         try:
-            ser.write(json.dumps({"cmd": "PING", "spd": 0}).encode('utf-8') + b'\n')
+            ser.write(b"PING\n")
             ser.flush()
             
             ping_start = time.time()
@@ -1747,7 +1758,8 @@ def main():
         send_command("STOP")
         time.sleep(0.2)
         cap.release()
-        cv2.destroyAllWindows()
+        if SHOW_WINDOW:
+            cv2.destroyAllWindows()
         landmarker.close()
         if ser: ser.close()
         sys.exit(0)
@@ -1907,7 +1919,8 @@ def main():
     send_command("STOP")
     time.sleep(0.2)
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     landmarker.close()
     if ser: ser.close()
     print("\n✅ Done!")

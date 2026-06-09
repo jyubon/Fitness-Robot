@@ -1,33 +1,32 @@
-#include <HardwareSerial.h>
 #include <DFRobotDFPlayerMini.h>
+#include <HardwareSerial.h>
 
 // ============================================================
 // UART1 - Raspberry Pi Communication (GPIO 48=RX, 47=TX)
 // ============================================================
-#define PI_UART_RX_PIN 48
-#define PI_UART_TX_PIN 47
+#define PI_UART_RX_PIN 44
+#define PI_UART_TX_PIN 43
 HardwareSerial piSerial(1);
 
 // ============================================================
 // UART2 - DFPlayer Mini Communication (GPIO 39=RX, 40=TX)
 // ============================================================
-#define DF_UART_RX_PIN 39
-#define DF_UART_TX_PIN 40
+#define DF_UART_RX_PIN 40
+#define DF_UART_TX_PIN 39
 HardwareSerial dfSerial(2);
 DFRobotDFPlayerMini dfPlayer;
-d:\University\Semester 01\CM 1900\Project\Projects_2nd _round\Fitness Robot\Codes\Exercises\esp_commands\esp_commands.ino
 
 // ============================================================
 // Ultrasonic Sensor Pins (HC-SR04)
 // ============================================================
 #define TRIG_FRONT 12
 #define ECHO_FRONT 1
-#define TRIG_LEFT  13
-#define ECHO_LEFT  2
+#define TRIG_LEFT 13
+#define ECHO_LEFT 2
 #define TRIG_RIGHT 15
 #define ECHO_RIGHT 42
-#define TRIG_REAR  14
-#define ECHO_REAR  41
+#define TRIG_REAR 14
+#define ECHO_REAR 41
 
 // ============================================================
 // Motor Driver Pins (L298N / TB6612)
@@ -52,69 +51,61 @@ d:\University\Semester 01\CM 1900\Project\Projects_2nd _round\Fitness Robot\Code
 // ============================================================
 // LEDC PWM Configuration
 // ============================================================
-#define FL_PWM_CH  0
-#define FR_PWM_CH  1
-#define RL_PWM_CH  2
-#define RR_PWM_CH  3
-#define PWM_FREQ   1000
-#define PWM_RES    8
+#define FL_PWM_CH 0
+#define FR_PWM_CH 1
+#define RL_PWM_CH 2
+#define RR_PWM_CH 3
+#define PWM_FREQ 1000
+#define PWM_RES 8
 
 // Motor Speed (0-255)
-#define MOTOR_SPEED      255
+#define MOTOR_SPEED 255
 #define MOTOR_SPEED_HALF 128
 
 // Obstacle Detection Threshold
 #define OBSTACLE_THRESHOLD_CM 30
 
 // Command timeout - stop motors if no command received
-#define CMD_TIMEOUT_MS 500
+// Must be LONGER than ANNOUNCE_DELAY_MS to avoid failsafe killing announcements
+#define CMD_TIMEOUT_MS 2000
 
 // ============================================================
 // DFPlayer Audio Track Mapping
 // ============================================================
-// SD Card folder /01/ must contain these tracks:
-// 001.mp3 = "Moving Forward"
-// 002.mp3 = "Moving Backward"
-// 003.mp3 = "Strafing Left"
-// 004.mp3 = "Strafing Right"
-// 005.mp3 = "Moving Forward Left"
-// 006.mp3 = "Moving Forward Right"
-// 007.mp3 = "Moving Backward Left"
-// 008.mp3 = "Moving Backward Right"
-// 009.mp3 = "Stopping"
-// 010.mp3 = "Obstacle Detected"
-#define TRACK_FWD       1
-#define TRACK_BACK      2
-#define TRACK_LEFT      3
-#define TRACK_RIGHT     4
-#define TRACK_FWD_LEFT  5
-#define TRACK_FWD_RIGHT 6
-#define TRACK_BACK_LEFT 7
-#define TRACK_BACK_RIGHT 8
-#define TRACK_STOP      9
-#define TRACK_OBSTACLE  10
+// SD Card folder /01/ contains the posture correction tracks:
+// 001.mp3 = "Align horizontally GET IN POSITION"
+// 002.mp3 = "Don't go too deep in squats"
+// 003.mp3 = "Equalize both hands"
+// 004.mp3 = "Extend arms straight and directly in front of you"
+// 005.mp3 = "Form a straight line with body"
+// 006.mp3 = "Keep feet at shoulder distance"
+// 007.mp3 = "Look in front of you"
+// 008.mp3 = "Slow down! Curling too fast"
+// 009.mp3 = "Stand at shoulder width and keep knees in front of body"
+// 010.mp3 = "Tuck elbow closer to your body"
+// 011.mp3 = "Do not swing arm / Keep hands in straight position without swinging"
 
-// Audio announcement delay before movement (ms)
-#define ANNOUNCE_DELAY_MS 800
+// Audio announcement delay before movement (ms) - only used if a command has a track
+#define ANNOUNCE_DELAY_MS 200
 
 // ============================================================
 // Sensor Data
 // ============================================================
 float distances[4] = {999, 999, 999, 999};
-const char* sensorNames[] = {"FRONT", "LEFT", "RIGHT", "REAR"};
+const char *sensorNames[] = {"FRONT", "LEFT", "RIGHT", "REAR"};
 int trigPins[] = {TRIG_FRONT, TRIG_LEFT, TRIG_RIGHT, TRIG_REAR};
 int echoPins[] = {ECHO_FRONT, ECHO_LEFT, ECHO_RIGHT, ECHO_REAR};
 
 // ============================================================
 // State Variables
 // ============================================================
-String currentCommand    = "";
-String lastCommand       = "";
+String currentCommand = "";
+String lastCommand = "";
 unsigned long lastCmdTime = 0;
-bool dfPlayerReady       = false;
-bool isAnnouncing        = false;
+bool dfPlayerReady = false;
+bool isAnnouncing = false;
 unsigned long announceStartTime = 0;
-String pendingCommand    = "";
+String pendingCommand = "";
 
 // ============================================================
 // SETUP
@@ -138,10 +129,14 @@ void setup() {
   }
 
   // --- Motor Pins ---
-  pinMode(FL_IN1, OUTPUT); pinMode(FL_IN2, OUTPUT);
-  pinMode(FR_IN1, OUTPUT); pinMode(FR_IN2, OUTPUT);
-  pinMode(RL_IN1, OUTPUT); pinMode(RL_IN2, OUTPUT);
-  pinMode(RR_IN1, OUTPUT); pinMode(RR_IN2, OUTPUT);
+  pinMode(FL_IN1, OUTPUT);
+  pinMode(FL_IN2, OUTPUT);
+  pinMode(FR_IN1, OUTPUT);
+  pinMode(FR_IN2, OUTPUT);
+  pinMode(RL_IN1, OUTPUT);
+  pinMode(RL_IN2, OUTPUT);
+  pinMode(RR_IN1, OUTPUT);
+  pinMode(RR_IN2, OUTPUT);
 
   // --- LEDC PWM ---
   initPWM();
@@ -187,7 +182,7 @@ void initDFPlayer() {
   if (dfPlayer.begin(dfSerial, true, true)) {
     dfPlayerReady = true;
     dfPlayer.setTimeOut(500);
-    dfPlayer.volume(25);        // Volume: 0-30
+    dfPlayer.volume(25); // Volume: 0-30
     dfPlayer.EQ(DFPLAYER_EQ_NORMAL);
     dfPlayer.outputDevice(DFPLAYER_DEVICE_SD);
     Serial.println("[DFPlayer] Ready - Volume: 25/30");
@@ -202,18 +197,9 @@ void initDFPlayer() {
 // AUDIO ANNOUNCEMENT
 // ============================================================
 
-// Map command string to track number
+// Map command string to track number (movement commands have no posture tracks)
 int commandToTrack(String cmd) {
-  if (cmd == "FWD")        return TRACK_FWD;
-  if (cmd == "BACK")       return TRACK_BACK;
-  if (cmd == "LEFT")       return TRACK_LEFT;
-  if (cmd == "RIGHT")      return TRACK_RIGHT;
-  if (cmd == "FWD_LEFT")   return TRACK_FWD_LEFT;
-  if (cmd == "FWD_RIGHT")  return TRACK_FWD_RIGHT;
-  if (cmd == "BACK_LEFT")  return TRACK_BACK_LEFT;
-  if (cmd == "BACK_RIGHT") return TRACK_BACK_RIGHT;
-  if (cmd == "STOP")       return TRACK_STOP;
-  return -1;  // Unknown
+  return -1; // Movement commands do not have voice tracks on the SD card (tracks 1-11 are posture only)
 }
 
 // Play audio announcement for a direction
@@ -240,19 +226,26 @@ void announceDirection(String cmd) {
 }
 
 void announceObstacle() {
-  if (!dfPlayerReady) return;
-  dfPlayer.playFolder(1, TRACK_OBSTACLE);
-  Serial.println("[Audio] Playing: Obstacle Detected");
+  // No obstacle track in posture correction audio pack
+  Serial.println("[Audio] Obstacle Detected (no audio track available)");
 }
 
 // ============================================================
 // MOTOR CONTROL
 // ============================================================
 void stopAllMotors() {
-  digitalWrite(FL_IN1, LOW); digitalWrite(FL_IN2, LOW); ledcWrite(FL_PWM_CH, 0);
-  digitalWrite(FR_IN1, LOW); digitalWrite(FR_IN2, LOW); ledcWrite(FR_PWM_CH, 0);
-  digitalWrite(RL_IN1, LOW); digitalWrite(RL_IN2, LOW); ledcWrite(RL_PWM_CH, 0);
-  digitalWrite(RR_IN1, LOW); digitalWrite(RR_IN2, LOW); ledcWrite(RR_PWM_CH, 0);
+  digitalWrite(FL_IN1, LOW);
+  digitalWrite(FL_IN2, LOW);
+  ledcWrite(FL_PWM_CH, 0);
+  digitalWrite(FR_IN1, LOW);
+  digitalWrite(FR_IN2, LOW);
+  ledcWrite(FR_PWM_CH, 0);
+  digitalWrite(RL_IN1, LOW);
+  digitalWrite(RL_IN2, LOW);
+  ledcWrite(RL_PWM_CH, 0);
+  digitalWrite(RR_IN1, LOW);
+  digitalWrite(RR_IN2, LOW);
+  ledcWrite(RR_PWM_CH, 0);
 }
 
 void setMotor(int in1, int in2, int pwmChannel, int speed) {
@@ -277,10 +270,10 @@ void setMotor(int in1, int in2, int pwmChannel, int speed) {
 // MECANUM MOVEMENT FUNCTIONS
 // ============================================================
 void moveForward() {
-  setMotor(FL_IN1, FL_IN2, FL_PWM_CH,  MOTOR_SPEED);
-  setMotor(FR_IN1, FR_IN2, FR_PWM_CH,  MOTOR_SPEED);
-  setMotor(RL_IN1, RL_IN2, RL_PWM_CH,  MOTOR_SPEED);
-  setMotor(RR_IN1, RR_IN2, RR_PWM_CH,  MOTOR_SPEED);
+  setMotor(FL_IN1, FL_IN2, FL_PWM_CH, MOTOR_SPEED);
+  setMotor(FR_IN1, FR_IN2, FR_PWM_CH, MOTOR_SPEED);
+  setMotor(RL_IN1, RL_IN2, RL_PWM_CH, MOTOR_SPEED);
+  setMotor(RR_IN1, RR_IN2, RR_PWM_CH, MOTOR_SPEED);
 }
 
 void moveBackward() {
@@ -292,44 +285,30 @@ void moveBackward() {
 
 void strafeLeft() {
   setMotor(FL_IN1, FL_IN2, FL_PWM_CH, -MOTOR_SPEED);
-  setMotor(FR_IN1, FR_IN2, FR_PWM_CH,  MOTOR_SPEED);
-  setMotor(RL_IN1, RL_IN2, RL_PWM_CH,  MOTOR_SPEED);
+  setMotor(FR_IN1, FR_IN2, FR_PWM_CH, MOTOR_SPEED);
+  setMotor(RL_IN1, RL_IN2, RL_PWM_CH, MOTOR_SPEED);
   setMotor(RR_IN1, RR_IN2, RR_PWM_CH, -MOTOR_SPEED);
 }
 
 void strafeRight() {
-  setMotor(FL_IN1, FL_IN2, FL_PWM_CH,  MOTOR_SPEED);
+  setMotor(FL_IN1, FL_IN2, FL_PWM_CH, MOTOR_SPEED);
   setMotor(FR_IN1, FR_IN2, FR_PWM_CH, -MOTOR_SPEED);
   setMotor(RL_IN1, RL_IN2, RL_PWM_CH, -MOTOR_SPEED);
-  setMotor(RR_IN1, RR_IN2, RR_PWM_CH,  MOTOR_SPEED);
+  setMotor(RR_IN1, RR_IN2, RR_PWM_CH, MOTOR_SPEED);
 }
 
-void moveForwardLeft() {
-  setMotor(FL_IN1, FL_IN2, FL_PWM_CH,  MOTOR_SPEED_HALF);
-  setMotor(FR_IN1, FR_IN2, FR_PWM_CH,  MOTOR_SPEED);
-  setMotor(RL_IN1, RL_IN2, RL_PWM_CH,  MOTOR_SPEED_HALF);
-  setMotor(RR_IN1, RR_IN2, RR_PWM_CH,  MOTOR_SPEED);
-}
-
-void moveForwardRight() {
-  setMotor(FL_IN1, FL_IN2, FL_PWM_CH,  MOTOR_SPEED);
-  setMotor(FR_IN1, FR_IN2, FR_PWM_CH,  MOTOR_SPEED_HALF);
-  setMotor(RL_IN1, RL_IN2, RL_PWM_CH,  MOTOR_SPEED);
-  setMotor(RR_IN1, RR_IN2, RR_PWM_CH,  MOTOR_SPEED_HALF);
-}
-
-void moveBackwardLeft() {
-  setMotor(FL_IN1, FL_IN2, FL_PWM_CH, -MOTOR_SPEED_HALF);
-  setMotor(FR_IN1, FR_IN2, FR_PWM_CH, -MOTOR_SPEED);
-  setMotor(RL_IN1, RL_IN2, RL_PWM_CH, -MOTOR_SPEED_HALF);
-  setMotor(RR_IN1, RR_IN2, RR_PWM_CH, -MOTOR_SPEED);
-}
-
-void moveBackwardRight() {
+void veerLeft() {
   setMotor(FL_IN1, FL_IN2, FL_PWM_CH, -MOTOR_SPEED);
-  setMotor(FR_IN1, FR_IN2, FR_PWM_CH, -MOTOR_SPEED_HALF);
+  setMotor(FR_IN1, FR_IN2, FR_PWM_CH, MOTOR_SPEED);
   setMotor(RL_IN1, RL_IN2, RL_PWM_CH, -MOTOR_SPEED);
-  setMotor(RR_IN1, RR_IN2, RR_PWM_CH, -MOTOR_SPEED_HALF);
+  setMotor(RR_IN1, RR_IN2, RR_PWM_CH, MOTOR_SPEED);
+}
+
+void veerRight() {
+  setMotor(FL_IN1, FL_IN2, FL_PWM_CH, MOTOR_SPEED);
+  setMotor(FR_IN1, FR_IN2, FR_PWM_CH, -MOTOR_SPEED);
+  setMotor(RL_IN1, RL_IN2, RL_PWM_CH, MOTOR_SPEED);
+  setMotor(RR_IN1, RR_IN2, RR_PWM_CH, -MOTOR_SPEED);
 }
 
 // ============================================================
@@ -339,15 +318,20 @@ void executeMovement(String cmd) {
   Serial.print("[MOTOR] Executing: ");
   Serial.println(cmd);
 
-  if      (cmd == "FWD")        moveForward();
-  else if (cmd == "BACK")       moveBackward();
-  else if (cmd == "LEFT")       strafeLeft();
-  else if (cmd == "RIGHT")      strafeRight();
-  else if (cmd == "FWD_LEFT")   moveForwardLeft();
-  else if (cmd == "FWD_RIGHT")  moveForwardRight();
-  else if (cmd == "BACK_LEFT")  moveBackwardLeft();
-  else if (cmd == "BACK_RIGHT") moveBackwardRight();
-  else                          stopAllMotors();
+  if (cmd == "FWD")
+    moveForward();
+  else if (cmd == "BACK")
+    moveBackward();
+  else if (cmd == "LEFT")
+    strafeLeft();
+  else if (cmd == "RIGHT")
+    strafeRight();
+  else if (cmd == "VEER_LEFT")
+    veerLeft();
+  else if (cmd == "VEER_RIGHT")
+    veerRight();
+  else
+    stopAllMotors();
 }
 
 // ============================================================
@@ -361,7 +345,8 @@ float readDistance(int trigPin, int echoPin) {
   digitalWrite(trigPin, LOW);
 
   long duration = pulseIn(echoPin, HIGH, 25000);
-  if (duration == 0) return 999;
+  if (duration == 0)
+    return 999;
 
   float distance = duration * 0.034f / 2.0f;
   return (distance > 400) ? 999 : distance;
@@ -378,36 +363,43 @@ void readAllSensors() {
 // DIRECTION-AWARE OBSTACLE CHECK
 // ============================================================
 bool isSafeToMove(String cmd) {
-  bool frontBlocked = (distances[0] < OBSTACLE_THRESHOLD_CM && distances[0] > 0);
-  bool leftBlocked  = (distances[1] < OBSTACLE_THRESHOLD_CM && distances[1] > 0);
-  bool rightBlocked = (distances[2] < OBSTACLE_THRESHOLD_CM && distances[2] > 0);
-  bool rearBlocked  = (distances[3] < OBSTACLE_THRESHOLD_CM && distances[3] > 0);
+  bool frontBlocked =
+      (distances[0] < OBSTACLE_THRESHOLD_CM && distances[0] > 0);
+  bool leftBlocked = (distances[1] < OBSTACLE_THRESHOLD_CM && distances[1] > 0);
+  bool rightBlocked =
+      (distances[2] < OBSTACLE_THRESHOLD_CM && distances[2] > 0);
+  bool rearBlocked = (distances[3] < OBSTACLE_THRESHOLD_CM && distances[3] > 0);
 
-  if (cmd == "STOP")        return true;
-  if (cmd == "FWD")         return !frontBlocked;
-  if (cmd == "BACK")        return !rearBlocked;
-  if (cmd == "LEFT")        return !leftBlocked;
-  if (cmd == "RIGHT")       return !rightBlocked;
-  if (cmd == "FWD_LEFT")    return !frontBlocked && !leftBlocked;
-  if (cmd == "FWD_RIGHT")   return !frontBlocked && !rightBlocked;
-  if (cmd == "BACK_LEFT")   return !rearBlocked  && !leftBlocked;
-  if (cmd == "BACK_RIGHT")  return !rearBlocked  && !rightBlocked;
+  if (cmd == "STOP")
+    return true;
+  if (cmd == "FWD")
+    return !frontBlocked;
+  if (cmd == "BACK")
+    return !rearBlocked;
+  if (cmd == "LEFT")
+    return !leftBlocked;
+  if (cmd == "RIGHT")
+    return !rightBlocked;
+  if (cmd == "VEER_LEFT")
+    return !leftBlocked;
+  if (cmd == "VEER_RIGHT")
+    return !rightBlocked;
 
-  return false;  // Unknown command - deny
+  return false; // Unknown command - deny
 }
 
 // ============================================================
 // COMMAND VALIDATION WHITELIST
 // ============================================================
-const char* VALID_COMMANDS[] = {
-  "FWD", "BACK", "LEFT", "RIGHT",
-  "FWD_LEFT", "FWD_RIGHT", "BACK_LEFT", "BACK_RIGHT", "STOP"
-};
-const int NUM_COMMANDS = 9;
+const char *VALID_COMMANDS[] = {"FWD",       "BACK",       "LEFT",
+                                "RIGHT",     "VEER_LEFT",  "VEER_RIGHT",
+                                "STOP"};
+const int NUM_COMMANDS = 7;
 
-bool isValidCommand(const String& cmd) {
+bool isValidCommand(const String &cmd) {
   for (int i = 0; i < NUM_COMMANDS; i++) {
-    if (cmd == VALID_COMMANDS[i]) return true;
+    if (cmd == VALID_COMMANDS[i])
+      return true;
   }
   return false;
 }
@@ -418,7 +410,8 @@ bool isValidCommand(const String& cmd) {
 void sendDistances() {
   piSerial.print("DIST:");
   for (int i = 0; i < 4; i++) {
-    if (i > 0) piSerial.print(",");
+    if (i > 0)
+      piSerial.print(",");
     piSerial.print(sensorNames[i]);
     piSerial.print(":");
     piSerial.print(distances[i]);
@@ -430,15 +423,19 @@ void sendDistances() {
 // HANDLE INCOMING COMMAND WITH ANNOUNCE-THEN-MOVE LOGIC
 // ============================================================
 void handleNewCommand(String cmd) {
-  // Same command already running - ignore
-  if (cmd == currentCommand && cmd != "STOP") return;
+  // Same command already running - refresh timeout but don't restart
+  // announcement
+  if (cmd == currentCommand && cmd != "STOP") {
+    lastCmdTime = millis(); // Keep the failsafe timer alive
+    return;
+  }
 
   Serial.print("[CMD] Received: ");
   Serial.println(cmd);
 
   if (cmd == "STOP") {
     // Stop immediately - no announcement delay needed
-    isAnnouncing  = false;
+    isAnnouncing = false;
     pendingCommand = "";
     currentCommand = "STOP";
     stopAllMotors();
@@ -464,24 +461,32 @@ void handleNewCommand(String cmd) {
     return;
   }
 
-  // New valid movement command - announce first, then move
-  pendingCommand     = cmd;
-  isAnnouncing       = true;
-  announceStartTime  = millis();
-  currentCommand     = cmd;
-  lastCmdTime        = millis();
+  // New valid movement command - announce first, then move if track is available
+  int track = commandToTrack(cmd);
+  if (track > 0) {
+    pendingCommand = cmd;
+    isAnnouncing = true;
+    announceStartTime = millis();
+    currentCommand = cmd;
+    lastCmdTime = millis();
 
-  // Stop motors during announcement
-  stopAllMotors();
+    // Stop motors during announcement
+    stopAllMotors();
 
-  // Play direction audio
-  announceDirection(cmd);
+    // Play direction audio
+    announceDirection(cmd);
 
-  Serial.print("[Audio] Announcing: ");
-  Serial.print(cmd);
-  Serial.print(" - Moving in ");
-  Serial.print(ANNOUNCE_DELAY_MS);
-  Serial.println("ms");
+    Serial.print("[Audio] Announcing: ");
+    Serial.print(cmd);
+    Serial.print(" - Moving in ");
+    Serial.print(ANNOUNCE_DELAY_MS);
+    Serial.println("ms");
+  } else {
+    // Execute immediately without delay if there is no audio track
+    executeMovement(cmd);
+    currentCommand = cmd;
+    lastCmdTime = millis();
+  }
 }
 
 // ============================================================
@@ -501,8 +506,8 @@ void loop() {
     Serial.println("[FAILSAFE] No command received - stopping motors");
     stopAllMotors();
     currentCommand = "STOP";
-    isAnnouncing   = false;
-    pendingCommand  = "";
+    isAnnouncing = false;
+    pendingCommand = "";
   }
 
   // --- Announce-then-Move State Machine ---
@@ -516,7 +521,8 @@ void loop() {
         executeMovement(pendingCommand);
         lastCommand = pendingCommand;
       } else {
-        Serial.println("[OBSTACLE] Obstacle appeared during announcement - aborting move");
+        Serial.println(
+            "[OBSTACLE] Obstacle appeared during announcement - aborting move");
         stopAllMotors();
         currentCommand = "STOP";
         announceObstacle();
@@ -530,7 +536,8 @@ void loop() {
   // --- Read Commands from Pi ---
   if (piSerial.available() > 0) {
     String line = piSerial.readStringUntil('\n');
-    if (line.length() == 0) goto skip_cmd;
+    if (line.length() == 0)
+      goto skip_cmd;
 
     line.trim();
 
@@ -545,14 +552,30 @@ void loop() {
       }
 
       handleNewCommand(cmd);
+    } else if (line.startsWith("AUDIO:")) {
+      String trackStr = line.substring(6);
+      trackStr.trim();
+      int track = trackStr.toInt();
+      if (track > 0) {
+        if (dfPlayerReady) {
+          Serial.print("[Audio] Playing custom track ");
+          Serial.println(track);
+          dfPlayer.playFolder(1, track);
+        } else {
+          Serial.println("[Audio] Ignored AUDIO command (DFPlayer not ready)");
+        }
+      }
+    } else if (line.equalsIgnoreCase("PING")) {
+      piSerial.println("PONG");
+      Serial.println("[CMD] Received PING - Responded PONG");
     }
   }
 
-  skip_cmd:
+skip_cmd:
 
   // --- Update DFPlayer state ---
   if (dfPlayerReady) {
-    dfPlayer.readType();  // Keep DFPlayer communication alive
+    dfPlayer.readType(); // Keep DFPlayer communication alive
   }
 
   delay(30);
