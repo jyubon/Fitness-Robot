@@ -13,7 +13,8 @@ import cv2
 import mediapipe as mp
 import time
 import numpy as np
-import socket
+import serial
+import json
 import signal
 import sys
 
@@ -22,12 +23,12 @@ import sys
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════
 
-# ─── ESP32 ───
-ESP32_IP   = "10.249.231.70"   # ← Your ESP32 IP
-ESP32_PORT = 8888
+# ─── ESP32 Serial (Default UART - GPIO 14/15) ───
+SERIAL_PORT = "/dev/serial0"
+BAUD_RATE = 115200
 
-# ─── Camera (C270) ───
-CAMERA_INDEX  = 0
+# ─── Camera (2K Webcam) ───
+CAMERA_INDEX  = 0    #0 for laprop camera , 1 for webcam
 CAMERA_WIDTH  = 320            # Lower = faster on RPi4
 CAMERA_HEIGHT = 240
 FRAME_SKIP    = 1              # Process every frame on RPi4
@@ -49,9 +50,22 @@ COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
-SHOW_WINDOW  = True
+SHOW_WINDOW    = True
 DISPLAY_WIDTH  = 480
 DISPLAY_HEIGHT = 320
+WINDOW_SCALE   = 2.0          # 320x240 → 640x480 (used when SHOW_WINDOW=False override)
+
+if not SHOW_WINDOW:
+    # Headless Mode: Mock cv2 window functions to prevent Qt display errors
+    cv2.imshow = lambda *args, **kwargs: None
+    cv2.namedWindow = lambda *args, **kwargs: None
+    cv2.resizeWindow = lambda *args, **kwargs: None
+    cv2.destroyAllWindows = lambda *args, **kwargs: None
+    def mock_waitkey(delay=0):
+        if delay > 0:
+            time.sleep(delay / 1000.0)
+        return 255
+    cv2.waitKey = mock_waitkey
 
 # ─── Debug ───
 DEBUG    = True
@@ -84,27 +98,45 @@ def calculate_angle_3d(a, b, c):
     return np.degrees(angle)
 
 
+def calculate_lateral_deviation(hip, knee, ankle):
+    """Calculate the 2D lateral deviation angle of the knee relative to the hip-ankle line."""
+    v_ha = np.array([ankle[0] - hip[0], ankle[1] - hip[1]])
+    v_hk = np.array([knee[0] - hip[0], knee[1] - hip[1]])
+    norm_ha = np.linalg.norm(v_ha)
+    norm_hk = np.linalg.norm(v_hk)
+    if norm_ha == 0 or norm_hk == 0:
+        return 0.0
+    cos_angle = np.dot(v_ha, v_hk) / (norm_ha * norm_hk)
+    angle = np.degrees(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+    return angle
+
+
 def calculate_distance(a, b):
     """Calculate Euclidean distance between two points."""
     return np.linalg.norm(np.array(a) - np.array(b))
 
 
-def check_plank(shoulder, hip, ankle, threshold=160):
-    """Check if body is in plank position by shoulder-hip-ankle angle."""
+def check_plank(shoulder, hip, ankle, min_angle=165.0):
+    """Check if body is in plank position by checking if the shoulder-hip-ankle angle is close to straight (165-180 degrees)."""
     if shoulder is None or hip is None or ankle is None:
         return False
-    return calculate_angle(shoulder, hip, ankle) >= threshold
+    angle = calculate_angle(shoulder, hip, ankle)
+    return angle >= min_angle
 
 
 # ═══════════════════════════════════════════════════════
-#  ESP32 UDP SENDER
+#  ESP32 SERIAL SENDER
 # ═══════════════════════════════════════════════════════
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setblocking(False)
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)
+    print(f"✅ Serial → {SERIAL_PORT} @ {BAUD_RATE} baud")
+except Exception as e:
+    print(f"❌ Failed to open serial port: {e}")
+    ser = None
+
 current_command  = "STOP"
 last_command_time = 0
-print(f"✅ UDP → {ESP32_IP}:{ESP32_PORT}")
-
 
 def send_command(command):
     """Send command to ESP32 only when changed."""
@@ -113,15 +145,18 @@ def send_command(command):
 
     if (command != current_command or
             now - last_command_time > 1.0):
-        try:
-            sock.sendto(
-                command.encode('utf-8'),
-                (ESP32_IP, ESP32_PORT)
-            )
+        if ser and ser.is_open:
+            try:
+                message = f"MOTOR:{command}\n"
+                ser.write(message.encode('utf-8'))
+                ser.flush()
+                if DEBUG and command != current_command:
+                    print(f"  📡 → ESP32 (Serial): {message.strip()}")
+            except Exception as e:
+                print(f"  [TX ERROR] {e}")
+        else:
             if DEBUG and command != current_command:
-                print(f"  📡 → ESP32: {command}")
-        except Exception:
-            pass
+                print(f"  ⚠️ Serial not open, would send: {command}")
 
         current_command   = command
         last_command_time = now
@@ -150,17 +185,17 @@ def calculate_command(person_x, shoulder_width):
     else:
         d_zone = "GOOD"
 
-    # 8-direction matrix
+    # 8-direction matrix matching esp_commands.ino
     matrix = {
-        ("FAR",   "LEFT"):   "FWD_LEFT",
-        ("FAR",   "CENTER"): "FORWARD",
-        ("FAR",   "RIGHT"):  "FWD_RIGHT",
+        ("FAR",   "LEFT"):   "VEER_LEFT",
+        ("FAR",   "CENTER"): "FWD",
+        ("FAR",   "RIGHT"):  "VEER_RIGHT",
         ("GOOD",  "LEFT"):   "LEFT",
         ("GOOD",  "CENTER"): "STOP",
         ("GOOD",  "RIGHT"):  "RIGHT",
-        ("CLOSE", "LEFT"):   "BWD_LEFT",
-        ("CLOSE", "CENTER"): "BACKWARD",
-        ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+        ("CLOSE", "LEFT"):   "VEER_LEFT",
+        ("CLOSE", "CENTER"): "BACK",
+        ("CLOSE", "RIGHT"):  "VEER_RIGHT",
     }
 
     command = matrix.get((d_zone, h_zone), "STOP")
@@ -183,6 +218,9 @@ CMD_COLORS = {
     'FWD_RIGHT': (160, 200, 120),
     'BWD_LEFT':  (180, 100, 200),
     'BWD_RIGHT': (140, 100, 210),
+    # Legacy aliases used in draw_zone_grid / draw_direction_indicator
+    'VEER_LEFT':  (180, 210, 100),
+    'VEER_RIGHT': (160, 200, 120),
     'STOP':      (140, 140, 140),
     'SEARCH':    (100, 170, 230),
 }
@@ -506,26 +544,40 @@ def create_pose_landmarker(det_conf=0.5, track_conf=0.5):
     return vision.PoseLandmarker.create_from_options(options)
 
 
-def detect_pose_frame(landmarker, frame_bgr, timestamp_ms):
-    """Run pose detection on a BGR frame; returns (results, new_timestamp_ms)."""
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-    timestamp_ms += 33
-    results = landmarker.detect_for_video(mp_image, timestamp_ms)
-    return results, timestamp_ms
-
-
 def create_hand_landmarker(det_conf=0.6, track_conf=0.6):
-    """Create a HandLandmarker using the MediaPipe Tasks API."""
-    options = vision.HandLandmarkerOptions(
-        base_options=mp_tasks.BaseOptions(model_asset_path=HAND_MODEL_PATH),
-        running_mode=vision.RunningMode.VIDEO,
-        num_hands=1,
-        min_hand_detection_confidence=det_conf,
-        min_hand_presence_confidence=det_conf,
-        min_tracking_confidence=track_conf,
-    )
-    return vision.HandLandmarker.create_from_options(options)
+    """Create a HandLandmarker using the MediaPipe Tasks API. Returns None if task file is missing."""
+    try:
+        options = vision.HandLandmarkerOptions(
+            base_options=mp_tasks.BaseOptions(model_asset_path=HAND_MODEL_PATH),
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=1,
+            min_hand_detection_confidence=det_conf,
+            min_hand_presence_confidence=det_conf,
+            min_tracking_confidence=track_conf,
+        )
+        return vision.HandLandmarker.create_from_options(options)
+    except Exception as e:
+        print(f"⚠️ Warning: Could not initialize hand landmarker: {e}")
+        print("   Palm stop feature will be disabled.")
+        return None
+
+
+def set_camera_resolution(cap):
+    """Set capture frame to configured CAMERA_WIDTH x CAMERA_HEIGHT."""
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+
+
+def setup_display_window(window_name):
+    """Create and size an exercise display window."""
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+
+
+def show_frame(window_name, image):
+    """Resize and display a frame in the named window."""
+    display = cv2.resize(image, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+    cv2.imshow(window_name, display)
 
 
 def detect_hand_frame(hand_landmarker, frame_bgr, timestamp_ms):
@@ -535,30 +587,6 @@ def detect_hand_frame(hand_landmarker, frame_bgr, timestamp_ms):
     timestamp_ms += 33
     results = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
     return results, timestamp_ms
-
-
-def get_pt(lm, idx, min_vis=0.5, use_z=False):
-    """Get landmark [x,y] or [x,y,z] if visible, else None."""
-    p = lm[idx]
-    if p.visibility <= min_vis:
-        return None
-    return [p.x, p.y, p.z] if use_z else [p.x, p.y]
-
-
-def set_camera_resolution(cap):
-    """Use a small capture frame that fits the 480x320 display target."""
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-
-
-def setup_display_window(window_name):
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
-
-
-def show_frame(window_name, image):
-    display = cv2.resize(image, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-    cv2.imshow(window_name, display)
 
 
 def _hand_point(hand_landmarks, idx):
@@ -621,6 +649,8 @@ def update_palm_stop_frames(hand_results, stop_frames):
 
 def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES):
     """Draw palm-stop progress while an exercise is active."""
+    if stop_frames <= 0:
+        return
     h, w = image.shape[:2]
     compact = h <= 240
     panel_w = 180 if compact else 205
@@ -663,8 +693,105 @@ def show_palm_stop_message(window_name, image):
     cv2.putText(image, "PALM STOP DETECTED", (x + 16, y + panel_h // 2 + 5),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.42 if h <= 240 else 0.55,
                 ACCENT_GREEN, 1 if h <= 240 else 2, cv2.LINE_AA)
-    show_frame(window_name, image)
-    cv2.waitKey(500)
+    if SHOW_WINDOW:
+        show_frame(window_name, image)
+        cv2.waitKey(500)
+    else:
+        time.sleep(0.5)
+
+
+def detect_pose_frame(landmarker, frame_bgr, timestamp_ms):
+    """Run pose detection on a BGR frame; returns (results, new_timestamp_ms)."""
+    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    timestamp_ms += 33
+    results = landmarker.detect_for_video(mp_image, timestamp_ms)
+    return results, timestamp_ms
+
+
+def get_pt(lm, idx, min_vis=0.5, use_z=False):
+    """Get landmark [x,y] or [x,y,z] if visible, else None."""
+    p = lm[idx]
+    if p.visibility <= min_vis:
+        return None
+    return [p.x, p.y, p.z] if use_z else [p.x, p.y]
+
+
+# ═══════════════════════════════════════════════════════
+#  SESSION ERROR LOGGER
+# ═══════════════════════════════════════════════════════
+session_errors = set()
+last_printed_errors = {}
+consecutive_errors = {}
+last_error_time = {}
+
+def clear_session_errors():
+    """Clear session error tracking."""
+    global session_errors, last_printed_errors, consecutive_errors, last_error_time
+    session_errors = set()
+    last_printed_errors = {}
+    consecutive_errors = {}
+    last_error_time = {}
+
+def play_audio_for_error(err_msg):
+    track = 0
+    if "GET IN POSITION" in err_msg or "Align horizontally" in err_msg: track = 1
+    elif "Don't go too deep in squats" in err_msg: track = 2
+    elif "Equalize both hands" in err_msg: track = 3
+    elif "Extend arms straight and directly in front of you" in err_msg: track = 4
+    elif "Form a straight line with body" in err_msg: track = 5
+    elif "Keep feet at shoulder distance" in err_msg: track = 6
+    elif "Look in front of you" in err_msg: track = 7
+    elif "Slow down! Curling too fast" in err_msg: track = 8
+    elif "Stand at shoulder width and keep knees in front of body" in err_msg: track = 9
+    elif "Tuck elbow closer to your body" in err_msg: track = 10
+    elif "Do not swing arm" in err_msg or "Keep hands in straight position without swinging" in err_msg: track = 11
+
+    if track > 0:
+        if ser and ser.is_open:
+            try:
+                # Send AUDIO command for esp_commands.ino
+                audio_cmd = f"AUDIO:{track}\n"
+                ser.write(audio_cmd.encode('utf-8'))
+                ser.flush()
+                print(f"  🔊 Triggered Audio: Track {track}")
+            except Exception as e:
+                print(f"  [TX ERROR] Failed to send audio: {e}")
+
+def log_session_error(err_msg, cooldown=3.0):
+    """Log an error to the session errors set and print it with a cooldown."""
+    global session_errors, last_printed_errors, consecutive_errors, last_error_time
+    session_errors.add(err_msg)
+    now = time.time()
+    
+    # Reset consecutive count if error hasn't happened in 6 seconds
+    if err_msg in last_error_time and now - last_error_time[err_msg] > 6.0:
+        consecutive_errors[err_msg] = 0
+        
+    last_error_time[err_msg] = now
+
+    if err_msg not in last_printed_errors or now - last_printed_errors[err_msg] > cooldown:
+        print(f"  [SESSION WARNING] {err_msg}")
+        last_printed_errors[err_msg] = now
+        
+        # Increment consecutive error count (each print is 1 consecutive occurence)
+        consecutive_errors[err_msg] = consecutive_errors.get(err_msg, 0) + 1
+        
+        # Play audio if it happened 3 times consecutively
+        if consecutive_errors[err_msg] >= 3:
+            play_audio_for_error(err_msg)
+            consecutive_errors[err_msg] = 0
+
+def print_session_error_summary():
+    """Print a summary of all unique errors logged in the session."""
+    global session_errors
+    if session_errors:
+        print("\n" + "=" * 50)
+        print("  SESSION ERROR SUMMARY (ALL DETECTED ERRORS)")
+        print("=" * 50)
+        for err in sorted(session_errors):
+            print(f"  • {err}")
+        print("=" * 50 + "\n")
 
 
 # ═══════════════════════════════════════════════════════
@@ -673,6 +800,8 @@ def show_palm_stop_message(window_name, image):
 
 def run_bicep_curls():
     """Bicep curl counter with form detection for both arms."""
+    clear_session_errors()
+
     CURL_UP_ANGLE = 45
     CURL_DOWN_ANGLE = 140
     CURL_LOWER_PROMPT_ANGLE = 55
@@ -680,20 +809,33 @@ def run_bicep_curls():
 
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
-            return "N/A", ACCENT_RED, "---"
+            return "N/A", ACCENT_RED, "---", False
 
         angle = calculate_angle_3d(shoulder, elbow, wrist)
 
+        # Flare check using x-z plane offset (3D)
         elbow_offset = np.linalg.norm(
             np.array([shoulder[0] - elbow[0], shoulder[2] - elbow[2]])
         )
         flare_error = elbow_offset > ELBOW_FLARE_THRESHOLD
+
+        # Swing check using 2D x-displacement
+        swing_error = False
+        if angle < CURL_DOWN_ANGLE:
+            if abs(wrist[0] - elbow[0]) > 0.08:
+                swing_error = True
+
         color = ACCENT_GREEN
         feedback = "EXTEND ARM" if state_dict['stage'] == "unknown" else "GOOD"
 
         if flare_error:
             feedback = "TUCK ELBOW"
             color = ACCENT_ORANGE
+            log_session_error(f"{side_name} Arm: Tuck elbow closer to your body")
+        elif swing_error:
+            feedback = "DONT SWING"
+            color = ACCENT_ORANGE
+            log_session_error(f"{side_name} Arm: Do not swing arm")
 
         if angle > CURL_DOWN_ANGLE:
             state_dict['stage'] = "down"
@@ -701,11 +843,11 @@ def run_bicep_curls():
                 feedback = "CURL UP"
         elif angle < CURL_UP_ANGLE and state_dict['stage'] == "down":
             state_dict['stage'] = "up"
-            if not flare_error:
+            if not flare_error and not swing_error:
                 state_dict['counter'] += 1
                 feedback = "GOOD"
         elif (
-                state_dict['stage'] != "unknown" and
+                state_dict['stage'] not in ("unknown", "up") and
                 angle < CURL_LOWER_PROMPT_ANGLE and
                 not flare_error):
             feedback = "LOWER SLOWLY"
@@ -729,12 +871,26 @@ def run_bicep_curls():
         cv2.rectangle(image, (bar_x, bar_y_top),
                       (bar_x + bar_w, bar_y_top + bar_h), (60, 60, 60), 1)
 
-        return feedback, color, state_dict['stage'].upper()
+        return feedback, color, state_dict['stage'].upper(), swing_error
 
     arms = {
         'left': {'counter': 0, 'stage': 'unknown'},
         'right': {'counter': 0, 'stage': 'unknown'}
     }
+    curl_timestamps = []
+    warning_active_until = 0.0
+    last_console_warning_time = 0.0
+    swing_warning_active_until = 0.0
+    last_swing_warning_time = 0.0
+
+    # Workout set/rep trackers
+    current_set = 1
+    current_set_reps = 0
+    set_finished = False
+    last_rep_time = None
+    left_reps_at_set_start = 0
+    right_reps_at_set_start = 0
+    last_uneven_warning_time = 0.0
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     set_camera_resolution(cap)
@@ -757,99 +913,217 @@ def run_bicep_curls():
             frame = cv2.flip(frame, 1)
             img_h, img_w, _ = frame.shape
             image = frame
-            feedback_lines = ["SHOW BOTH ARMS"]
-            feedback_color = ACCENT_ORANGE
 
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            hand_results, hand_timestamp_ms = detect_hand_frame(
-                hand_landmarker, image, hand_timestamp_ms
-            )
-            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            if hand_landmarker is not None:
+                hand_results, hand_timestamp_ms = detect_hand_frame(
+                    hand_landmarker, image, hand_timestamp_ms
+                )
+                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            else:
+                palm_stop_frames = 0
+
+            # Calculate set stats
+            now = time.time()
+            current_set_left_reps = arms['left']['counter'] - left_reps_at_set_start
+            current_set_right_reps = arms['right']['counter'] - right_reps_at_set_start
+            current_set_reps = min(current_set_left_reps, current_set_right_reps)
+
+            # End current set if >= 8 reps completed and no new reps done for 10 seconds
+            if current_set_reps >= 8 and not set_finished:
+                if last_rep_time is not None and now - last_rep_time > 10.0:
+                    set_finished = True
+                    print(f"\n✅ Set {current_set} Finished! Completed {current_set_reps} reps.")
+
+            # Warn user if the hands have uneven reps in the current set
+            is_uneven = (current_set_left_reps != current_set_right_reps) and (max(current_set_left_reps, current_set_right_reps) > 0)
+            if is_uneven and not set_finished:
+                if now - last_uneven_warning_time > 5.0:
+                    log_session_error(f"Equalize both hands (Left: {current_set_left_reps} | Right: {current_set_right_reps})")
+                    last_uneven_warning_time = now
 
             if results.pose_landmarks and len(results.pose_landmarks) > 0:
                 lm = results.pose_landmarks[0]
 
-                l_s = get_pt(lm, 11, use_z=True)
-                l_e = get_pt(lm, 13, use_z=True)
-                l_w = get_pt(lm, 15, use_z=True)
-                r_s = get_pt(lm, 12, use_z=True)
-                r_e = get_pt(lm, 14, use_z=True)
-                r_w = get_pt(lm, 16, use_z=True)
+                # Swapped to account for camera mirroring: MediaPipe Right (12,14,16) -> Left arm on display
+                l_s = get_pt(lm, 12, use_z=True)
+                l_e = get_pt(lm, 14, use_z=True)
+                l_w = get_pt(lm, 16, use_z=True)
+                r_s = get_pt(lm, 11, use_z=True)
+                r_e = get_pt(lm, 13, use_z=True)
+                r_w = get_pt(lm, 15, use_z=True)
 
-                l_fb, l_clr, l_stg = process_arm(
-                    l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h
-                )
-                r_fb, r_clr, r_stg = process_arm(
-                    r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h
-                )
-                if l_fb == "N/A" or r_fb == "N/A":
-                    missing = []
-                    if l_fb == "N/A":
-                        missing.append("LEFT")
-                    if r_fb == "N/A":
-                        missing.append("RIGHT")
-                    arm_label = "ARMS" if len(missing) > 1 else "ARM"
-                    feedback_lines = [f"SHOW {' & '.join(missing)} {arm_label}"]
-                    feedback_color = ACCENT_ORANGE
-                elif l_fb == "GOOD" and r_fb == "GOOD":
-                    feedback_lines = ["GOOD CURL FORM"]
-                    feedback_color = ACCENT_GREEN
-                else:
-                    feedback_lines = [f"LEFT: {l_fb}", f"RIGHT: {r_fb}"]
-                    feedback_color = ACCENT_ORANGE
+                prev_l_cnt = arms['left']['counter']
+                prev_r_cnt = arms['right']['counter']
+
+                l_fb, l_clr, l_stg, l_swing = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
+                r_fb, r_clr, r_stg, r_swing = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+
+                if l_swing or r_swing:
+                    swing_warning_active_until = now + 1.5
+                    if now - last_swing_warning_time > 3.0:
+                        log_session_error("Keep hands in straight position without swinging")
+                        last_swing_warning_time = now
+
+                if (arms['left']['counter'] > prev_l_cnt) or (arms['right']['counter'] > prev_r_cnt):
+                    curl_timestamps.append(now)
+                    if set_finished:
+                        current_set += 1
+                        left_reps_at_set_start = prev_l_cnt
+                        right_reps_at_set_start = prev_r_cnt
+                        set_finished = False
+                    last_rep_time = now
+
+                curl_timestamps = [t for t in curl_timestamps if now - t <= 2.0]
+                if len(curl_timestamps) >= 4:
+                    warning_active_until = now + 2.0
+                    if now - last_console_warning_time > 2.0:
+                        log_session_error("Slow down! Curling too fast")
+                        last_console_warning_time = now
 
                 draw_skeleton(image, results)
 
-                draw_glass_panel(image, 5, 5, 205, 90, alpha=0.65, radius=10)
+                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
                 cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
                 cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, l_clr, 2)
-                cv2.putText(image, l_fb, (100, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 82),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, r_clr, 2)
-                cv2.putText(image, r_fb, (100, 82),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, r_clr, 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
+                cv2.putText(image, l_fb, (120, 58),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
+                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
+                cv2.putText(image, r_fb, (120, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
+                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
 
-            draw_feedback_panel(image, "FORM FEEDBACK", feedback_lines,
-                                feedback_color, y=98, width=205)
-            draw_palm_stop_status(image, palm_stop_frames)
-            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                show_palm_stop_message('Bicep Curls', image)
-                break
+            # Show slow down warning banner on screen
+            if time.time() < warning_active_until:
+                flash = int(time.time() * 5) % 2 == 0
+                bg_color = (20, 20, 100) if flash else (10, 10, 40)
+                border_color = (0, 0, 255) if flash else (50, 50, 200)
+
+                p_w = int(img_w * 0.7)
+                p_h = 65
+                p_x = (img_w - p_w) // 2
+                p_y = int(img_h * 0.4)
+
+                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
+                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
+
+                warn_msg = "WARNING: SLOW DOWN!"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.7
+                thickness = 2
+                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
+                tx = p_x + (p_w - text_w) // 2
+                ty = p_y + (p_h + text_h) // 2
+
+                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
+                            (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
+
+            # Show swing warning banner on screen
+            if time.time() < swing_warning_active_until:
+                bg_color = (15, 45, 95)
+                border_color = (80, 175, 225)
+
+                p_w = int(img_w * 0.8)
+                p_h = 55
+                p_x = (img_w - p_w) // 2
+                p_y = int(img_h * 0.75)
+
+                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
+                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
+
+                warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.55
+                thickness = 2
+                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
+                tx = p_x + (p_w - text_w) // 2
+                ty = p_y + (p_h + text_h) // 2
+
+                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
+                            (255, 255, 255), thickness, cv2.LINE_AA)
+
+            # Draw set stats panel (Set X, Reps Y)
+            draw_glass_panel(image, 5, 130, 280, 110, alpha=0.65, radius=10)
+            cv2.putText(image, "CURRENT SET STATS", (15, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
+            cv2.putText(image, f"SET: {current_set}", (15, 185),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+            cv2.putText(image, f"REPS: {current_set_reps}", (140, 185),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+
+            # Show individual arm counts in the current set
+            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
+
+            if set_finished:
+                cv2.putText(image, "SET FINISHED (REST)", (15, 230),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
+            else:
+                status_parts = []
+                status_color = TEXT_DIM
+                if is_uneven:
+                    status_parts.append("EQUALIZE BOTH HANDS!")
+                    status_color = ACCENT_ORANGE
+                if current_set_reps >= 8 and last_rep_time is not None:
+                    time_left = max(0.0, 10.0 - (time.time() - last_rep_time))
+                    status_parts.append(f"Rest in: {time_left:.1f}s")
+                    status_color = ACCENT_ORANGE
+
+                if status_parts:
+                    status_text = " | ".join(status_parts)
+                    cv2.putText(image, status_text, (15, 230),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1, cv2.LINE_AA)
+
+            if hand_landmarker is not None:
+                draw_palm_stop_status(image, palm_stop_frames)
+                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                    show_palm_stop_message('Bicep Curls', image)
+                    break
 
             show_frame('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
-        landmarker.close()
-        hand_landmarker.close()
+        if 'landmarker' in locals() and landmarker is not None:
+            landmarker.close()
+        if 'hand_landmarker' in locals() and hand_landmarker is not None:
+            hand_landmarker.close()
+        print_session_error_summary()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Bicep Curls Done! Left: {arms['left']['counter']} | Right: {arms['right']['counter']}")
 
 
 def run_pushups():
-    """Push-up counter using nose-to-shoulder distance."""
-    def count_pushups(nose, shoulders, stage, counter):
-        left, right = np.array(shoulders[0]), np.array(shoulders[1])
-        shoulder_mid = (left + right) / 2.0
-        nose = np.array(nose)
-        nose_shoulder_dist = np.linalg.norm(nose - shoulder_mid)
+    """Push-up counter using elbow angles and body straightness check."""
+    clear_session_errors()
 
-        if nose_shoulder_dist < 0.2 and stage == 'down':
-            stage = 'up'
-        if nose_shoulder_dist > 0.4 and stage == 'up':
-            stage = 'down'
-            counter += 1
-            print(f"  Push-ups Count: {counter}")
+    def count_pushups(shoulder, elbow, wrist, neck, hip, ankle, stage, counter):
+        elbow_angle = calculate_angle(shoulder, elbow, wrist)
+        hip_angle = calculate_angle(neck, hip, ankle)
+        is_body_straight = hip_angle >= 165.0
 
-        return stage, counter, nose_shoulder_dist
+        if is_body_straight:
+            if elbow_angle < 110 and stage == 'up':
+                stage = 'down'
+            elif elbow_angle > 150 and stage == 'down':
+                stage = 'up'
+                counter += 1
+                print(f"  Push-ups Count: {counter}")
+
+        return stage, counter, is_body_straight, elbow_angle
 
     pushup_counter = 0
     pushup_stage = 'up'
+    current_set = 1
+    reps_in_set = 0
+    set_ended = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     set_camera_resolution(cap)
@@ -870,91 +1144,167 @@ def run_pushups():
 
             frame = cv2.flip(frame, 1)
             image = frame
-            pushup_depth = None
-            feedback_lines = ["SHOW FULL BODY"]
-            feedback_color = ACCENT_ORANGE
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            hand_results, hand_timestamp_ms = detect_hand_frame(
-                hand_landmarker, image, hand_timestamp_ms
-            )
-            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            if hand_landmarker is not None:
+                hand_results, hand_timestamp_ms = detect_hand_frame(
+                    hand_landmarker, image, hand_timestamp_ms
+                )
+                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            else:
+                palm_stop_frames = 0
+
+            is_horizontal = False
+            is_body_straight = True
+            elbow_angle = 180.0
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
-                    nose = get_pt(lm, 0)
                     left_shoulder = get_pt(lm, 11)
-                    right_shoulder = get_pt(lm, 12)
                     left_hip = get_pt(lm, 23)
-                    right_hip = get_pt(lm, 24)
                     left_ankle = get_pt(lm, 27)
+                    left_elbow = get_pt(lm, 13)
+                    left_wrist = get_pt(lm, 15)
+
+                    right_shoulder = get_pt(lm, 12)
+                    right_hip = get_pt(lm, 24)
                     right_ankle = get_pt(lm, 28)
-                    if nose and left_shoulder and right_shoulder:
-                        pushup_stage, pushup_counter, pushup_depth = count_pushups(
-                            nose, [left_shoulder, right_shoulder],
-                            pushup_stage, pushup_counter
-                        )
-                        shoulder = left_shoulder or right_shoulder
-                        hip = left_hip or right_hip
-                        ankle = left_ankle or right_ankle
-                        aligned, align_msg, align_color = get_body_alignment_feedback(
-                            shoulder, hip, ankle, "GOOD BODY LINE"
-                        )
-                        if not aligned:
-                            feedback_lines = [align_msg]
-                            feedback_color = align_color
-                        elif pushup_depth < 0.22:
-                            feedback_lines = ["PUSH BACK UP"]
-                            feedback_color = ACCENT_CYAN
-                        elif pushup_depth > 0.38:
-                            feedback_lines = ["GO LOWER"]
-                            feedback_color = ACCENT_ORANGE
+                    right_elbow = get_pt(lm, 14)
+                    right_wrist = get_pt(lm, 16)
+
+                    left_ok = left_shoulder and left_hip and left_ankle and left_elbow and left_wrist
+                    right_ok = right_shoulder and right_hip and right_ankle and right_elbow and right_wrist
+
+                    shoulder, hip, ankle, elbow, wrist = None, None, None, None, None
+                    if left_ok and right_ok:
+                        left_vis = (lm[11].visibility + lm[23].visibility + lm[27].visibility + lm[13].visibility + lm[15].visibility) / 5.0
+                        right_vis = (lm[12].visibility + lm[24].visibility + lm[28].visibility + lm[14].visibility + lm[16].visibility) / 5.0
+                        if left_vis > right_vis:
+                            shoulder, hip, ankle, elbow, wrist = left_shoulder, left_hip, left_ankle, left_elbow, left_wrist
                         else:
-                            feedback_lines = ["GOOD PUSH-UP FORM"]
-                            feedback_color = ACCENT_GREEN
+                            shoulder, hip, ankle, elbow, wrist = right_shoulder, right_hip, right_ankle, right_elbow, right_wrist
+                    elif left_ok:
+                        shoulder, hip, ankle, elbow, wrist = left_shoulder, left_hip, left_ankle, left_elbow, left_wrist
+                    elif right_ok:
+                        shoulder, hip, ankle, elbow, wrist = right_shoulder, right_hip, right_ankle, right_elbow, right_wrist
+
+                    if shoulder and hip and ankle and elbow and wrist:
+                        if left_shoulder and right_shoulder:
+                            neck = [(left_shoulder[0] + right_shoulder[0]) / 2, (left_shoulder[1] + right_shoulder[1]) / 2]
+                        else:
+                            neck = shoulder
+
+                        is_horizontal = abs(shoulder[0] - ankle[0]) > abs(shoulder[1] - ankle[1])
+
+                        if is_horizontal:
+                            prev_counter = pushup_counter
+                            pushup_stage, pushup_counter, is_body_straight, elbow_angle = count_pushups(
+                                shoulder, elbow, wrist, neck, hip, ankle, pushup_stage, pushup_counter
+                            )
+
+                            if pushup_counter > prev_counter:
+                                if set_ended:
+                                    current_set += 1
+                                    reps_in_set = 1
+                                    set_ended = False
+                                else:
+                                    reps_in_set += 1
+
+                            if not is_body_straight:
+                                log_session_error("Form a straight line with body")
+                        else:
+                            log_session_error("Align horizontally GET IN POSITION")
+                            if reps_in_set > 0 and not set_ended:
+                                set_ended = True
+                                print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
             except Exception:
                 pass
 
             draw_skeleton(image, results)
 
-            draw_glass_panel(image, 5, 5, 220, 90, alpha=0.65, radius=10)
-            cv2.putText(image, "PUSH-UPS", (15, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-            stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
-            cv2.putText(image, str(pushup_counter), (15, 68),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, TEXT_WHITE, 2, cv2.LINE_AA)
-            cv2.putText(image, pushup_stage.upper(), (100, 68),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, stage_clr, 2, cv2.LINE_AA)
-            cv2.putText(image, "press Q to quit", (15, 88),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, TEXT_DIM, 1)
+            draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
+            cv2.rectangle(image, (5, 5), (9, 120), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
+            cv2.putText(image, "PUSH-UPS", (18, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
 
-            draw_feedback_panel(image, "FORM FEEDBACK", feedback_lines,
-                                feedback_color, y=95, width=205)
-            draw_palm_stop_status(image, palm_stop_frames)
-            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                show_palm_stop_message('Push-ups', image)
-                break
+            if is_horizontal:
+                stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
+                cv2.putText(image, f"SET: {current_set}", (18, 55),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, pushup_stage.upper(), (18, 88),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, stage_clr, 2, cv2.LINE_AA)
+                cv2.putText(image, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 108),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+            else:
+                cv2.putText(image, f"SET: {current_set}", (18, 55),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, "GET IN POSITION", (18, 88),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACCENT_ORANGE, 2, cv2.LINE_AA)
+                cv2.putText(image, "Align horizontally", (18, 108),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+
+            if is_horizontal and not is_body_straight:
+                warn_msg = "Form a straight line with body!"
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
+                cv2.putText(image, warn_msg, (15, img_h - 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
+
+            if hand_landmarker is not None:
+                draw_palm_stop_status(image, palm_stop_frames)
+                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                    show_palm_stop_message('Push-ups', image)
+                    break
 
             show_frame('Push-ups', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
-        landmarker.close()
-        hand_landmarker.close()
+        if 'landmarker' in locals() and landmarker is not None:
+            landmarker.close()
+        if 'hand_landmarker' in locals() and hand_landmarker is not None:
+            hand_landmarker.close()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Push-ups Done! Total: {pushup_counter}")
 
 
 def run_squats():
     """Squat counter using 3D hip angle."""
+    clear_session_errors()
     counter = 0
     stage = "up"
     SQUAT_DOWN_ANGLE = 110
     SQUAT_UP_ANGLE = 160
     down_angle = SQUAT_DOWN_ANGLE
+
+    # Exercise sets and reps state
+    current_set = 1
+    reps_in_set = 0
+    last_rep_time = None
+    set_started = False
+
+    # Arm check grace period timer
+    arms_incorrect_start_time = None
+
+    # Standing reference coordinates for whole-body displacement verification
+    up_shoulder_y = None
+    up_hip_y = None
+    up_wrist_y = None
+    up_knee_y = None
+
+    # Flags to track if the joints lowered during descent phase
+    lowered_shoulders = False
+    lowered_hips = False
+    lowered_wrists = False
+    lowered_knees = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     set_camera_resolution(cap)
@@ -976,81 +1326,207 @@ def run_squats():
 
             image = frame
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            hand_results, hand_timestamp_ms = detect_hand_frame(
-                hand_landmarker, image, hand_timestamp_ms
-            )
-            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            if hand_landmarker is not None:
+                hand_results, hand_timestamp_ms = detect_hand_frame(
+                    hand_landmarker, image, hand_timestamp_ms
+                )
+                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            else:
+                palm_stop_frames = 0
 
             current_hip_angle = 180
-            posture_correct = False
-            squat_feedback = "SHOW FULL BODY"
-            feedback_color = ACCENT_ORANGE
+            posture_correct = True
+
+            # Posture warnings
+            feet_warning = None
+            arms_warning = None
+            depth_warning = None
+            knees_warning = None
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
 
                     L_shoulder = get_pt(lm, 11, use_z=True)
-                    L_hip = get_pt(lm, 23, use_z=True)
-                    L_knee = get_pt(lm, 25, use_z=True)
                     R_shoulder = get_pt(lm, 12, use_z=True)
+                    L_elbow = get_pt(lm, 13, use_z=True)
+                    R_elbow = get_pt(lm, 14, use_z=True)
+                    L_wrist = get_pt(lm, 15, use_z=True)
+                    R_wrist = get_pt(lm, 16, use_z=True)
+                    L_hip = get_pt(lm, 23, use_z=True)
                     R_hip = get_pt(lm, 24, use_z=True)
+                    L_knee = get_pt(lm, 25, use_z=True)
                     R_knee = get_pt(lm, 26, use_z=True)
+                    L_ankle = get_pt(lm, 27, use_z=True)
+                    R_ankle = get_pt(lm, 28, use_z=True)
 
+                    # --- Form & Posture Checks ---
+
+                    # 1. Feet at shoulder width check (Starting Position)
+                    if all([L_shoulder, R_shoulder, L_ankle, R_ankle]):
+                        shoulder_dist = abs(L_shoulder[0] - R_shoulder[0])
+                        feet_dist = abs(L_ankle[0] - R_ankle[0])
+                        if stage == "up":
+                            if feet_dist < 0.9 * shoulder_dist or feet_dist > 1.4 * shoulder_dist:
+                                feet_warning = "Keep feet at shoulder distance"
+                                log_session_error("Keep feet at shoulder distance")
+
+                    # 2. Arm extension check (10-second grace period)
+                    arms_correct = True
+                    if all([L_shoulder, R_shoulder, L_elbow, R_elbow, L_wrist, R_wrist]):
+                        L_elbow_angle = calculate_angle_3d(L_shoulder, L_elbow, L_wrist)
+                        R_elbow_angle = calculate_angle_3d(R_shoulder, R_elbow, R_wrist)
+
+                        shoulder_dist = abs(L_shoulder[0] - R_shoulder[0])
+                        wrist_dist = abs(L_wrist[0] - R_wrist[0])
+
+                        elbows_straight = (L_elbow_angle > 140.0) and (R_elbow_angle > 140.0)
+                        horizontal_level = (abs(L_wrist[1] - L_shoulder[1]) < 0.35 * shoulder_dist) and \
+                                           (abs(R_wrist[1] - R_shoulder[1]) < 0.35 * shoulder_dist)
+                        not_to_sides = (abs(L_wrist[0] - L_shoulder[0]) < 0.35 * shoulder_dist) and \
+                                       (abs(R_wrist[0] - R_shoulder[0]) < 0.35 * shoulder_dist)
+                        not_together = (wrist_dist >= 0.7 * shoulder_dist)
+
+                        if not (elbows_straight and horizontal_level and not_to_sides and not_together):
+                            arms_correct = False
+                    else:
+                        arms_correct = False
+
+                    if not arms_correct:
+                        if arms_incorrect_start_time is None:
+                            arms_incorrect_start_time = time.time()
+                        elif time.time() - arms_incorrect_start_time > 10.0:
+                            arms_warning = "Extend arms straight and directly in front of you"
+                            log_session_error("Extend arms straight and directly in front of you")
+                    else:
+                        arms_incorrect_start_time = None
+
+                    # Check hip angle (for squat reps and stage classification)
                     if all([L_shoulder, L_hip, L_knee, R_shoulder, R_hip, R_knee]):
                         L_hip_angle = calculate_angle_3d(L_shoulder, L_hip, L_knee)
                         R_hip_angle = calculate_angle_3d(R_shoulder, R_hip, R_knee)
 
                         current_hip_angle = min(L_hip_angle, R_hip_angle)
 
+                        # Standing references updated while standing upright
+                        if current_hip_angle > SQUAT_UP_ANGLE:
+                            up_shoulder_y = (L_shoulder[1] + R_shoulder[1]) / 2.0
+                            up_hip_y = (L_hip[1] + R_hip[1]) / 2.0
+                            up_wrist_y = (L_wrist[1] + R_wrist[1]) / 2.0
+                            up_knee_y = (L_knee[1] + R_knee[1]) / 2.0
+
                         if current_hip_angle < SQUAT_DOWN_ANGLE:
                             stage = "down"
                             if down_angle > current_hip_angle:
                                 down_angle = current_hip_angle
 
+                            # Start set/countdown on first rep movement
+                            if reps_in_set == 0 and not set_started:
+                                set_started = True
+                                last_rep_time = time.time()
+
+                        # Track joint lowering during down phase
+                        if stage == "down" and up_shoulder_y is not None:
+                            curr_shoulder_y = (L_shoulder[1] + R_shoulder[1]) / 2.0
+                            curr_hip_y = (L_hip[1] + R_hip[1]) / 2.0
+                            curr_wrist_y = (L_wrist[1] + R_wrist[1]) / 2.0
+                            curr_knee_y = (L_knee[1] + R_knee[1]) / 2.0
+
+                            shoulder_dist = abs(L_shoulder[0] - R_shoulder[0])
+
+                            if curr_shoulder_y > up_shoulder_y + 0.05 * shoulder_dist:
+                                lowered_shoulders = True
+                            if curr_hip_y > up_hip_y + 0.05 * shoulder_dist:
+                                lowered_hips = True
+                            if curr_wrist_y > up_wrist_y + 0.05 * shoulder_dist:
+                                lowered_wrists = True
+                            if curr_knee_y > up_knee_y + 0.02 * shoulder_dist:
+                                lowered_knees = True
+
                         if current_hip_angle > SQUAT_UP_ANGLE and stage == 'down':
                             stage = "up"
-                            if down_angle > 80:
+                            # Enforce that hands, body (shoulders), knees, and hips all lowered during descent
+                            if lowered_shoulders and lowered_hips and lowered_wrists and lowered_knees:
+                                reps_in_set += 1
                                 counter += 1
-                                print(f"  Rep {counter} completed! Angle: {int(down_angle)}")
+                                print(f"  Rep {reps_in_set} completed! Angle: {int(down_angle)}")
+                                last_rep_time = time.time()
+                                set_started = True
+                            else:
+                                print(f"  Rep ignored: Whole body did not lower. Shoulders: {lowered_shoulders}, Hips: {lowered_hips}, Wrists: {lowered_wrists}, Knees: {lowered_knees}")
+
+                            # Reset descent tracking flags for the next rep
+                            lowered_shoulders = False
+                            lowered_hips = False
+                            lowered_wrists = False
+                            lowered_knees = False
                             down_angle = SQUAT_DOWN_ANGLE
 
-                        posture_correct = stage == "up"
-                        if current_hip_angle < SQUAT_DOWN_ANGLE:
-                            squat_feedback = "GOOD DEPTH"
-                            feedback_color = ACCENT_GREEN
-                        elif stage == "down":
-                            squat_feedback = "STAND TALL"
-                            feedback_color = ACCENT_CYAN
-                        elif current_hip_angle < 145:
-                            squat_feedback = "GO LOWER"
-                            feedback_color = ACCENT_ORANGE
-                        else:
-                            squat_feedback = "GOOD POSTURE"
-                            feedback_color = ACCENT_GREEN
+                    # 3. Squat depth check (Down stage, angle knee-hip & knee-ankle < 80 deg)
+                    if all([L_hip, L_knee, L_ankle, R_hip, R_knee, R_ankle]):
+                        L_knee_angle = calculate_angle_3d(L_hip, L_knee, L_ankle)
+                        R_knee_angle = calculate_angle_3d(R_hip, R_knee, R_ankle)
+
+                        if stage == "down":
+                            if L_knee_angle < 80.0 or R_knee_angle < 80.0:
+                                depth_warning = "Don't go too deep in squats"
+                                log_session_error("Don't go too deep in squats")
+
+                    # 4. Knee direction check (Down stage, knees pointed sideways by > 5 degrees)
+                    if all([L_hip, L_knee, L_ankle, R_hip, R_knee, R_ankle]):
+                        L_dev = calculate_lateral_deviation(L_hip, L_knee, L_ankle)
+                        R_dev = calculate_lateral_deviation(R_hip, R_knee, R_ankle)
+
+                        if stage == "down" and (L_dev > 5.0 or R_dev > 5.0):
+                            knees_warning = "Stand at shoulder width and keep knees in front of body"
+                            log_session_error("Stand at shoulder width and keep knees in front of body")
+
+                    # Posture is correct if no warnings are active
+                    posture_correct = (feet_warning is None) and (arms_warning is None) and \
+                                      (depth_warning is None) and (knees_warning is None)
 
                     draw_skeleton(image, results)
             except Exception:
                 pass
 
+            # --- Set transition / Countdown timer logic ---
+            now_time = time.time()
+            if set_started and last_rep_time is not None:
+                time_elapsed = now_time - last_rep_time
+                time_limit = 15.0 if reps_in_set >= 6 else 20.0
+
+                if time_elapsed > time_limit:
+                    print(f"\n✅ Set {current_set} Finished! Completed {reps_in_set} reps.")
+                    current_set += 1
+                    reps_in_set = 0
+                    set_started = False
+                    last_rep_time = None
+
             img_h, img_w = image.shape[:2]
 
             # Main stats panel
-            draw_glass_panel(image, 5, 5, 205, 75, alpha=0.65, radius=10)
+            draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
             accent = ACCENT_GREEN if posture_correct else ACCENT_RED
-            cv2.rectangle(image, (5, 5), (9, 80), accent, -1)
-            cv2.putText(image, "SQUATS", (18, 26),
+            cv2.rectangle(image, (5, 5), (9, 120), accent, -1)
+            cv2.putText(image, "SQUATS", (18, 24),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
-            cv2.putText(image, str(counter), (18, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, TEXT_WHITE, 2, cv2.LINE_AA)
-            cv2.putText(image, "reps", (80, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
-            cv2.putText(image, stage.upper(), (130, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, accent, 2, cv2.LINE_AA)
+            cv2.putText(image, f"SET: {current_set}", (18, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+            cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+            cv2.putText(image, stage.upper(), (18, 88),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, accent, 2, cv2.LINE_AA)
+
+            if set_started and last_rep_time is not None:
+                time_limit = 15.0 if reps_in_set >= 6 else 20.0
+                time_elapsed = now_time - last_rep_time
+                countdown = max(0.0, time_limit - time_elapsed)
+                cv2.putText(image, f"Rest in: {countdown:.1f}s", (140, 88),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACCENT_ORANGE, 1, cv2.LINE_AA)
 
             # Arc gauge for hip angle
-            gauge_r = 28 if img_h <= 240 else 40
-            gauge_cx, gauge_cy = img_w - gauge_r - 20, gauge_r + 20
+            gauge_cx, gauge_cy = img_w - 60, 60
+            gauge_r = 40
             draw_glass_panel(image, gauge_cx - gauge_r - 8, 5,
                              gauge_r * 2 + 16, gauge_r * 2 + 25,
                              alpha=0.6, radius=10)
@@ -1061,46 +1537,74 @@ def run_squats():
             cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
                         0, 360 - sweep, 360, accent, 3)
             cv2.putText(image, f"{int(current_hip_angle)}",
-                        (gauge_cx - 13, gauge_cy + 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45 if img_h <= 240 else 0.55,
-                        TEXT_WHITE, 1, cv2.LINE_AA)
+                        (gauge_cx - 15, gauge_cy + 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 1, cv2.LINE_AA)
             cv2.putText(image, "angle",
                         (gauge_cx - 18, gauge_cy + gauge_r + 15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
 
-            draw_feedback_panel(image, "FORM FEEDBACK", [squat_feedback],
-                                feedback_color, y=86, width=205)
-            draw_palm_stop_status(image, palm_stop_frames)
-            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                show_palm_stop_message('Squats', image)
-                break
+            # Compile and draw posture warnings panel
+            warnings = []
+            if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                if arms_warning:
+                    warnings.append(arms_warning)
+                if stage == "up" and feet_warning:
+                    warnings.append(feet_warning)
+                if stage == "down":
+                    if depth_warning:
+                        warnings.append(depth_warning)
+                    if knees_warning:
+                        warnings.append(knees_warning)
+
+            if warnings:
+                panel_h = 24 + len(warnings) * 20
+                panel_y = img_h - panel_h - 15
+                draw_glass_panel(image, 10, panel_y, img_w - 20, panel_h, alpha=0.75, color=(20, 20, 40), radius=8)
+                cv2.rectangle(image, (10, panel_y), (img_w - 10, panel_y + panel_h), ACCENT_RED, 1)
+                for idx, warn in enumerate(warnings):
+                    cv2.putText(image, warn, (20, panel_y + 18 + idx * 20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 240), 1, cv2.LINE_AA)
+
+            if hand_landmarker is not None:
+                draw_palm_stop_status(image, palm_stop_frames)
+                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                    show_palm_stop_message('Squats', image)
+                    break
 
             show_frame('Squats', image)
 
             if cv2.waitKey(5) & 0xFF == ord('q'):
                 break
     finally:
-        landmarker.close()
-        hand_landmarker.close()
+        if 'landmarker' in locals() and landmarker is not None:
+            landmarker.close()
+        if 'hand_landmarker' in locals() and hand_landmarker is not None:
+            hand_landmarker.close()
+        print_session_error_summary()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Squats Done! Total Reps: {counter}")
 
 
 def run_plank():
     """Plank timer measuring hold duration."""
+    clear_session_errors()
     plank_timer = 0
     in_plank = False
     start_time = None
 
     def count_plank_time(shoulder, hip, ankle, in_plank_state, plank_start):
         if check_plank(shoulder, hip, ankle):
+            now = time.time()
             if not in_plank_state:
-                plank_start = time.time()
+                plank_start = now
                 in_plank_state = True
+                return in_plank_state, plank_start, 0
             else:
-                elapsed_time = time.time() - plank_start
+                elapsed_time = now - plank_start
+                plank_start = now
                 return in_plank_state, plank_start, elapsed_time
         else:
             in_plank_state = False
@@ -1125,13 +1629,17 @@ def run_plank():
                 break
 
             image = frame
-            plank_feedback = "SHOW FULL BODY"
-            feedback_color = ACCENT_ORANGE
             results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            hand_results, hand_timestamp_ms = detect_hand_frame(
-                hand_landmarker, image, hand_timestamp_ms
-            )
-            palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            if hand_landmarker is not None:
+                hand_results, hand_timestamp_ms = detect_hand_frame(
+                    hand_landmarker, image, hand_timestamp_ms
+                )
+                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            else:
+                palm_stop_frames = 0
+
+            is_horizontal = False
+            is_looking_around = False
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
@@ -1139,25 +1647,79 @@ def run_plank():
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
                     left_ankle = get_pt(lm, 27)
-                    if left_shoulder and left_hip and left_ankle:
-                        in_plank, start_time, elapsed_time = count_plank_time(
-                            left_shoulder, left_hip, left_ankle, in_plank, start_time
-                        )
-                        plank_timer += elapsed_time
-                        _, plank_feedback, feedback_color = get_body_alignment_feedback(
-                            left_shoulder, left_hip, left_ankle, "GOOD HOLD"
-                        )
+                    right_shoulder = get_pt(lm, 12)
+                    right_hip = get_pt(lm, 24)
+                    right_ankle = get_pt(lm, 28)
+
+                    left_ok = left_shoulder and left_hip and left_ankle
+                    right_ok = right_shoulder and right_hip and right_ankle
+
+                    shoulder, hip, ankle = None, None, None
+                    if left_ok and right_ok:
+                        left_vis = (lm[11].visibility + lm[23].visibility + lm[27].visibility) / 3.0
+                        right_vis = (lm[12].visibility + lm[24].visibility + lm[28].visibility) / 3.0
+                        if left_vis > right_vis:
+                            shoulder, hip, ankle = left_shoulder, left_hip, left_ankle
+                        else:
+                            shoulder, hip, ankle = right_shoulder, right_hip, right_ankle
+                    elif left_ok:
+                        shoulder, hip, ankle = left_shoulder, left_hip, left_ankle
+                    elif right_ok:
+                        shoulder, hip, ankle = right_shoulder, right_hip, right_ankle
+
+                    if shoulder and hip and ankle:
+                        if left_shoulder and right_shoulder:
+                            neck = [(left_shoulder[0] + right_shoulder[0]) / 2, (left_shoulder[1] + right_shoulder[1]) / 2]
+                        else:
+                            neck = shoulder
+
+                        is_horizontal = abs(shoulder[0] - ankle[0]) > abs(shoulder[1] - ankle[1])
+
+                        left_ear = get_pt(lm, 7)
+                        right_ear = get_pt(lm, 8)
+                        if left_ear and right_ear and left_shoulder and right_shoulder:
+                            ear_dist = calculate_distance(left_ear, right_ear)
+                            sh_width = calculate_distance(left_shoulder, right_shoulder)
+                            if sh_width > 0 and (ear_dist / sh_width) > 0.35:
+                                is_looking_around = True
+
+                        if is_horizontal:
+                            in_plank, start_time, elapsed_time = count_plank_time(
+                                neck, hip, ankle, in_plank, start_time
+                            )
+                            plank_timer += elapsed_time
+
+                            if not in_plank:
+                                log_session_error("Form a straight line with body")
+                            if is_looking_around:
+                                log_session_error("Look in front of you")
+                        else:
+                            log_session_error("Align horizontally GET IN POSITION")
+                            in_plank = False
+                            start_time = None
             except Exception:
                 pass
 
             draw_skeleton(image, results)
 
-            ring_cx, ring_cy, ring_r = 42, 72, 28
-            draw_glass_panel(image, 5, 5, 205, ring_r * 2 + 42,
+            ring_cx, ring_cy, ring_r = 55, 88, 38
+            draw_glass_panel(image, 5, 5, 230, ring_r * 2 + 50,
                              alpha=0.65, radius=10)
 
-            state_color = ACCENT_GREEN if in_plank else ACCENT_ORANGE
-            state_text = "HOLD" if in_plank else "GET IN POSITION"
+            if is_horizontal:
+                if in_plank:
+                    if is_looking_around:
+                        state_color = ACCENT_ORANGE
+                        state_text = "LOOK FORWARD"
+                    else:
+                        state_color = ACCENT_GREEN
+                        state_text = "HOLD"
+                else:
+                    state_color = ACCENT_RED
+                    state_text = "ALIGN BODY"
+            else:
+                state_color = ACCENT_ORANGE
+                state_text = "GET IN POSITION"
 
             cv2.putText(image, "PLANK", (15, 28),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
@@ -1181,28 +1743,45 @@ def run_plank():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1, cv2.LINE_AA)
 
             cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, state_color, 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, state_color, 1, cv2.LINE_AA)
             cv2.putText(image, f"Total: {plank_timer:.1f}s",
                         (ring_cx + ring_r + 12, ring_cy + 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_WHITE, 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
 
-            draw_feedback_panel(image, "FORM FEEDBACK", [plank_feedback],
-                                feedback_color, y=ring_r * 2 + 50, width=205)
-            draw_palm_stop_status(image, palm_stop_frames)
-            if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                show_palm_stop_message('Plank', image)
-                break
+            if is_horizontal:
+                if not in_plank:
+                    warn_msg = "Form a straight line with body!"
+                    img_h, img_w = image.shape[:2]
+                    draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
+                    cv2.putText(image, warn_msg, (15, img_h - 25),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
+                elif is_looking_around:
+                    warn_msg = "Look in front of you!"
+                    img_h, img_w = image.shape[:2]
+                    draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(15, 45, 95), radius=10)
+                    cv2.putText(image, warn_msg, (15, img_h - 25),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_ORANGE, 2, cv2.LINE_AA)
+
+            if hand_landmarker is not None:
+                draw_palm_stop_status(image, palm_stop_frames)
+                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                    show_palm_stop_message('Plank', image)
+                    break
 
             show_frame('Plank', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
-        landmarker.close()
-        hand_landmarker.close()
+        if 'landmarker' in locals() and landmarker is not None:
+            landmarker.close()
+        if 'hand_landmarker' in locals() and hand_landmarker is not None:
+            hand_landmarker.close()
+        print_session_error_summary()
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Plank Done! Total Time: {plank_timer:.2f}s")
 
 
@@ -1234,7 +1813,8 @@ def main():
 
     cap.set(cv2.CAP_PROP_FOURCC,
             cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-    set_camera_resolution(cap)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
@@ -1245,15 +1825,38 @@ def main():
     ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"✅ Camera: {aw}x{ah}")
 
+    # Verify serial connection status
+    if ser and ser.is_open:
+        print("⏳ Verifying connection to ESP32...")
+        try:
+            ser.write(b"PING\n")
+            ser.flush()
+            
+            ping_start = time.time()
+            verified = False
+            while time.time() - ping_start < 2.0:
+                if ser.in_waiting:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if "PONG" in line:
+                        verified = True
+                        break
+            if verified:
+                print("✅ Connection verified! ESP32 is responding.")
+            else:
+                print("⚠️  Connection timeout: No PONG response from ESP32.")
+        except Exception as e:
+            print(f"⚠️  Connection verification failed: {e}")
+
     # Signal handler
     def shutdown(sig, frame):
         print("\n🛑 Stopping...")
         send_command("STOP")
         time.sleep(0.2)
         cap.release()
-        cv2.destroyAllWindows()
+        if SHOW_WINDOW:
+            cv2.destroyAllWindows()
         landmarker.close()
-        sock.close()
+        if ser: ser.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -1408,9 +2011,10 @@ def main():
     send_command("STOP")
     time.sleep(0.2)
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     landmarker.close()
-    sock.close()
+    if ser: ser.close()
     print("\n✅ Done!")
 
 
@@ -1423,9 +2027,9 @@ def show_mode_menu():
     print("  3. Push-ups")
     print("  4. Squats")
     print("  5. Plank")
-    print("  Q. Quit")
+    print("  6. Exit / Q to Quit the session")
     print("═══════════════════════════════════════════")
-    return input("  Enter choice (1-5, Q): ").strip().lower()
+    return input("  Enter choice (1-6, Q): ").strip().lower()
 
 
 if __name__ == "__main__":
@@ -1442,7 +2046,7 @@ if __name__ == "__main__":
             run_squats()
         elif choice == "5":
             run_plank()
-        elif choice == "q":
+        elif choice in ("6", "q"):
             print("  Exiting.")
             break
         else:
