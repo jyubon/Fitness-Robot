@@ -27,11 +27,12 @@ import sys
 SERIAL_PORT = "/dev/serial0"
 BAUD_RATE = 115200
 
-# ─── Camera (2K Webcam) ───
-CAMERA_INDEX  = 1
-CAMERA_WIDTH  = 320            # Lower = faster on RPi4
-CAMERA_HEIGHT = 240
-FRAME_SKIP    = 1              # Process every frame on RPi4
+# ─── Camera / processing (low load) ───
+CAMERA_INDEX  = 0
+CAMERA_WIDTH  = 320
+CAMERA_HEIGHT = 213            # 3:2 aspect; falls back to 240 if unsupported
+FRAME_SKIP    = 1              # Person follower
+EXERCISE_FRAME_SKIP = 2        # Exercises
 
 # ─── MediaPipe ───
 MODEL_PATH = "pose_landmarker.task"
@@ -49,9 +50,10 @@ TOO_FAR   = 0.18
 COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
-# ─── Display ───
-SHOW_WINDOW  = False
-WINDOW_SCALE = 2.0           # 320x240 → 640x480
+# ─── Physical display ───
+SHOW_WINDOW    = True
+DISPLAY_WIDTH  = 480
+DISPLAY_HEIGHT = 320
 
 if not SHOW_WINDOW:
     # Headless Mode: Mock cv2 window functions to prevent Qt display errors
@@ -71,6 +73,57 @@ SHOW_FPS = True
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+
+
+def open_camera():
+    """Open webcam at low processing resolution with MJPEG and minimal buffer."""
+    global CAMERA_HEIGHT
+    for height in dict.fromkeys((CAMERA_HEIGHT, 240)):
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(CAMERA_INDEX)
+        if not cap.isOpened():
+            continue
+
+        cap.set(cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        for _ in range(5):
+            cap.read()
+
+        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        CAMERA_HEIGHT = ah
+        print(f"✅ Camera: {aw}x{ah}")
+        return cap
+
+    raise RuntimeError("Could not open camera")
+
+
+def setup_window(window_name):
+    """Create a display window sized for the physical screen."""
+    if SHOW_WINDOW:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+
+
+def prepare_display(image):
+    """Scale processed frame to the physical display resolution."""
+    h, w = image.shape[:2]
+    if w == DISPLAY_WIDTH and h == DISPLAY_HEIGHT:
+        return image
+    return cv2.resize(image, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+
+
+def show_frame(window_name, image):
+    """Resize and show a frame on the physical display."""
+    if SHOW_WINDOW:
+        cv2.imshow(window_name, prepare_display(image))
+
 
 # ═══════════════════════════════════════════════════════
 #  EXERCISE HELPER FUNCTIONS
@@ -363,6 +416,7 @@ def draw_frame(frame, command, state, person_x,
                shoulder_width, fps, d_zone, h_zone):
     """Draw all overlay elements."""
     h, w = frame.shape[:2]
+    compact = h <= 260
 
     # Zone overlays
     zone_l = int(CENTER_ZONE_LEFT * w)
@@ -382,41 +436,46 @@ def draw_frame(frame, command, state, person_x,
     # Person position dot
     if person_x is not None:
         px = int(person_x * w)
-        cv2.circle(frame, (px, h // 2), 14, (130, 220, 220), 1)
-        cv2.circle(frame, (px, h // 2), 8, (130, 220, 220), -1)
-        cv2.circle(frame, (px, h // 2), 8, (0, 0, 0), 1)
+        dot_r = 10 if compact else 14
+        cv2.circle(frame, (px, h // 2), dot_r, (130, 220, 220), 1)
+        cv2.circle(frame, (px, h // 2), 6 if compact else 8, (130, 220, 220), -1)
+        cv2.circle(frame, (px, h // 2), 6 if compact else 8, (0, 0, 0), 1)
 
     # Top bar
-    draw_glass_panel(frame, 0, 0, w, 50, alpha=0.7, radius=0)
+    top_h = 34 if compact else 50
+    draw_glass_panel(frame, 0, 0, w, top_h, alpha=0.7, radius=0)
     cmd_color = CMD_COLORS.get(command, TEXT_WHITE)
-    cv2.putText(frame, command, (12, 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, cmd_color, 2)
-    cv2.putText(frame, f"FPS:{fps:.0f}", (12, 43),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1)
+    cv2.putText(frame, command, (12, 18 if compact else 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52 if compact else 0.65, cmd_color,
+                1 if compact else 2)
+    cv2.putText(frame, f"FPS:{fps:.0f}", (12, 30 if compact else 43),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.28 if compact else 0.35, TEXT_DIM, 1)
 
     # Detection indicator with glow
     dot = ACCENT_GREEN if person_x is not None else ACCENT_RED
-    cv2.circle(frame, (w - 15, 15), 12, dot, 1)
-    cv2.circle(frame, (w - 15, 15), 7, dot, -1)
+    cv2.circle(frame, (w - 12, 12), 9 if compact else 12, dot, 1)
+    cv2.circle(frame, (w - 12, 12), 5 if compact else 7, dot, -1)
 
     # State text
     if person_x is not None:
-        cv2.putText(frame, state, (w // 2 - 40, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+        cv2.putText(frame, state, (w // 2 - 40, 16 if compact else 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.25 if compact else 0.3,
                     TEXT_DIM, 1)
 
     # Compass (top right)
-    draw_direction_indicator(frame, command, w - 30, 95, size=25)
+    compass_y = 68 if compact else 95
+    draw_direction_indicator(frame, command, w - 24, compass_y,
+                             size=18 if compact else 25)
 
     # Zone grid (bottom left)
-    draw_zone_grid(frame, d_zone, h_zone, 5, h - 75)
+    draw_zone_grid(frame, d_zone, h_zone, 5, h - (52 if compact else 75))
 
     # Distance bar (bottom)
     if shoulder_width is not None:
-        bar_start = 125
+        bar_start = 100 if compact else 125
         bar_end   = w - 5
-        bar_y     = h - 22
-        bar_h     = 14
+        bar_y     = h - (14 if compact else 22)
+        bar_h     = 10 if compact else 14
         bar_max   = TOO_CLOSE + 0.15
         bar_pct   = min(shoulder_width / bar_max, 1.0)
         bar_w     = int(bar_pct * (bar_end - bar_start))
@@ -428,8 +487,8 @@ def draw_frame(frame, command, state, person_x,
         else:
             bc = ACCENT_GREEN
 
-        draw_glass_panel(frame, bar_start - 3, bar_y - 14,
-                         bar_end - bar_start + 6, bar_h + 17,
+        draw_glass_panel(frame, bar_start - 3, bar_y - (10 if compact else 14),
+                         bar_end - bar_start + 6, bar_h + (12 if compact else 17),
                          alpha=0.6, radius=6)
 
         cv2.rectangle(frame, (bar_start, bar_y),
@@ -446,7 +505,7 @@ def draw_frame(frame, command, state, person_x,
 
         cv2.putText(frame, f"DIST: {shoulder_width:.3f}",
                     (bar_start, bar_y - 3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.25 if compact else 0.3,
                     TEXT_DIM, 1)
 
 
@@ -580,8 +639,10 @@ def update_palm_stop_frames(hand_results, stop_frames):
 
 def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES):
     """Draw palm-stop progress while an exercise is active."""
+    if stop_frames <= 0:
+        return
     h, w = image.shape[:2]
-    compact = h <= 240
+    compact = h <= 260
     panel_w = 180 if compact else 205
     panel_h = 45 if compact else 53
     x = max(5, w - panel_w - 5)
@@ -614,19 +675,17 @@ def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED
 def show_palm_stop_message(window_name, image):
     """Show a brief confirmation before leaving the exercise window."""
     h, w = image.shape[:2]
+    compact = h <= 260
     panel_w = min(220, w - 20)
-    panel_h = 48 if h <= 240 else 60
+    panel_h = 42 if compact else 60
     x = w // 2 - panel_w // 2
     y = h // 2 - panel_h // 2
     draw_glass_panel(image, x, y, panel_w, panel_h, alpha=0.78, radius=12)
     cv2.putText(image, "PALM STOP DETECTED", (x + 16, y + panel_h // 2 + 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.42 if h <= 240 else 0.55,
-                ACCENT_GREEN, 1 if h <= 240 else 2, cv2.LINE_AA)
-    scale_w = int(w * WINDOW_SCALE)
-    scale_h = int(h * WINDOW_SCALE)
-    display = cv2.resize(image, (scale_w, scale_h))
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42 if compact else 0.55,
+                ACCENT_GREEN, 1 if compact else 2, cv2.LINE_AA)
     if SHOW_WINDOW:
-        cv2.imshow(window_name, display)
+        show_frame(window_name, image)
         cv2.waitKey(500)
     else:
         time.sleep(0.5)
@@ -805,9 +864,8 @@ def run_bicep_curls():
     right_reps_at_set_start = 0
     last_uneven_warning_time = 0.0
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Bicep Curls', 1280, 720)
+    cap = open_camera()
+    setup_window('Bicep Curls')
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
@@ -816,6 +874,8 @@ def run_bicep_curls():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
 
     try:
         while cap.isOpened():
@@ -823,18 +883,21 @@ def run_bicep_curls():
             if not ret:
                 break
 
+            frame_counter += 1
             frame = cv2.flip(frame, 1)
             img_h, img_w, _ = frame.shape
             image = frame
 
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+                last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
-                palm_stop_frames = 0
+                results = last_results
 
             # Calculate set stats
             now = time.time()
@@ -855,7 +918,12 @@ def run_bicep_curls():
                     log_session_error(f"Equalize both hands (Left: {current_set_left_reps} | Right: {current_set_right_reps})")
                     last_uneven_warning_time = now
 
-            if results.pose_landmarks and len(results.pose_landmarks) > 0:
+            panel_w = min(280, img_w - 10)
+            l_clr = r_clr = TEXT_DIM
+            l_fb = r_fb = ""
+            l_stg = r_stg = "DOWN"
+
+            if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                 lm = results.pose_landmarks[0]
 
                 # Swapped to account for camera mirroring: MediaPipe Right (12, 14, 16) -> Left arm on display, MediaPipe Left (11, 13, 15) -> Right arm on display
@@ -890,21 +958,22 @@ def run_bicep_curls():
                         log_session_error("Slow down! Curling too fast")
                         last_console_warning_time = now
 
+            if results:
                 draw_skeleton(image, results)
 
-                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
-                cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-                cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
-                cv2.putText(image, l_fb, (120, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
-                cv2.putText(image, r_fb, (120, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
-                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+            draw_glass_panel(image, 5, 5, panel_w, 95, alpha=0.65, radius=10)
+            cv2.putText(image, "BICEP CURLS", (15, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
+            cv2.putText(image, f"L: {arms['left']['counter']}", (15, 46),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, l_clr, 2)
+            cv2.putText(image, l_fb, (110, 46),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, l_clr, 1)
+            cv2.putText(image, f"R: {arms['right']['counter']}", (15, 72),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, r_clr, 2)
+            cv2.putText(image, r_fb, (110, 72),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, r_clr, 1)
+            cv2.putText(image, f"{l_stg} | {r_stg}", (15, 92),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1)
 
             # Show slow down warning banner on screen
             if time.time() < warning_active_until:
@@ -913,9 +982,9 @@ def run_bicep_curls():
                 border_color = (0, 0, 255) if flash else (50, 50, 200)
 
                 p_w = int(img_w * 0.7)
-                p_h = 65
+                p_h = 50
                 p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.4)
+                p_y = int(img_h * 0.38)
 
                 draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
                 cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
@@ -937,9 +1006,9 @@ def run_bicep_curls():
                 border_color = (80, 175, 225)
 
                 p_w = int(img_w * 0.8)
-                p_h = 55
+                p_h = 42
                 p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.75)
+                p_y = int(img_h * 0.72)
 
                 draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
                 cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
@@ -956,21 +1025,23 @@ def run_bicep_curls():
                             (255, 255, 255), thickness, cv2.LINE_AA)
 
             # Draw set stats panel (Set X, Reps Y)
-            draw_glass_panel(image, 5, 130, 280, 110, alpha=0.65, radius=10)
-            cv2.putText(image, "CURRENT SET STATS", (15, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-            cv2.putText(image, f"SET: {current_set}", (15, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
-            cv2.putText(image, f"REPS: {current_set_reps}", (140, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+            stats_y = 105
+            draw_glass_panel(image, 5, stats_y, panel_w, 90, alpha=0.65, radius=10)
+            cv2.putText(image, "CURRENT SET STATS", (15, stats_y + 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, TEXT_DIM, 1)
+            cv2.putText(image, f"SET: {current_set}", (15, stats_y + 44),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2)
+            cv2.putText(image, f"REPS: {current_set_reps}", (130, stats_y + 44),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2)
 
             # Show individual arm counts in the current set
-            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
+            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}",
+                        (15, stats_y + 66),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, TEXT_DIM, 1)
 
             if set_finished:
-                cv2.putText(image, "SET FINISHED (REST)", (15, 230),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
+                cv2.putText(image, "SET FINISHED (REST)", (15, stats_y + 84),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACCENT_GREEN, 1)
             else:
                 status_parts = []
                 status_color = TEXT_DIM
@@ -984,8 +1055,8 @@ def run_bicep_curls():
 
                 if status_parts:
                     status_text = " | ".join(status_parts)
-                    cv2.putText(image, status_text, (15, 230),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1, cv2.LINE_AA)
+                    cv2.putText(image, status_text, (15, stats_y + 84),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, status_color, 1, cv2.LINE_AA)
 
             if hand_landmarker is not None:
                 draw_palm_stop_status(image, palm_stop_frames)
@@ -993,7 +1064,7 @@ def run_bicep_curls():
                     show_palm_stop_message('Bicep Curls', image)
                     break
 
-            cv2.imshow('Bicep Curls', image)
+            show_frame('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
@@ -1034,7 +1105,8 @@ def run_pushups():
     reps_in_set = 0
     set_ended = False
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = open_camera()
+    setup_window('Push-ups')
     print("💪 Push-up Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1042,6 +1114,8 @@ def run_pushups():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
 
     try:
         while cap.isOpened():
@@ -1049,23 +1123,27 @@ def run_pushups():
             if not ret:
                 break
 
+            frame_counter += 1
             frame = cv2.flip(frame, 1)
             image = frame
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+                last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
-                palm_stop_frames = 0
+                results = last_results
 
             is_horizontal = False
             is_body_straight = True
             elbow_angle = 180.0
 
             try:
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -1127,39 +1205,41 @@ def run_pushups():
             except Exception:
                 pass
 
-            draw_skeleton(image, results)
+            if results:
+                draw_skeleton(image, results)
 
-            draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
-            cv2.rectangle(image, (5, 5), (9, 120), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
-            cv2.putText(image, "PUSH-UPS", (18, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
+            img_h, img_w = image.shape[:2]
+            panel_w = min(280, img_w - 10)
+            draw_glass_panel(image, 5, 5, panel_w, 90, alpha=0.65, radius=10)
+            cv2.rectangle(image, (5, 5), (9, 95), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
+            cv2.putText(image, "PUSH-UPS", (18, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
 
             if is_horizontal:
                 stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, pushup_stage.upper(), (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, stage_clr, 2, cv2.LINE_AA)
-                cv2.putText(image, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 108),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+                cv2.putText(image, f"SET: {current_set}", (18, 46),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, f"REPS: {reps_in_set}", (130, 46),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, pushup_stage.upper(), (18, 72),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, stage_clr, 2, cv2.LINE_AA)
+                cv2.putText(image, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 88),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, TEXT_DIM, 1, cv2.LINE_AA)
             else:
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, "GET IN POSITION", (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACCENT_ORANGE, 2, cv2.LINE_AA)
-                cv2.putText(image, "Align horizontally", (18, 108),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+                cv2.putText(image, f"SET: {current_set}", (18, 46),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, f"REPS: {reps_in_set}", (130, 46),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
+                cv2.putText(image, "GET IN POSITION", (18, 72),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACCENT_ORANGE, 2, cv2.LINE_AA)
+                cv2.putText(image, "Align horizontally", (18, 88),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, TEXT_DIM, 1, cv2.LINE_AA)
 
             if is_horizontal and not is_body_straight:
                 warn_msg = "Form a straight line with body!"
-                img_h, img_w = image.shape[:2]
-                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
-                cv2.putText(image, warn_msg, (15, img_h - 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
+                draw_glass_panel(image, 5, img_h - 42, img_w - 10, 38, alpha=0.8, color=(20, 20, 100), radius=10)
+                cv2.putText(image, warn_msg, (15, img_h - 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_RED, 2, cv2.LINE_AA)
 
             if hand_landmarker is not None:
                 draw_palm_stop_status(image, palm_stop_frames)
@@ -1167,7 +1247,7 @@ def run_pushups():
                     show_palm_stop_message('Push-ups', image)
                     break
 
-            cv2.imshow('Push-ups', image)
+            show_frame('Push-ups', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
@@ -1213,10 +1293,8 @@ def run_squats():
     lowered_wrists = False
     lowered_knees = False
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
+    cap = open_camera()
+    setup_window('Squats')
     print("🦵 Squat Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1224,6 +1302,8 @@ def run_squats():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
 
     try:
         while cap.isOpened():
@@ -1231,15 +1311,19 @@ def run_squats():
             if not ret:
                 break
 
+            frame_counter += 1
             image = frame
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+                last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
-                palm_stop_frames = 0
+                results = last_results
 
             current_hip_angle = 180
             posture_correct = True
@@ -1251,7 +1335,7 @@ def run_squats():
             knees_warning = None
 
             try:
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
 
                     L_shoulder = get_pt(lm, 11, use_z=True)
@@ -1410,32 +1494,33 @@ def run_squats():
                     last_rep_time = None
 
             img_h, img_w = image.shape[:2]
+            panel_w = min(280, img_w - 10)
 
             # Main stats panel
-            draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
+            draw_glass_panel(image, 5, 5, panel_w, 90, alpha=0.65, radius=10)
             accent = ACCENT_GREEN if posture_correct else ACCENT_RED
-            cv2.rectangle(image, (5, 5), (9, 120), accent, -1)
-            cv2.putText(image, "SQUATS", (18, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
-            cv2.putText(image, f"SET: {current_set}", (18, 55),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-            cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-            cv2.putText(image, stage.upper(), (18, 88),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, accent, 2, cv2.LINE_AA)
+            cv2.rectangle(image, (5, 5), (9, 95), accent, -1)
+            cv2.putText(image, "SQUATS", (18, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
+            cv2.putText(image, f"SET: {current_set}", (18, 46),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
+            cv2.putText(image, f"REPS: {reps_in_set}", (130, 46),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
+            cv2.putText(image, stage.upper(), (18, 72),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, accent, 2, cv2.LINE_AA)
 
             if set_started and last_rep_time is not None:
                 time_limit = 15.0 if reps_in_set >= 6 else 20.0
                 time_elapsed = now_time - last_rep_time
                 countdown = max(0.0, time_limit - time_elapsed)
-                cv2.putText(image, f"Rest in: {countdown:.1f}s", (140, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACCENT_ORANGE, 1, cv2.LINE_AA)
+                cv2.putText(image, f"Rest in: {countdown:.1f}s", (130, 72),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, ACCENT_ORANGE, 1, cv2.LINE_AA)
 
             # Arc gauge for hip angle
-            gauge_cx, gauge_cy = img_w - 60, 60
-            gauge_r = 40
+            gauge_cx, gauge_cy = img_w - 48, 48
+            gauge_r = 28
             draw_glass_panel(image, gauge_cx - gauge_r - 8, 5,
-                             gauge_r * 2 + 16, gauge_r * 2 + 25,
+                             gauge_r * 2 + 16, gauge_r * 2 + 20,
                              alpha=0.6, radius=10)
             cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
                         0, 180, 360, (40, 40, 40), 3)
@@ -1452,7 +1537,7 @@ def run_squats():
 
             # Compile and draw posture warnings panel
             warnings = []
-            if results.pose_landmarks and len(results.pose_landmarks) > 0:
+            if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                 if arms_warning:
                     warnings.append(arms_warning)
                 if stage == "up" and feet_warning:
@@ -1478,7 +1563,7 @@ def run_squats():
                     show_palm_stop_message('Squats', image)
                     break
 
-            cv2.imshow('Squats', image)
+            show_frame('Squats', image)
 
             if cv2.waitKey(5) & 0xFF == ord('q'):
                 break
@@ -1518,7 +1603,8 @@ def run_plank():
             plank_start = None
         return in_plank_state, plank_start, 0
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = open_camera()
+    setup_window('Plank')
     print("🧘 Plank Timer Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1526,6 +1612,8 @@ def run_plank():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
 
     try:
         while cap.isOpened():
@@ -1533,21 +1621,25 @@ def run_plank():
             if not ret:
                 break
 
+            frame_counter += 1
             image = frame
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
-            if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+                last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
-                palm_stop_frames = 0
+                results = last_results
 
             is_horizontal = False
             is_looking_around = False
 
             try:
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -1605,10 +1697,11 @@ def run_plank():
             except Exception:
                 pass
 
-            draw_skeleton(image, results)
+            if results:
+                draw_skeleton(image, results)
 
-            ring_cx, ring_cy, ring_r = 55, 88, 38
-            draw_glass_panel(image, 5, 5, 230, ring_r * 2 + 50,
+            ring_cx, ring_cy, ring_r = 48, 68, 28
+            draw_glass_panel(image, 5, 5, 200, ring_r * 2 + 38,
                              alpha=0.65, radius=10)
 
             if is_horizontal:
@@ -1654,18 +1747,17 @@ def run_plank():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
 
             if is_horizontal:
+                img_h, img_w = image.shape[:2]
                 if not in_plank:
                     warn_msg = "Form a straight line with body!"
-                    img_h, img_w = image.shape[:2]
-                    draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
-                    cv2.putText(image, warn_msg, (15, img_h - 25),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
+                    draw_glass_panel(image, 5, img_h - 42, img_w - 10, 38, alpha=0.8, color=(20, 20, 100), radius=10)
+                    cv2.putText(image, warn_msg, (15, img_h - 18),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_RED, 2, cv2.LINE_AA)
                 elif is_looking_around:
                     warn_msg = "Look in front of you!"
-                    img_h, img_w = image.shape[:2]
-                    draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(15, 45, 95), radius=10)
-                    cv2.putText(image, warn_msg, (15, img_h - 25),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_ORANGE, 2, cv2.LINE_AA)
+                    draw_glass_panel(image, 5, img_h - 42, img_w - 10, 38, alpha=0.8, color=(15, 45, 95), radius=10)
+                    cv2.putText(image, warn_msg, (15, img_h - 18),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_ORANGE, 2, cv2.LINE_AA)
 
             if hand_landmarker is not None:
                 draw_palm_stop_status(image, palm_stop_frames)
@@ -1673,7 +1765,7 @@ def run_plank():
                     show_palm_stop_message('Plank', image)
                     break
 
-            cv2.imshow('Plank', image)
+            show_frame('Plank', image)
 
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
@@ -1712,23 +1804,7 @@ def main():
 
     # ─── Camera ───
     print("\nOpening camera...")
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(CAMERA_INDEX)
-
-    cap.set(cv2.CAP_PROP_FOURCC,
-            cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-    for _ in range(5):
-        cap.read()
-
-    aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"✅ Camera: {aw}x{ah}")
+    cap = open_camera()
 
     # Verify serial connection status
     if ser and ser.is_open:
@@ -1776,8 +1852,7 @@ def main():
     print("  Press Q to quit")
     print()
 
-    if SHOW_WINDOW:
-        cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
+    setup_window('Person Follower')
 
     fps          = 0
     fps_counter  = 0
@@ -1898,12 +1973,9 @@ def main():
         draw_frame(frame, command, state, person_x,
                    shoulder_width, fps, d_zone, h_zone)
 
-        if SHOW_WINDOW:
-            scale_w = int(CAMERA_WIDTH  * WINDOW_SCALE)
-            scale_h = int(CAMERA_HEIGHT * WINDOW_SCALE)
-            display = cv2.resize(frame, (scale_w, scale_h))
-            cv2.imshow('Person Follower', display)
+        show_frame('Person Follower', frame)
 
+        if SHOW_WINDOW:
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
