@@ -1793,10 +1793,10 @@ def main():
             model_asset_path=MODEL_PATH
         ),
         running_mode=vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5
+        num_poses=3,
+        min_pose_detection_confidence=0.65,
+        min_pose_presence_confidence=0.65,
+        min_tracking_confidence=0.6
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
     timestamp_ms = 0
@@ -1867,10 +1867,17 @@ def main():
     h_zone         = "CENTER"
     last_results   = None
     lost_since     = None
+    tracked_center = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            # Prevent CPU hogging and keep window responsive on frame read failure
+            time.sleep(0.03)
+            if SHOW_WINDOW:
+                key = cv2.waitKey(30) & 0xFF
+                if key == ord('q'):
+                    break
             continue
 
         frame_counter += 1
@@ -1891,6 +1898,36 @@ def main():
 
             if (results.pose_landmarks and
                     len(results.pose_landmarks) > 0):
+                # --- Target Locking Selection ---
+                best_idx = 0
+                if len(results.pose_landmarks) > 1:
+                    now = time.time()
+                    candidates = []
+                    for idx, lm in enumerate(results.pose_landmarks):
+                        l_sh = lm[11]
+                        r_sh = lm[12]
+                        nose = lm[0]
+                        # Filter out non-human detections by checking that shoulders and nose are clearly visible
+                        if l_sh.visibility > 0.55 and r_sh.visibility > 0.55 and nose.visibility > 0.5:
+                            sc_x = (l_sh.x + r_sh.x) / 2
+                            sc_y = (l_sh.y + r_sh.y) / 2
+                            sw = abs(l_sh.x - r_sh.x)
+                            candidates.append((idx, sc_x, sc_y, sw))
+                    
+                    if candidates:
+                        # If previously tracked and not timed out
+                        if tracked_center is not None and (lost_since is None or now - lost_since < LOST_PERSON_TIMEOUT):
+                            tx, ty = tracked_center
+                            best_idx = min(candidates, key=lambda c: (c[1] - tx)**2 + (c[2] - ty)**2)[0]
+                        else:
+                            # Default to largest shoulder width (closest person)
+                            best_idx = max(candidates, key=lambda c: c[3])[0]
+                
+                # Swap the best pose to index 0 so it gets drawn and tracked
+                if best_idx > 0:
+                    results.pose_landmarks[0], results.pose_landmarks[best_idx] = \
+                        results.pose_landmarks[best_idx], results.pose_landmarks[0]
+
                 lm        = results.pose_landmarks[0]
                 nose      = lm[0]
                 l_shoulder = lm[11]
@@ -1899,13 +1936,14 @@ def main():
                 r_hip      = lm[24]
 
                 shoulder_ok = (
-                    l_shoulder.visibility > 0.2 and
-                    r_shoulder.visibility > 0.2
+                    l_shoulder.visibility > 0.55 and
+                    r_shoulder.visibility > 0.55 and
+                    nose.visibility > 0.5
                 )
 
                 hip_ok = (
-                    l_hip.visibility > 0.2 and
-                    r_hip.visibility > 0.2
+                    l_hip.visibility > 0.5 and
+                    r_hip.visibility > 0.5
                 )
 
                 if shoulder_ok:
@@ -1917,6 +1955,9 @@ def main():
                     shoulder_width = abs(
                         l_shoulder.x - r_shoulder.x
                     )
+
+                    # Update tracked center
+                    tracked_center = (shoulder_center, (l_shoulder.y + r_shoulder.y) / 2)
 
                     # Full body available
                     if hip_ok:
@@ -1943,6 +1984,22 @@ def main():
                     )
 
                     send_command(command)
+                else:
+                    # Treat as lost if shoulder landmarks are not visible enough
+                    now = time.time()
+                    if lost_since is None:
+                        lost_since = now
+                        send_command("STOP")
+                        command = "STOP"
+                        state   = "LOST"
+                    elif now - lost_since > LOST_PERSON_TIMEOUT:
+                        send_command("SEARCH")
+                        command = "SEARCH"
+                        state   = "SEARCHING..."
+                        tracked_center = None
+
+                    d_zone = "GOOD"
+                    h_zone = "CENTER"
             else:
                 # No person
                 now = time.time()
@@ -1955,6 +2012,7 @@ def main():
                     send_command("SEARCH")
                     command = "SEARCH"
                     state   = "SEARCHING..."
+                    tracked_center = None
 
                 d_zone = "GOOD"
                 h_zone = "CENTER"
