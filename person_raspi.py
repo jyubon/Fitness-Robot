@@ -508,6 +508,81 @@ def draw_frame(frame, command, state, person_x,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.25 if compact else 0.3,
                     TEXT_DIM, 1)
 
+def draw_exercise_dashboard(exercise_name, reps, sets, feedback, stage=None, status_msg=None, palm_stop_val=0, extra_info=None):
+    """Creates a clean, premium 480x320 dark dashboard canvas."""
+    canvas = np.zeros((320, 480, 3), dtype=np.uint8)
+    canvas[:] = (24, 20, 18) # Dark slate background (BGR)
+
+    # Header Bar
+    draw_glass_panel(canvas, 10, 10, 460, 45, alpha=0.9, color=(35, 30, 28), radius=8)
+    cv2.putText(canvas, exercise_name.upper(), (25, 38),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (235, 235, 240), 2, cv2.LINE_AA)
+
+    status_text = status_msg if status_msg else "ACTIVE"
+    if stage:
+        status_text += f" | {stage.upper()}"
+    cv2.putText(canvas, status_text, (280, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1, cv2.LINE_AA)
+
+    # Reps Card
+    draw_glass_panel(canvas, 10, 65, 220, 120, alpha=0.9, color=(35, 30, 28), radius=12)
+    cv2.putText(canvas, "REPS", (25, 95),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 155, 165), 1, cv2.LINE_AA)
+    cv2.putText(canvas, str(reps), (25, 165),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.2, (235, 235, 240), 5, cv2.LINE_AA)
+
+    # Sets Card
+    draw_glass_panel(canvas, 10, 195, 220, 115, alpha=0.9, color=(35, 30, 28), radius=12)
+    cv2.putText(canvas, "SETS", (25, 225),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 155, 165), 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"SET {sets}", (25, 280),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.3, (235, 235, 240), 3, cv2.LINE_AA)
+
+    # Feedback Card
+    draw_glass_panel(canvas, 240, 65, 230, 175, alpha=0.9, color=(35, 30, 28), radius=12)
+    cv2.putText(canvas, "FEEDBACK", (255, 95),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 155, 165), 1, cv2.LINE_AA)
+
+    fb_color = ACCENT_GREEN
+    warnings_list = [
+        "TUCK ELBOW", "DONT SWING", "SLOW DOWN", "FORM STRAIGHT LINE", 
+        "GET IN POSITION", "ALIGN HORIZONTALLY", "DONT GO TOO DEEP",
+        "KEEP FEET AT SHOULDER DISTANCE", "EXTEND ARMS", "STAND AT SHOULDER WIDTH",
+        "LOOK IN FRONT", "WARNING", "FLAWED"
+    ]
+    fb_upper = feedback.upper()
+    if any(w in fb_upper for w in warnings_list) and "GOOD" not in fb_upper:
+        fb_color = ACCENT_RED
+
+    font_scale = 0.8
+    thickness = 2
+    if len(fb_upper) > 12:
+        font_scale = 0.55
+        thickness = 1
+
+    cv2.putText(canvas, fb_upper, (255, 145),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, fb_color, thickness, cv2.LINE_AA)
+
+    if extra_info:
+        cv2.putText(canvas, extra_info, (255, 195),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (155, 155, 165), 1, cv2.LINE_AA)
+
+    # Palm Stop Progress Card
+    draw_glass_panel(canvas, 240, 250, 230, 60, alpha=0.9, color=(35, 30, 28), radius=12)
+    if palm_stop_val > 0:
+        progress = min(palm_stop_val / PALM_STOP_REQUIRED_FRAMES, 1.0)
+        p_color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE
+        cv2.putText(canvas, "PALM STOP", (255, 270),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, p_color, 1, cv2.LINE_AA)
+        cv2.rectangle(canvas, (255, 280), (445, 288), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (255, 280), (255 + int(190 * progress), 288), p_color, -1)
+        cv2.rectangle(canvas, (255, 280), (445, 288), (60, 60, 60), 1)
+    else:
+        cv2.putText(canvas, "SHOW PALM TO STOP", (255, 285),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (110, 110, 120), 1, cv2.LINE_AA)
+
+    return canvas
+
 
 def draw_skeleton(frame, results):
     """Draw skeleton."""
@@ -958,111 +1033,48 @@ def run_bicep_curls():
                         log_session_error("Slow down! Curling too fast")
                         last_console_warning_time = now
 
-            if results:
-                draw_skeleton(image, results)
-
-            draw_glass_panel(image, 5, 5, panel_w, 95, alpha=0.65, radius=10)
-            cv2.putText(image, "BICEP CURLS", (15, 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
-            cv2.putText(image, f"L: {arms['left']['counter']}", (15, 46),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, l_clr, 2)
-            cv2.putText(image, l_fb, (110, 46),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, l_clr, 1)
-            cv2.putText(image, f"R: {arms['right']['counter']}", (15, 72),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, r_clr, 2)
-            cv2.putText(image, r_fb, (110, 72),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, r_clr, 1)
-            cv2.putText(image, f"{l_stg} | {r_stg}", (15, 92),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1)
-
-            # Show slow down warning banner on screen
+            # Determine combined feedback
+            feedback_val = "GOOD"
             if time.time() < warning_active_until:
-                flash = int(time.time() * 5) % 2 == 0
-                bg_color = (20, 20, 100) if flash else (10, 10, 40)
-                border_color = (0, 0, 255) if flash else (50, 50, 200)
+                feedback_val = "SLOW DOWN!"
+            elif time.time() < swing_warning_active_until:
+                feedback_val = "DON'T SWING!"
+            elif is_uneven:
+                feedback_val = "EQUALIZE HANDS!"
+            elif l_fb != "GOOD" or r_fb != "GOOD":
+                parts = []
+                if l_fb != "GOOD" and l_fb != "":
+                    parts.append(f"L: {l_fb}")
+                if r_fb != "GOOD" and r_fb != "":
+                    parts.append(f"R: {r_fb}")
+                feedback_val = " | ".join(parts) if parts else "GOOD"
+            elif l_fb == "" and r_fb == "":
+                feedback_val = "GET IN POSITION"
 
-                p_w = int(img_w * 0.7)
-                p_h = 50
-                p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.38)
-
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
-
-                warn_msg = "WARNING: SLOW DOWN!"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.7
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
-
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
-
-            # Show swing warning banner on screen
-            if time.time() < swing_warning_active_until:
-                bg_color = (15, 45, 95)
-                border_color = (80, 175, 225)
-
-                p_w = int(img_w * 0.8)
-                p_h = 42
-                p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.72)
-
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
-
-                warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.55
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
-
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255), thickness, cv2.LINE_AA)
-
-            # Draw set stats panel (Set X, Reps Y)
-            stats_y = 105
-            draw_glass_panel(image, 5, stats_y, panel_w, 90, alpha=0.65, radius=10)
-            cv2.putText(image, "CURRENT SET STATS", (15, stats_y + 18),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, TEXT_DIM, 1)
-            cv2.putText(image, f"SET: {current_set}", (15, stats_y + 44),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2)
-            cv2.putText(image, f"REPS: {current_set_reps}", (130, stats_y + 44),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2)
-
-            # Show individual arm counts in the current set
-            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}",
-                        (15, stats_y + 66),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, TEXT_DIM, 1)
-
+            extra_info_val = f"Total L: {arms['left']['counter']} | R: {arms['right']['counter']}"
             if set_finished:
-                cv2.putText(image, "SET FINISHED (REST)", (15, stats_y + 84),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, ACCENT_GREEN, 1)
+                status_msg_val = "RESTING"
             else:
-                status_parts = []
-                status_color = TEXT_DIM
-                if is_uneven:
-                    status_parts.append("EQUALIZE BOTH HANDS!")
-                    status_color = ACCENT_ORANGE
+                status_msg_val = "ACTIVE"
                 if current_set_reps >= 8 and last_rep_time is not None:
                     time_left = max(0.0, 10.0 - (time.time() - last_rep_time))
-                    status_parts.append(f"Rest in: {time_left:.1f}s")
-                    status_color = ACCENT_ORANGE
+                    status_msg_val = f"REST IN {time_left:.1f}S"
 
-                if status_parts:
-                    status_text = " | ".join(status_parts)
-                    cv2.putText(image, status_text, (15, stats_y + 84),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, status_color, 1, cv2.LINE_AA)
+            # Render the dashboard instead of raw frame
+            image = draw_exercise_dashboard(
+                exercise_name="BICEP CURLS",
+                reps=current_set_reps,
+                sets=current_set,
+                feedback=feedback_val,
+                stage=f"L:{l_stg} R:{r_stg}",
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=extra_info_val
+            )
 
-            if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
-                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                    show_palm_stop_message('Bicep Curls', image)
-                    break
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Bicep Curls', image)
+                break
 
             show_frame('Bicep Curls', image)
             if cv2.waitKey(10) & 0xFF == ord('q'):
@@ -1205,50 +1217,36 @@ def run_pushups():
             except Exception:
                 pass
 
-            if results:
-                draw_skeleton(image, results)
+            # Determine combined feedback
+            feedback_val = "GOOD"
+            if not is_horizontal:
+                feedback_val = "ALIGN HORIZONTALLY"
+            elif not is_body_straight:
+                feedback_val = "FORM STRAIGHT LINE"
 
-            img_h, img_w = image.shape[:2]
-            panel_w = min(280, img_w - 10)
-            draw_glass_panel(image, 5, 5, panel_w, 90, alpha=0.65, radius=10)
-            cv2.rectangle(image, (5, 5), (9, 95), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
-            cv2.putText(image, "PUSH-UPS", (18, 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
+            status_msg_val = "ACTIVE"
+            if not is_horizontal:
+                status_msg_val = "GET IN POSITION"
 
-            if is_horizontal:
-                stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
-                cv2.putText(image, f"SET: {current_set}", (18, 46),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (130, 46),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, pushup_stage.upper(), (18, 72),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, stage_clr, 2, cv2.LINE_AA)
-                cv2.putText(image, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, TEXT_DIM, 1, cv2.LINE_AA)
-            else:
-                cv2.putText(image, f"SET: {current_set}", (18, 46),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (130, 46),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, "GET IN POSITION", (18, 72),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACCENT_ORANGE, 2, cv2.LINE_AA)
-                cv2.putText(image, "Align horizontally", (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.32, TEXT_DIM, 1, cv2.LINE_AA)
+            extra_info_val = f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg"
 
-            if is_horizontal and not is_body_straight:
-                warn_msg = "Form a straight line with body!"
-                draw_glass_panel(image, 5, img_h - 42, img_w - 10, 38, alpha=0.8, color=(20, 20, 100), radius=10)
-                cv2.putText(image, warn_msg, (15, img_h - 18),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_RED, 2, cv2.LINE_AA)
+            # Render the dashboard instead of raw frame
+            image = draw_exercise_dashboard(
+                exercise_name="PUSH-UPS",
+                reps=reps_in_set,
+                sets=current_set,
+                feedback=feedback_val,
+                stage=pushup_stage,
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=extra_info_val
+            )
 
-            if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
-                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                    show_palm_stop_message('Push-ups', image)
-                    break
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Push-ups', image)
+                break
 
             show_frame('Push-ups', image)
-
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
@@ -1496,46 +1494,7 @@ def run_squats():
             img_h, img_w = image.shape[:2]
             panel_w = min(280, img_w - 10)
 
-            # Main stats panel
-            draw_glass_panel(image, 5, 5, panel_w, 90, alpha=0.65, radius=10)
-            accent = ACCENT_GREEN if posture_correct else ACCENT_RED
-            cv2.rectangle(image, (5, 5), (9, 95), accent, -1)
-            cv2.putText(image, "SQUATS", (18, 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
-            cv2.putText(image, f"SET: {current_set}", (18, 46),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
-            cv2.putText(image, f"REPS: {reps_in_set}", (130, 46),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 2, cv2.LINE_AA)
-            cv2.putText(image, stage.upper(), (18, 72),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, accent, 2, cv2.LINE_AA)
-
-            if set_started and last_rep_time is not None:
-                time_limit = 15.0 if reps_in_set >= 6 else 20.0
-                time_elapsed = now_time - last_rep_time
-                countdown = max(0.0, time_limit - time_elapsed)
-                cv2.putText(image, f"Rest in: {countdown:.1f}s", (130, 72),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, ACCENT_ORANGE, 1, cv2.LINE_AA)
-
-            # Arc gauge for hip angle
-            gauge_cx, gauge_cy = img_w - 48, 48
-            gauge_r = 28
-            draw_glass_panel(image, gauge_cx - gauge_r - 8, 5,
-                             gauge_r * 2 + 16, gauge_r * 2 + 20,
-                             alpha=0.6, radius=10)
-            cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
-                        0, 180, 360, (40, 40, 40), 3)
-            angle_pct = np.clip((current_hip_angle - 60) / 120.0, 0, 1)
-            sweep = int(angle_pct * 180)
-            cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
-                        0, 360 - sweep, 360, accent, 3)
-            cv2.putText(image, f"{int(current_hip_angle)}",
-                        (gauge_cx - 15, gauge_cy + 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 1, cv2.LINE_AA)
-            cv2.putText(image, "angle",
-                        (gauge_cx - 18, gauge_cy + gauge_r + 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
-
-            # Compile and draw posture warnings panel
+            # Compile warnings
             warnings = []
             if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                 if arms_warning:
@@ -1548,23 +1507,38 @@ def run_squats():
                     if knees_warning:
                         warnings.append(knees_warning)
 
+            # Determine combined feedback
+            feedback_val = "GOOD"
             if warnings:
-                panel_h = 24 + len(warnings) * 20
-                panel_y = img_h - panel_h - 15
-                draw_glass_panel(image, 10, panel_y, img_w - 20, panel_h, alpha=0.75, color=(20, 20, 40), radius=8)
-                cv2.rectangle(image, (10, panel_y), (img_w - 10, panel_y + panel_h), ACCENT_RED, 1)
-                for idx, warn in enumerate(warnings):
-                    cv2.putText(image, warn, (20, panel_y + 18 + idx * 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 240), 1, cv2.LINE_AA)
+                feedback_val = warnings[0]
 
-            if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
-                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                    show_palm_stop_message('Squats', image)
-                    break
+            status_msg_val = "ACTIVE"
+            if set_started and last_rep_time is not None:
+                time_limit = 15.0 if reps_in_set >= 6 else 20.0
+                time_elapsed = now_time - last_rep_time
+                countdown = max(0.0, time_limit - time_elapsed)
+                if time_elapsed > time_limit - 5.0: # last 5 seconds of countdown
+                    status_msg_val = f"REST IN {countdown:.1f}S"
+
+            extra_info_val = f"Total: {counter} | Hip Angle: {int(current_hip_angle)} deg"
+
+            # Render the dashboard instead of raw frame
+            image = draw_exercise_dashboard(
+                exercise_name="SQUATS",
+                reps=reps_in_set,
+                sets=current_set,
+                feedback=feedback_val,
+                stage=stage,
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=extra_info_val
+            )
+
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Squats', image)
+                break
 
             show_frame('Squats', image)
-
             if cv2.waitKey(5) & 0xFF == ord('q'):
                 break
     finally:
@@ -1697,73 +1671,35 @@ def run_plank():
             except Exception:
                 pass
 
-            if results:
-                draw_skeleton(image, results)
+            # Determine combined feedback
+            feedback_val = "HOLDING"
+            if not is_horizontal:
+                feedback_val = "ALIGN HORIZONTALLY"
+            elif not in_plank:
+                feedback_val = "FORM STRAIGHT LINE"
+            elif is_looking_around:
+                feedback_val = "LOOK FORWARD"
 
-            ring_cx, ring_cy, ring_r = 48, 68, 28
-            draw_glass_panel(image, 5, 5, 200, ring_r * 2 + 38,
-                             alpha=0.65, radius=10)
+            status_msg_val = "ACTIVE"
+            if not is_horizontal:
+                status_msg_val = "GET IN POSITION"
 
-            if is_horizontal:
-                if in_plank:
-                    if is_looking_around:
-                        state_color = ACCENT_ORANGE
-                        state_text = "LOOK FORWARD"
-                    else:
-                        state_color = ACCENT_GREEN
-                        state_text = "HOLD"
-                else:
-                    state_color = ACCENT_RED
-                    state_text = "ALIGN BODY"
-            else:
-                state_color = ACCENT_ORANGE
-                state_text = "GET IN POSITION"
+            # Render the dashboard instead of raw frame
+            # Pass plank timer formatted string as reps
+            image = draw_exercise_dashboard(
+                exercise_name="PLANK",
+                reps=f"{plank_timer:.1f}s",
+                sets="-",
+                feedback=feedback_val,
+                stage=state_text if 'state_text' in locals() else "PLANK",
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=f"Keep body straight"
+            )
 
-            cv2.putText(image, "PLANK", (15, 28),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
-
-            cv2.ellipse(image, (ring_cx, ring_cy), (ring_r, ring_r),
-                        0, 0, 360, (40, 40, 40), 3)
-            sweep = int((plank_timer % 60) / 60.0 * 360)
-            cv2.ellipse(image, (ring_cx, ring_cy), (ring_r, ring_r),
-                        -90, 0, sweep, state_color, 3)
-
-            mins = int(plank_timer) // 60
-            secs = plank_timer % 60
-            if mins > 0:
-                time_str = f"{mins}:{secs:05.2f}"
-            else:
-                time_str = f"{secs:.1f}s"
-            (tw, _), _ = cv2.getTextSize(time_str, cv2.FONT_HERSHEY_SIMPLEX,
-                                         0.5, 1)
-            cv2.putText(image, time_str,
-                        (ring_cx - tw // 2, ring_cy + 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1, cv2.LINE_AA)
-
-            cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, state_color, 1, cv2.LINE_AA)
-            cv2.putText(image, f"Total: {plank_timer:.1f}s",
-                        (ring_cx + ring_r + 12, ring_cy + 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
-
-            if is_horizontal:
-                img_h, img_w = image.shape[:2]
-                if not in_plank:
-                    warn_msg = "Form a straight line with body!"
-                    draw_glass_panel(image, 5, img_h - 42, img_w - 10, 38, alpha=0.8, color=(20, 20, 100), radius=10)
-                    cv2.putText(image, warn_msg, (15, img_h - 18),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_RED, 2, cv2.LINE_AA)
-                elif is_looking_around:
-                    warn_msg = "Look in front of you!"
-                    draw_glass_panel(image, 5, img_h - 42, img_w - 10, 38, alpha=0.8, color=(15, 45, 95), radius=10)
-                    cv2.putText(image, warn_msg, (15, img_h - 18),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_ORANGE, 2, cv2.LINE_AA)
-
-            if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
-                if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                    show_palm_stop_message('Plank', image)
-                    break
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Plank', image)
+                break
 
             show_frame('Plank', image)
 
