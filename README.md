@@ -15,7 +15,7 @@ Raspberry Pi fitness and robot-following app using MediaPipe pose detection and 
 | Component | Required for |
 |---|---|
 | Raspberry Pi 4 | Primary target platform |
-| USB webcam (2K Web Cam) | All modes |
+| USB webcam  | All modes |
 | ESP32 c3 on same WiFi network | ESP32 with Serial control | Mode 1 (Person Following) only |
 
 Exercise modes (2–5) also work on a PC or laptop with a webcam.
