@@ -30,7 +30,8 @@ ESP32_PORT = 8888
 CAMERA_INDEX  = 0
 CAMERA_WIDTH  = 320            # Lower = faster on RPi4
 CAMERA_HEIGHT = 240
-FRAME_SKIP    = 1              # Process every frame on RPi4
+FRAME_SKIP    = 2              # Process pose landmarks every N frames (optimized for RPi4)
+HAND_FRAME_SKIP = 6            # Process hand landmarks every N frames (optimized for RPi4)
 
 # ─── MediaPipe ───
 MODEL_PATH = "pose_landmarker.task"
@@ -50,7 +51,8 @@ LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
 SHOW_WINDOW  = True
-WINDOW_SCALE = 2.0           # 320x240 → 640x480
+DISPLAY_WIDTH  = 480         # Fixed display width for 480x320 screen
+DISPLAY_HEIGHT = 320         # Fixed display height for 480x320 screen
 
 # ─── Debug ───
 DEBUG    = True
@@ -508,17 +510,38 @@ def _hand_point(hand_landmarks, idx):
 
 
 def is_open_palm_stop(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
-    """Return True when MediaPipe Hands sees a clear open palm."""
+    """Return True when MediaPipe Hands sees a clear open palm facing the camera with fingers spread."""
     if not hand_results.hand_landmarks:
         return False
 
-    for hand_landmarks in hand_results.hand_landmarks:
-        points = [_hand_point(hand_landmarks, idx) for idx in range(21)]
+    for idx, hand_landmarks in enumerate(hand_results.hand_landmarks):
+        points = [_hand_point(hand_landmarks, idx_pt) for idx_pt in range(21)]
         xs = [pt[0] for pt in points]
         ys = [pt[1] for pt in points]
         hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
         if hand_size < min_hand_size:
             continue
+
+        # Get handedness label ("Left" or "Right")
+        hand_label = "Right"
+        try:
+            if hand_results.handedness and idx < len(hand_results.handedness):
+                hand_label = hand_results.handedness[idx][0].category_name
+        except (AttributeError, IndexError):
+            pass
+
+        # Calculate cross product to distinguish palm from back of hand
+        v1 = points[9] - points[0]   # Wrist to Middle Finger MCP
+        v2 = points[17] - points[5]  # Index MCP to Pinky MCP
+        cross_product_z = v1[0] * v2[1] - v1[1] * v2[0]
+
+        is_palm_facing = False
+        if hand_label == "Right":
+            if cross_product_z < -0.05 * (hand_size ** 2):
+                is_palm_facing = True
+        elif hand_label == "Left":
+            if cross_product_z > 0.05 * (hand_size ** 2):
+                is_palm_facing = True
 
         wrist = points[0]
         fingers = [
@@ -544,19 +567,29 @@ def is_open_palm_stop(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
             calculate_distance(thumb_tip, index_mcp) > calculate_distance(thumb_ip, index_mcp)
         )
 
-        fingertip_spread = max(points[idx][0] for idx in (4, 8, 12, 16, 20)) - min(
-            points[idx][0] for idx in (4, 8, 12, 16, 20)
+        # Spreading fingertip checks
+        dist_thumb_index = calculate_distance(points[4], points[8])
+        dist_index_middle = calculate_distance(points[8], points[12])
+        dist_middle_ring = calculate_distance(points[12], points[16])
+        dist_ring_pinky = calculate_distance(points[16], points[20])
+
+        fingers_spread = (
+            dist_index_middle > hand_size * 0.12 and
+            dist_middle_ring > hand_size * 0.12 and
+            dist_ring_pinky > hand_size * 0.12 and
+            dist_thumb_index > hand_size * 0.20
         )
-        if extended >= 4 and thumb_extended and fingertip_spread > hand_size * 0.35:
+
+        if extended >= 4 and thumb_extended and is_palm_facing and fingers_spread:
             return True
 
     return False
 
 
-def update_palm_stop_frames(hand_results, stop_frames):
+def update_palm_stop_frames(hand_results, stop_frames, increment=1):
     """Debounce palm stop so one accidental frame does not quit the exercise."""
     if is_open_palm_stop(hand_results):
-        return stop_frames + 1
+        return stop_frames + increment
     return 0
 
 
@@ -604,8 +637,8 @@ def show_palm_stop_message(window_name, image):
     cv2.putText(image, "PALM STOP DETECTED", (x + 16, y + panel_h // 2 + 5),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.42 if h <= 240 else 0.55,
                 ACCENT_GREEN, 1 if h <= 240 else 2, cv2.LINE_AA)
-    scale_w = int(w * WINDOW_SCALE)
-    scale_h = int(h * WINDOW_SCALE)
+    scale_w = DISPLAY_WIDTH
+    scale_h = DISPLAY_HEIGHT
     display = cv2.resize(image, (scale_w, scale_h))
     cv2.imshow(window_name, display)
     cv2.waitKey(500)
@@ -739,8 +772,10 @@ def run_bicep_curls():
     last_uneven_warning_time = 0.0
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Bicep Curls', 1280, 720)
+    cv2.resizeWindow('Bicep Curls', DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
@@ -749,6 +784,9 @@ def run_bicep_curls():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
+    last_hand_results = None
 
     try:
         while cap.isOpened():
@@ -756,16 +794,28 @@ def run_bicep_curls():
             if not ret:
                 break
 
+            frame_counter += 1
             frame = cv2.flip(frame, 1)
-            img_h, img_w, _ = frame.shape
-            image = frame
+            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            img_h, img_w, _ = image.shape
 
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            # Run Pose detection every FRAME_SKIP frames
+            if frame_counter % FRAME_SKIP == 0 or last_results is None:
+                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+                last_results = results
+            else:
+                results = last_results
+
+            # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, frame, hand_timestamp_ms
+                    )
+                    last_hand_results = hand_results
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
+                else:
+                    hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
 
@@ -967,6 +1017,10 @@ def run_pushups():
     set_ended = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cv2.namedWindow('Push-ups', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Push-ups', DISPLAY_WIDTH, DISPLAY_HEIGHT)
     print("💪 Push-up Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -974,6 +1028,9 @@ def run_pushups():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
+    last_hand_results = None
 
     try:
         while cap.isOpened():
@@ -981,14 +1038,26 @@ def run_pushups():
             if not ret:
                 break
 
+            frame_counter += 1
             frame = cv2.flip(frame, 1)
-            image = frame
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            # Run Pose detection every FRAME_SKIP frames
+            if frame_counter % FRAME_SKIP == 0 or last_results is None:
+                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+                last_results = results
+            else:
+                results = last_results
+
+            # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, frame, hand_timestamp_ms
+                    )
+                    last_hand_results = hand_results
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
+                else:
+                    hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
 
@@ -1144,8 +1213,10 @@ def run_squats():
     lowered_knees = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cv2.namedWindow('Squats', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Squats', DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
     print("🦵 Squat Counter Active! Press Q to quit.")
 
@@ -1154,6 +1225,9 @@ def run_squats():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
+    last_hand_results = None
 
     try:
         while cap.isOpened():
@@ -1161,13 +1235,25 @@ def run_squats():
             if not ret:
                 break
 
-            image = frame
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            frame_counter += 1
+            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            # Run Pose detection every FRAME_SKIP frames
+            if frame_counter % FRAME_SKIP == 0 or last_results is None:
+                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+                last_results = results
+            else:
+                results = last_results
+
+            # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, frame, hand_timestamp_ms
+                    )
+                    last_hand_results = hand_results
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
+                else:
+                    hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
 
@@ -1448,6 +1534,10 @@ def run_plank():
         return in_plank_state, plank_start, 0
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cv2.namedWindow('Plank', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Plank', DISPLAY_WIDTH, DISPLAY_HEIGHT)
     print("🧘 Plank Timer Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1455,6 +1545,9 @@ def run_plank():
     timestamp_ms = 0
     hand_timestamp_ms = 0
     palm_stop_frames = 0
+    frame_counter = 0
+    last_results = None
+    last_hand_results = None
 
     try:
         while cap.isOpened():
@@ -1462,13 +1555,25 @@ def run_plank():
             if not ret:
                 break
 
-            image = frame
-            results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
+            frame_counter += 1
+            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            # Run Pose detection every FRAME_SKIP frames
+            if frame_counter % FRAME_SKIP == 0 or last_results is None:
+                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+                last_results = results
+            else:
+                results = last_results
+
+            # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
-                hand_results, hand_timestamp_ms = detect_hand_frame(
-                    hand_landmarker, image, hand_timestamp_ms
-                )
-                palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
+                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, frame, hand_timestamp_ms
+                    )
+                    last_hand_results = hand_results
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
+                else:
+                    hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
 
@@ -1682,6 +1787,7 @@ def main():
 
     if SHOW_WINDOW:
         cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Person Follower', DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
     fps          = 0
     fps_counter  = 0
@@ -1795,17 +1901,15 @@ def main():
                 print(f"  {det} FPS:{fps:.0f} | "
                       f"CMD:{command:10s} | {state}")
 
-        # Draw
+        # Draw on display frame resized to target dimensions
+        display = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
         if last_results:
-            draw_skeleton(frame, last_results)
+            draw_skeleton(display, last_results)
 
-        draw_frame(frame, command, state, person_x,
+        draw_frame(display, command, state, person_x,
                    shoulder_width, fps, d_zone, h_zone)
 
         if SHOW_WINDOW:
-            scale_w = int(CAMERA_WIDTH  * WINDOW_SCALE)
-            scale_h = int(CAMERA_HEIGHT * WINDOW_SCALE)
-            display = cv2.resize(frame, (scale_w, scale_h))
             cv2.imshow('Person Follower', display)
 
             key = cv2.waitKey(1) & 0xFF
