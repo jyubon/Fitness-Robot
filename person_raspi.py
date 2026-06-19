@@ -593,37 +593,65 @@ def update_palm_stop_frames(hand_results, stop_frames, increment=1):
     return 0
 
 
-def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES):
-    """Draw palm-stop progress while an exercise is active."""
+def draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES, is_paused=False):
+    """Draw thumbs-up and palm-stop progress panels dynamically, hiding them when not in use."""
     h, w = image.shape[:2]
     compact = h <= 240
     panel_w = 180 if compact else 205
     panel_h = 45 if compact else 53
     x = max(5, w - panel_w - 5)
-    y = h - panel_h - 5
-    draw_glass_panel(image, x, y, panel_w, panel_h, alpha=0.65, radius=10)
+    
+    current_y = h - panel_h - 5
+    
+    # 1. Palm Stop Panel (only draw if palm_stop_frames > 0)
+    if palm_stop_frames > 0:
+        draw_glass_panel(image, x, current_y, panel_w, panel_h, alpha=0.65, radius=10)
+        progress = min(palm_stop_frames / required_frames, 1.0)
+        color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE
+        cv2.putText(image, "PALM STOP", (x + 8, current_y + 17),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                    color, 1, cv2.LINE_AA)
+        label = "STOPPING" if progress >= 1.0 else "HOLD PALM"
+        cv2.putText(image, label, (x + 8, current_y + 36),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                    TEXT_WHITE, 1, cv2.LINE_AA)
+        bar_x = x + (95 if compact else 108)
+        bar_y = current_y + (29 if compact else 34)
+        bar_w, bar_h = (70, 7) if compact else (82, 8)
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                      (40, 40, 40), -1)
+        cv2.rectangle(image, (bar_x, bar_y),
+                      (bar_x + int(bar_w * progress), bar_y + bar_h),
+                      color, -1)
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                      (60, 60, 60), 1)
+        
+        current_y -= (panel_h + 7)
 
-    progress = min(stop_frames / required_frames, 1.0)
-    color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE if stop_frames else TEXT_DIM
-    cv2.putText(image, "PALM STOP", (x + 8, y + 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
-                color, 1, cv2.LINE_AA)
-
-    label = "STOPPING" if progress >= 1.0 else "HOLD PALM" if stop_frames else "SHOW PALM"
-    cv2.putText(image, label, (x + 8, y + 36),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
-                TEXT_WHITE, 1, cv2.LINE_AA)
-
-    bar_x = x + (95 if compact else 108)
-    bar_y = y + (29 if compact else 34)
-    bar_w, bar_h = (70, 7) if compact else (82, 8)
-    cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
-                  (40, 40, 40), -1)
-    cv2.rectangle(image, (bar_x, bar_y),
-                  (bar_x + int(bar_w * progress), bar_y + bar_h),
-                  color, -1)
-    cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
-                  (60, 60, 60), 1)
+    # 2. Thumbs Up Panel (only draw if thumbs_up_frames > 0)
+    if thumbs_up_frames > 0:
+        draw_glass_panel(image, x, current_y, panel_w, panel_h, alpha=0.65, radius=10)
+        progress = min(thumbs_up_frames / required_frames, 1.0)
+        color = ACCENT_GREEN if progress >= 1.0 else ACCENT_CYAN
+        cv2.putText(image, "THUMBS UP", (x + 8, current_y + 17),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                    color, 1, cv2.LINE_AA)
+        label = "PAUSING..." if not is_paused else "RESUMING..."
+        if progress < 1.0:
+            label = "HOLD THUMB"
+        cv2.putText(image, label, (x + 8, current_y + 36),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                    TEXT_WHITE, 1, cv2.LINE_AA)
+        bar_x = x + (95 if compact else 108)
+        bar_y = current_y + (29 if compact else 34)
+        bar_w, bar_h = (70, 7) if compact else (82, 8)
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                      (40, 40, 40), -1)
+        cv2.rectangle(image, (bar_x, bar_y),
+                      (bar_x + int(bar_w * progress), bar_y + bar_h),
+                      color, -1)
+        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                      (60, 60, 60), 1)
 
 
 def show_palm_stop_message(window_name, image):
@@ -642,6 +670,120 @@ def show_palm_stop_message(window_name, image):
     display = cv2.resize(image, (scale_w, scale_h))
     cv2.imshow(window_name, display)
     cv2.waitKey(500)
+
+
+def is_thumbs_up(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
+    """Return True when MediaPipe Hands sees a clear thumbs-up gesture from any hand."""
+    if not hand_results or not hand_results.hand_landmarks:
+        return False
+
+    for hand_landmarks in hand_results.hand_landmarks:
+        points = [_hand_point(hand_landmarks, idx_pt) for idx_pt in range(21)]
+        xs = [pt[0] for pt in points]
+        ys = [pt[1] for pt in points]
+        hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
+        if hand_size < min_hand_size:
+            continue
+
+        wrist = points[0]
+        fingers = [
+            (5, 6, 8),    # index
+            (9, 10, 12),  # middle
+            (13, 14, 16), # ring
+            (17, 18, 20), # pinky
+        ]
+        extended = 0
+        for mcp_idx, pip_idx, tip_idx in fingers:
+            mcp = points[mcp_idx]
+            pip = points[pip_idx]
+            tip = points[tip_idx]
+            if (calculate_distance(tip, wrist) > calculate_distance(pip, wrist) * 1.08 and
+                    calculate_distance(tip, mcp) > calculate_distance(pip, mcp)):
+                extended += 1
+
+        # More responsive: at most 1 other finger can be misclassified as extended
+        if extended > 1:
+            continue
+
+        # Check if thumb is extended and pointing up
+        thumb_tip = points[4]
+        thumb_ip = points[3]
+        thumb_mcp = points[2]
+        index_mcp = points[5]
+
+        thumb_extended = (
+            calculate_distance(thumb_tip, wrist) > calculate_distance(thumb_mcp, wrist) * 1.05 and
+            calculate_distance(thumb_tip, index_mcp) > calculate_distance(thumb_ip, index_mcp)
+        )
+
+        thumb_pointing_up = (
+            thumb_tip[1] < thumb_ip[1] and
+            thumb_tip[1] < index_mcp[1] and
+            thumb_tip[1] < wrist[1]
+        )
+
+        if thumb_extended and thumb_pointing_up:
+            return True
+
+    return False
+
+
+def draw_paused_overlay(image, thumbs_up_frames=0, required_frames=PALM_STOP_REQUIRED_FRAMES):
+    """Draw a premium dark glass overlay when the exercise is paused."""
+    h, w = image.shape[:2]
+    
+    # 1. Dark semi-transparent overlay over the entire frame
+    overlay = image.copy()
+    cv2.rectangle(overlay, (0, 0), (w, h), (10, 10, 15), -1)
+    cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
+    
+    # 2. Large central glass panel
+    panel_w = int(w * 0.75)
+    panel_h = int(h * 0.5)
+    px = (w - panel_w) // 2
+    py = (h - panel_h) // 2
+    draw_glass_panel(image, px, py, panel_w, panel_h, alpha=0.85, color=(15, 15, 20), radius=16)
+    
+    # Border
+    cv2.rectangle(image, (px, py), (px + panel_w, py + panel_h), (80, 100, 120), 1, cv2.LINE_AA)
+    cv2.rectangle(image, (px - 2, py - 2), (px + panel_w + 2, py + panel_h + 2), (40, 50, 60), 1, cv2.LINE_AA)
+
+    # 3. Draw Pause Icon (||)
+    icon_cx = w // 2
+    icon_cy = py + int(panel_h * 0.28)
+    bar_w, bar_h = 8, 24
+    bar_gap = 8
+    cv2.rectangle(image, (icon_cx - bar_w - bar_gap//2, icon_cy - bar_h//2), 
+                  (icon_cx - bar_gap//2, icon_cy + bar_h//2), ACCENT_ORANGE, -1)
+    cv2.rectangle(image, (icon_cx + bar_gap//2, icon_cy - bar_h//2), 
+                  (icon_cx + bar_w + bar_gap//2, icon_cy + bar_h//2), ACCENT_ORANGE, -1)
+    
+    # 4. Text: "EXERCISE PAUSED"
+    msg1 = "EXERCISE PAUSED"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.65
+    thickness = 2
+    (tw1, th1), _ = cv2.getTextSize(msg1, font, font_scale, thickness)
+    cv2.putText(image, msg1, (w // 2 - tw1 // 2, icon_cy + 30), font, font_scale, TEXT_WHITE, thickness, cv2.LINE_AA)
+    
+    # 5. Text: "Show Thumbs-Up to Resume"
+    msg2 = "Show Thumbs-Up to Resume"
+    font_scale2 = 0.4
+    thickness2 = 1
+    (tw2, th2), _ = cv2.getTextSize(msg2, font, font_scale2, thickness2)
+    cv2.putText(image, msg2, (w // 2 - tw2 // 2, icon_cy + 52), font, font_scale2, TEXT_DIM, thickness2, cv2.LINE_AA)
+
+    # 6. Progress bar for thumbs-up resume
+    if thumbs_up_frames > 0:
+        progress = min(thumbs_up_frames / required_frames, 1.0)
+        progress_w = int(panel_w * 0.6)
+        progress_h = 6
+        bx = w // 2 - progress_w // 2
+        by = py + int(panel_h * 0.8)
+        
+        cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (40, 40, 40), -1)
+        cv2.rectangle(image, (bx, by), (bx + int(progress_w * progress), by + progress_h), ACCENT_GREEN, -1)
+        cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (60, 60, 60), 1)
 
 
 def detect_pose_frame(landmarker, frame_bgr, timestamp_ms):
@@ -788,6 +930,11 @@ def run_bicep_curls():
     last_results = None
     last_hand_results = None
 
+    paused = False
+    thumbs_up_frames = 0
+    thumbs_up_cooldown_active = False
+    pause_start_time = 0.0
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -813,11 +960,51 @@ def run_bicep_curls():
                         hand_landmarker, frame, hand_timestamp_ms
                     )
                     last_hand_results = hand_results
+
+                    # Thumbs-up pause/resume check
+                    if is_thumbs_up(hand_results):
+                        if not thumbs_up_cooldown_active:
+                            thumbs_up_frames += HAND_FRAME_SKIP
+                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
+                                paused = not paused
+                                thumbs_up_frames = 0
+                                thumbs_up_cooldown_active = True
+                                if paused:
+                                    pause_start_time = time.time()
+                                else:
+                                    pause_duration = time.time() - pause_start_time
+                                    # Adjust timestamps
+                                    if last_rep_time is not None:
+                                        last_rep_time += pause_duration
+                                    if last_uneven_warning_time is not None:
+                                        last_uneven_warning_time += pause_duration
+                                    warning_active_until += pause_duration
+                                    swing_warning_active_until += pause_duration
+                    else:
+                        thumbs_up_frames = 0
+                        thumbs_up_cooldown_active = False
+
                     palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
                 else:
                     hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
+                thumbs_up_frames = 0
+
+            # If paused, render overlay and bypass main logic
+            if paused:
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                        show_palm_stop_message('Bicep Curls', image)
+                        break
+                cv2.imshow('Bicep Curls', image)
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+                continue
 
             # Calculate set stats
             now = time.time()
@@ -971,7 +1158,7 @@ def run_bicep_curls():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1, cv2.LINE_AA)
 
             if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                 if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                     show_palm_stop_message('Bicep Curls', image)
                     break
@@ -1032,6 +1219,10 @@ def run_pushups():
     last_results = None
     last_hand_results = None
 
+    paused = False
+    thumbs_up_frames = 0
+    thumbs_up_cooldown_active = False
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -1055,11 +1246,41 @@ def run_pushups():
                         hand_landmarker, frame, hand_timestamp_ms
                     )
                     last_hand_results = hand_results
+
+                    # Thumbs-up check
+                    if is_thumbs_up(hand_results):
+                        if not thumbs_up_cooldown_active:
+                            thumbs_up_frames += HAND_FRAME_SKIP
+                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
+                                paused = not paused
+                                thumbs_up_frames = 0
+                                thumbs_up_cooldown_active = True
+                                print(f"⏸️ Push-ups: {'PAUSED' if paused else 'RESUMED'}")
+                    else:
+                        thumbs_up_frames = 0
+                        thumbs_up_cooldown_active = False
+
                     palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
                 else:
                     hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
+                thumbs_up_frames = 0
+
+            # If paused, render overlay and bypass main logic
+            if paused:
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                        show_palm_stop_message('Push-ups', image)
+                        break
+                cv2.imshow('Push-ups', image)
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+                continue
 
             is_horizontal = False
             is_body_straight = True
@@ -1162,7 +1383,7 @@ def run_pushups():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
 
             if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                 if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                     show_palm_stop_message('Push-ups', image)
                     break
@@ -1229,6 +1450,11 @@ def run_squats():
     last_results = None
     last_hand_results = None
 
+    paused = False
+    thumbs_up_frames = 0
+    thumbs_up_cooldown_active = False
+    pause_start_time = 0.0
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -1251,11 +1477,50 @@ def run_squats():
                         hand_landmarker, frame, hand_timestamp_ms
                     )
                     last_hand_results = hand_results
+
+                    # Thumbs-up check
+                    if is_thumbs_up(hand_results):
+                        if not thumbs_up_cooldown_active:
+                            thumbs_up_frames += HAND_FRAME_SKIP
+                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
+                                paused = not paused
+                                thumbs_up_frames = 0
+                                thumbs_up_cooldown_active = True
+                                if paused:
+                                    pause_start_time = time.time()
+                                else:
+                                    pause_duration = time.time() - pause_start_time
+                                    # Adjust timestamps
+                                    if last_rep_time is not None:
+                                        last_rep_time += pause_duration
+                                    if arms_incorrect_start_time is not None:
+                                        arms_incorrect_start_time += pause_duration
+                                print(f"⏸️ Squats: {'PAUSED' if paused else 'RESUMED'}")
+                    else:
+                        thumbs_up_frames = 0
+                        thumbs_up_cooldown_active = False
+
                     palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
                 else:
                     hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
+                thumbs_up_frames = 0
+
+            # If paused, render overlay and bypass main logic
+            if paused:
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                        show_palm_stop_message('Squats', image)
+                        break
+                cv2.imshow('Squats', image)
+                if cv2.waitKey(5) & 0xFF == ord('q'):
+                    break
+                continue
 
             current_hip_angle = 180
             posture_correct = True
@@ -1489,7 +1754,7 @@ def run_squats():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 240), 1, cv2.LINE_AA)
 
             if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                 if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                     show_palm_stop_message('Squats', image)
                     break
@@ -1549,6 +1814,10 @@ def run_plank():
     last_results = None
     last_hand_results = None
 
+    paused = False
+    thumbs_up_frames = 0
+    thumbs_up_cooldown_active = False
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -1571,11 +1840,45 @@ def run_plank():
                         hand_landmarker, frame, hand_timestamp_ms
                     )
                     last_hand_results = hand_results
+
+                    # Thumbs-up check
+                    if is_thumbs_up(hand_results):
+                        if not thumbs_up_cooldown_active:
+                            thumbs_up_frames += HAND_FRAME_SKIP
+                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
+                                paused = not paused
+                                thumbs_up_frames = 0
+                                thumbs_up_cooldown_active = True
+                                print(f"⏸️ Plank: {'PAUSED' if paused else 'RESUMED'}")
+                    else:
+                        thumbs_up_frames = 0
+                        thumbs_up_cooldown_active = False
+
                     palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
                 else:
                     hand_results = last_hand_results
             else:
                 palm_stop_frames = 0
+                thumbs_up_frames = 0
+
+            # If paused, render overlay and bypass main logic
+            if paused:
+                # Reset plank timer tracking variables so elapsed time is not added on resume
+                in_plank = False
+                start_time = None
+                
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                        show_palm_stop_message('Plank', image)
+                        break
+                cv2.imshow('Plank', image)
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+                continue
 
             is_horizontal = False
             is_looking_around = False
@@ -1701,7 +2004,7 @@ def run_plank():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_ORANGE, 2, cv2.LINE_AA)
 
             if hand_landmarker is not None:
-                draw_palm_stop_status(image, palm_stop_frames)
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                 if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                     show_palm_stop_message('Plank', image)
                     break
