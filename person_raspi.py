@@ -109,6 +109,60 @@ def check_plank(shoulder, hip, ankle, min_angle=165.0):
     return angle >= min_angle
 
 
+def draw_positioning_overlay(image, position, elapsed_pct):
+    """Draw a premium glass overlay indicating the robot is positioning itself."""
+    h, w = image.shape[:2]
+    
+    # 1. Dark semi-transparent overlay over the entire frame
+    overlay = image.copy()
+    cv2.rectangle(overlay, (0, 0), (w, h), (10, 10, 15), -1)
+    cv2.addWeighted(overlay, 0.55, image, 0.45, 0, image)
+    
+    # 2. Central glass panel
+    panel_w = int(w * 0.75)
+    panel_h = int(h * 0.45)
+    px = (w - panel_w) // 2
+    py = (h - panel_h) // 2
+    draw_glass_panel(image, px, py, panel_w, panel_h, alpha=0.85, color=(15, 15, 20), radius=16)
+    
+    # Border
+    cv2.rectangle(image, (px, py), (px + panel_w, py + panel_h), (80, 100, 120), 1, cv2.LINE_AA)
+    cv2.rectangle(image, (px - 2, py - 2), (px + panel_w + 2, py + panel_h + 2), (40, 50, 60), 1, cv2.LINE_AA)
+
+    # 3. Rotating spinner/progress indicator
+    cx = w // 2
+    cy = py + int(panel_h * 0.28)
+    r = 20
+    cv2.circle(image, (cx, cy), r, (40, 40, 40), 2, cv2.LINE_AA)
+    sweep = int(elapsed_pct * 360)
+    cv2.ellipse(image, (cx, cy), (r, r), -90, 0, sweep, ACCENT_GREEN, 2, cv2.LINE_AA)
+
+    # 4. Text: "ROBOT POSITIONING"
+    msg1 = "ROBOT POSITIONING"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.6
+    thickness = 2
+    (tw1, th1), _ = cv2.getTextSize(msg1, font, font_scale, thickness)
+    cv2.putText(image, msg1, (w // 2 - tw1 // 2, cy + 32), font, font_scale, TEXT_WHITE, thickness, cv2.LINE_AA)
+    
+    # 5. Text: "Aligning to FRONT view..." or "Aligning to SIDE view..."
+    msg2 = f"Aligning to {position} view..."
+    font_scale2 = 0.4
+    thickness2 = 1
+    (tw2, th2), _ = cv2.getTextSize(msg2, font, font_scale2, thickness2)
+    cv2.putText(image, msg2, (w // 2 - tw2 // 2, cy + 52), font, font_scale2, TEXT_DIM, thickness2, cv2.LINE_AA)
+
+    # 6. Progress bar
+    progress_w = int(panel_w * 0.7)
+    progress_h = 6
+    bx = w // 2 - progress_w // 2
+    by = py + int(panel_h * 0.8)
+    
+    cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (40, 40, 40), -1)
+    cv2.rectangle(image, (bx, by), (bx + int(progress_w * elapsed_pct), by + progress_h), ACCENT_GREEN, -1)
+    cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (60, 60, 60), 1)
+
+
 # ═══════════════════════════════════════════════════════
 #  ESP32 UDP SENDER
 # ═══════════════════════════════════════════════════════
@@ -935,6 +989,12 @@ def run_bicep_curls():
     thumbs_up_cooldown_active = False
     pause_start_time = 0.0
 
+    # Positioning state
+    positioning_duration = 3.0
+    positioning_start_time = time.time()
+    positioning_completed = False
+    send_command("FRONT")
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -952,6 +1012,23 @@ def run_bicep_curls():
                 last_results = results
             else:
                 results = last_results
+
+            # Check positioning phase
+            if not positioning_completed:
+                elapsed = time.time() - positioning_start_time
+                if elapsed < positioning_duration:
+                    pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "FRONT", pct)
+                    send_command("FRONT")
+                    cv2.imshow('Bicep Curls', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q'):
+                        break
+                    continue
+                else:
+                    send_command("STOP")
+                    positioning_completed = True
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -1167,6 +1244,7 @@ def run_bicep_curls():
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
+        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
@@ -1223,6 +1301,12 @@ def run_pushups():
     thumbs_up_frames = 0
     thumbs_up_cooldown_active = False
 
+    # Positioning state
+    positioning_duration = 3.0
+    positioning_start_time = time.time()
+    positioning_completed = False
+    send_command("SIDE")
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -1238,6 +1322,23 @@ def run_pushups():
                 last_results = results
             else:
                 results = last_results
+
+            # Check positioning phase
+            if not positioning_completed:
+                elapsed = time.time() - positioning_start_time
+                if elapsed < positioning_duration:
+                    pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "SIDE", pct)
+                    send_command("SIDE")
+                    cv2.imshow('Push-ups', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q'):
+                        break
+                    continue
+                else:
+                    send_command("STOP")
+                    positioning_completed = True
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -1393,6 +1494,7 @@ def run_pushups():
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
+        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
@@ -1455,6 +1557,12 @@ def run_squats():
     thumbs_up_cooldown_active = False
     pause_start_time = 0.0
 
+    # Positioning state
+    positioning_duration = 3.0
+    positioning_start_time = time.time()
+    positioning_completed = False
+    send_command("FRONT")
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -1469,6 +1577,23 @@ def run_squats():
                 last_results = results
             else:
                 results = last_results
+
+            # Check positioning phase
+            if not positioning_completed:
+                elapsed = time.time() - positioning_start_time
+                if elapsed < positioning_duration:
+                    pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "FRONT", pct)
+                    send_command("FRONT")
+                    cv2.imshow('Squats', image)
+                    if cv2.waitKey(5) & 0xFF == ord('q'):
+                        break
+                    continue
+                else:
+                    send_command("STOP")
+                    positioning_completed = True
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -1764,6 +1889,7 @@ def run_squats():
             if cv2.waitKey(5) & 0xFF == ord('q'):
                 break
     finally:
+        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
@@ -1818,6 +1944,12 @@ def run_plank():
     thumbs_up_frames = 0
     thumbs_up_cooldown_active = False
 
+    # Positioning state
+    positioning_duration = 3.0
+    positioning_start_time = time.time()
+    positioning_completed = False
+    send_command("SIDE")
+
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -1832,6 +1964,23 @@ def run_plank():
                 last_results = results
             else:
                 results = last_results
+
+            # Check positioning phase
+            if not positioning_completed:
+                elapsed = time.time() - positioning_start_time
+                if elapsed < positioning_duration:
+                    pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "SIDE", pct)
+                    send_command("SIDE")
+                    cv2.imshow('Plank', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q'):
+                        break
+                    continue
+                else:
+                    send_command("STOP")
+                    positioning_completed = True
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -2014,6 +2163,7 @@ def run_plank():
             if cv2.waitKey(10) & 0xFF == ord('q'):
                 break
     finally:
+        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
