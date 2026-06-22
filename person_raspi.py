@@ -16,6 +16,53 @@ import numpy as np
 import socket
 import signal
 import sys
+from datetime import datetime, timezone
+
+# ─── Session Reporting to MongoDB Dashboard ───
+REPORT_USER_EMAIL = os.getenv("FITBOT_USER_EMAIL", "athlete@local.dev")
+
+try:
+    from report_session import report_session
+except Exception:
+    report_session = None
+
+# ─── Live Robot ↔ Dashboard Link (push outputs + receive commands) ───
+try:
+    from robot_link import post_state
+except Exception:
+    post_state = None
+
+# Throttled live state push (avoid flooding the backend)
+_last_state_push = 0.0
+STATE_PUSH_INTERVAL = 0.4  # seconds
+
+# Camera stream URL (set this so the web dashboard can show live video)
+# Example: "http://192.168.1.50:8080/stream"
+# Best: run camera_server_pi.py on the Pi and use the Pi's IP in the URL.
+CAMERA_STREAM_URL = os.getenv("FITBOT_CAMERA_URL", "")
+
+def _maybe_push_state(mode, reps=None, plank_time=None, esp_cmd=None, esp_spd=None, message=None, camera_url=None):
+    """Push live robot outputs to the dashboard (throttled)."""
+    global _last_state_push
+    if not post_state:
+        return
+    now = time.time()
+    if now - _last_state_push < STATE_PUSH_INTERVAL:
+        return
+    _last_state_push = now
+    try:
+        post_state(
+            user_email=REPORT_USER_EMAIL,
+            mode=mode,
+            reps=reps,
+            plank_time=plank_time,
+            esp_cmd=esp_cmd,
+            esp_spd=esp_spd,
+            message=message,
+            camera_url=camera_url,
+        )
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════════
@@ -485,7 +532,7 @@ def run_bicep_curls():
     """Bicep curl counter with form detection for both arms."""
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
-            return "N/A", ACCENT_RED, "---"
+            return "N/A", ACCENT_RED, "---", False
 
         angle = calculate_angle(shoulder, elbow, wrist)
 
@@ -503,6 +550,9 @@ def run_bicep_curls():
             state_dict['stage'] = "up"
             if not flare_error:
                 state_dict['counter'] += 1
+                return feedback, color, state_dict['stage'].upper(), False
+            else:
+                return feedback, color, state_dict['stage'].upper(), True
 
         bar_val = np.interp(angle, (30, 150), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
@@ -521,7 +571,7 @@ def run_bicep_curls():
         cv2.rectangle(image, (bar_x, bar_y_top),
                       (bar_x + 14, bar_y_top + bar_h), (60, 60, 60), 1)
 
-        return feedback, color, state_dict['stage'].upper()
+        return feedback, color, state_dict['stage'].upper(), False
 
     arms = {
         'left': {'counter': 0, 'stage': 'down'},
@@ -536,6 +586,10 @@ def run_bicep_curls():
 
     landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
     timestamp_ms = 0
+
+    # For MongoDB session reporting
+    start_time = datetime.now(timezone.utc)
+    bad_form_count = 0
 
     try:
         while cap.isOpened():
@@ -555,8 +609,17 @@ def run_bicep_curls():
                 l_s, l_e, l_w = get_pt(lm, 11), get_pt(lm, 13), get_pt(lm, 15)
                 r_s, r_e, r_w = get_pt(lm, 12), get_pt(lm, 14), get_pt(lm, 16)
 
-                l_fb, l_clr, l_stg = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+                prev_l = arms['left']['counter']
+                prev_r = arms['right']['counter']
+
+                l_fb, l_clr, l_stg, l_bad = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
+                r_fb, r_clr, r_stg, r_bad = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+
+                # Count bad-form reps for reporting (when a rep was just completed with flare)
+                if arms['left']['counter'] > prev_l and l_bad:
+                    bad_form_count += 1
+                if arms['right']['counter'] > prev_r and r_bad:
+                    bad_form_count += 1
 
                 draw_skeleton(image, results)
 
@@ -582,6 +645,30 @@ def run_bicep_curls():
 
     cap.release()
     cv2.destroyAllWindows()
+
+    # ─── Report to MongoDB Dashboard ───
+    end_time = datetime.now(timezone.utc)
+    duration = int((end_time - start_time).total_seconds())
+    total_reps = arms['left']['counter'] + arms['right']['counter']
+    form_good = form_bad = None
+    if total_reps > 0 and bad_form_count >= 0:
+        form_bad = round((bad_form_count / total_reps) * 100, 1)
+        form_good = round(100 - form_bad, 1)
+
+    if report_session:
+        report_session(
+            user_email=REPORT_USER_EMAIL,
+            exercise_type="BICEP_CURLS",
+            start_time=start_time,
+            end_time=end_time,
+            duration_sec=duration,
+            reps=total_reps,
+            left_reps=arms['left']['counter'],
+            right_reps=arms['right']['counter'],
+            form_good_pct=form_good,
+            form_bad_pct=form_bad,
+        )
+
     print(f"\n✅ Bicep Curls Done! Left: {arms['left']['counter']} | Right: {arms['right']['counter']}")
 
 
@@ -604,6 +691,9 @@ def run_pushups():
 
     pushup_counter = 0
     pushup_stage = 'up'
+
+    # For MongoDB session reporting
+    start_time = datetime.now(timezone.utc)
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     print("💪 Push-up Counter Active! Press Q to quit.")
@@ -657,6 +747,20 @@ def run_pushups():
 
     cap.release()
     cv2.destroyAllWindows()
+
+    # ─── Report to MongoDB Dashboard ───
+    end_time = datetime.now(timezone.utc)
+    duration = int((end_time - start_time).total_seconds())
+    if report_session:
+        report_session(
+            user_email=REPORT_USER_EMAIL,
+            exercise_type="PUSHUPS",
+            start_time=start_time,
+            end_time=end_time,
+            duration_sec=duration,
+            reps=pushup_counter,
+        )
+
     print(f"\n✅ Push-ups Done! Total: {pushup_counter}")
 
 
@@ -667,6 +771,9 @@ def run_squats():
     SQUAT_DOWN_ANGLE = 110
     SQUAT_UP_ANGLE = 160
     down_angle = SQUAT_DOWN_ANGLE
+
+    # For MongoDB session reporting
+    start_time = datetime.now(timezone.utc)
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -767,6 +874,20 @@ def run_squats():
 
     cap.release()
     cv2.destroyAllWindows()
+
+    # ─── Report to MongoDB Dashboard ───
+    end_time = datetime.now(timezone.utc)
+    duration = int((end_time - start_time).total_seconds())
+    if report_session:
+        report_session(
+            user_email=REPORT_USER_EMAIL,
+            exercise_type="SQUATS",
+            start_time=start_time,
+            end_time=end_time,
+            duration_sec=duration,
+            reps=counter,
+        )
+
     print(f"\n✅ Squats Done! Total Reps: {counter}")
 
 
@@ -775,6 +896,9 @@ def run_plank():
     plank_timer = 0
     in_plank = False
     start_time = None
+
+    # For MongoDB session reporting (overall session wall time)
+    session_start = datetime.now(timezone.utc)
 
     def count_plank_time(shoulder, hip, ankle, in_plank_state, plank_start):
         if check_plank(shoulder, hip, ankle):
@@ -863,6 +987,20 @@ def run_plank():
 
     cap.release()
     cv2.destroyAllWindows()
+
+    # ─── Report to MongoDB Dashboard ───
+    session_end = datetime.now(timezone.utc)
+    duration = int((session_end - session_start).total_seconds())
+    if report_session:
+        report_session(
+            user_email=REPORT_USER_EMAIL,
+            exercise_type="PLANK",
+            start_time=session_start,
+            end_time=session_end,
+            duration_sec=duration,
+            hold_time_sec=round(plank_timer, 2),
+        )
+
     print(f"\n✅ Plank Done! Total Time: {plank_timer:.2f}s")
 
 
@@ -928,6 +1066,17 @@ def main():
     print("─" * 45)
     print("  Press Q to quit")
     print()
+
+    # Push initial live state for the web dashboard (include camera if configured)
+    _maybe_push_state(
+        mode="PERSON_TRACKING",
+        esp_cmd="STOP",
+        message="Person following started",
+        camera_url=CAMERA_STREAM_URL or None
+    )
+
+    # For MongoDB session reporting
+    start_time = datetime.now(timezone.utc)
 
     if SHOW_WINDOW:
         cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
@@ -1037,6 +1186,14 @@ def main():
                 d_zone = "GOOD"
                 h_zone = "CENTER"
 
+            # Push live robot outputs (command + state) to the web dashboard
+            _maybe_push_state(
+                mode="PERSON_TRACKING",
+                esp_cmd=command,
+                message=state,
+                camera_url=CAMERA_STREAM_URL or None
+            )
+
             # Terminal debug
             if (DEBUG and SHOW_FPS and
                     frame_counter % (30 * FRAME_SKIP) == 0):
@@ -1075,6 +1232,19 @@ def main():
     cv2.destroyAllWindows()
     landmarker.close()
     sock.close()
+
+    # ─── Report to MongoDB Dashboard ───
+    end_time = datetime.now(timezone.utc)
+    duration = int((end_time - start_time).total_seconds())
+    if report_session:
+        report_session(
+            user_email=REPORT_USER_EMAIL,
+            exercise_type="PERSON_TRACKING",
+            start_time=start_time,
+            end_time=end_time,
+            duration_sec=duration,
+        )
+
     print("\n✅ Done!")
 
 

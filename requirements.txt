@@ -2,3 +2,6 @@
 # On Raspberry Pi OS, pip will use piwheels for ARM-compatible wheels.
 mediapipe>=0.10.9
 numpy>=1.24
+
+# For reporting completed sessions to the FastAPI + MongoDB backend
+requests>=2.31

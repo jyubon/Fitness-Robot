@@ -558,6 +558,32 @@
 
   .mode-btn-icon { font-size: 22px; }
 
+  /* Camera feed card */
+  .camera-card .camera-container {
+    position: relative;
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    min-height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #robot-camera {
+    display: none;
+    width: 100%;
+    max-height: 360px;
+    object-fit: contain;
+    background: #000;
+  }
+  .camera-placeholder {
+    color: var(--text3);
+    font-size: 13px;
+    text-align: center;
+    padding: 20px;
+  }
+  .camera-card .live-badge { margin-left: 8px; }
+
   .mode-btn-desc {
     font-size: 10px;
     color: var(--text3);
@@ -958,6 +984,7 @@
               ESP32 Motor: <span id="esp-cmd" style="color:var(--accent);font-family:var(--mono);">STOP</span>
               &nbsp;|&nbsp; Speed: <span id="esp-spd" style="color:var(--accent);font-family:var(--mono);">0</span>
             </div>
+            <div id="last-session-info" style="font-size:11px;color:var(--text3);text-align:center;margin-top:6px;"></div>
           </div>
 
           <!-- Wristband Card -->
@@ -991,9 +1018,27 @@
           </div>
         </div>
 
-        <video width="640" height="480" autoplay muted playsinline >
-          <source src="http://192.168.1.100/video.mp4" type="video/mp4">
-        </video>
+        <!-- Robot Camera Feed -->
+        <div class="card camera-card">
+          <div class="card-header">
+            <span class="card-title">Robot Camera</span>
+            <span id="camera-status" class="live-badge" style="display:none;">
+              <span class="live-dot"></span>LIVE
+            </span>
+          </div>
+          <div class="camera-container">
+            <img id="robot-camera" alt="Robot camera feed" />
+            <div id="camera-placeholder" class="camera-placeholder">
+              <div>📷 No camera feed</div>
+              <div style="font-size:11px; opacity:0.7; margin-top:4px;">
+                Robot will send a live stream URL (MJPEG recommended)
+              </div>
+            </div>
+          </div>
+          <div style="font-size:10px; color:var(--text3); margin-top:6px; text-align:center;">
+            Stream updates automatically when the robot reports a <code>cameraUrl</code>
+          </div>
+        </div>
 
         <!-- Encouragement Feed -->
         <div class="card">
@@ -1115,23 +1160,23 @@
         <div class="analytics-grid">
           <div class="stat-card">
             <div class="stat-label">Total Reps</div>
-            <div class="stat-value">247<span class="stat-unit">reps</span></div>
-            <div class="stat-delta">↑ 18% vs last week</div>
+            <div class="stat-value" id="stat-total-reps">247<span class="stat-unit">reps</span></div>
+            <div class="stat-delta" id="stat-delta-reps">Live from your robot</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Plank Time</div>
-            <div class="stat-value">14<span class="stat-unit">min</span></div>
-            <div class="stat-delta">↑ 6% vs last week</div>
+            <div class="stat-value" id="stat-plank-time">14<span class="stat-unit">min</span></div>
+            <div class="stat-delta" id="stat-delta-plank">Live from your robot</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Sessions</div>
-            <div class="stat-value">6<span class="stat-unit">sessions</span></div>
-            <div class="stat-delta">↑ 1 more this week</div>
+            <div class="stat-value" id="stat-sessions">6<span class="stat-unit">sessions</span></div>
+            <div class="stat-delta" id="stat-delta-sessions">Live from your robot</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Gym Time</div>
-            <div class="stat-value">3h<span class="stat-unit">42m</span></div>
-            <div class="stat-delta">↑ 22min vs last week</div>
+            <div class="stat-value" id="stat-gym-time">3h<span class="stat-unit">42m</span></div>
+            <div class="stat-delta" id="stat-delta-gym">Live from your robot</div>
           </div>
         </div>
 
@@ -1187,19 +1232,373 @@
 
 <script>
 // ════════════════════════════════════════════════
-//  MOCK DATA
+//  API + DATA (real backend first, graceful fallback)
 // ════════════════════════════════════════════════
+const API_BASE = 'http://localhost:8000'; // ← change if your FastAPI runs on a different host/port
+
+let currentSessions = [];
+let currentAnalytics = null;
+let latestSession = null;
+let livePollTimer = null;
+let robotStatePollTimer = null;
+let lastRobotState = null;
+
+// Simple API helpers (never throw — return null on failure)
+async function apiPost(path, body) {
+  try {
+    const res = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } catch (e) {
+    console.warn('[API] POST failed', path, e.message || e);
+    return null;
+  }
+}
+
+async function apiGet(path) {
+  try {
+    const res = await fetch(API_BASE + path);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } catch (e) {
+    console.warn('[API] GET failed', path, e.message || e);
+    return null;
+  }
+}
+
+async function loginUser(email, name) {
+  const payload = { email: (email || '').trim() };
+  if (name) payload.name = name;
+  const data = await apiPost('/api/auth/login', payload);
+  if (data && data.user) return data.user;
+
+  // Graceful local fallback if backend is unreachable
+  const fallbackName = name || (email.includes('@') ? email.split('@')[0].replace(/[^a-zA-Z ]/g, ' ') : 'Athlete');
+  const initials = fallbackName.split(' ').map(w => w[0]?.toUpperCase()).join('').slice(0, 2) || 'AT';
+  return { email: payload.email, name: toTitleCase(fallbackName), initials };
+}
+
+async function fetchRecentSessions(userEmail, limit = 100) {
+  if (!userEmail) return [];
+  const data = await apiGet(`/api/sessions?userEmail=${encodeURIComponent(userEmail)}&limit=${limit}`);
+  return Array.isArray(data) ? data : [];
+}
+
+async function fetchAnalytics(userEmail, days = 7) {
+  if (!userEmail) return null;
+  return await apiGet(`/api/analytics/summary?userEmail=${encodeURIComponent(userEmail)}&days=${days}`);
+}
+
+async function checkBackendHealth() {
+  const data = await apiGet('/health');
+  return !!(data && data.status === 'ok');
+}
+
+// ── Robot live telemetry & command API (new bidirectional link) ──
+async function postRobotState(state) {
+  // state example: {userEmail, mode, reps, plankTime, espCmd, espSpd, message?}
+  return await apiPost('/api/robot/state', state);
+}
+
+async function fetchRobotState(userEmail) {
+  if (!userEmail) return null;
+  return await apiGet(`/api/robot/state?userEmail=${encodeURIComponent(userEmail)}`);
+}
+
+async function sendRobotCommand(userEmail, action, mode = null) {
+  const body = { userEmail, action };
+  if (mode) body.mode = mode;
+  return await apiPost('/api/robot/command', body);
+}
+
+async function fetchRobotCommands(userEmail, limit = 20) {
+  if (!userEmail) return [];
+  return await apiGet(`/api/robot/commands?userEmail=${encodeURIComponent(userEmail)}&limit=${limit}`);
+}
+
+// Update the big Live Telemetry numbers from a real session document
+function updateLiveFromSession(session) {
+  if (!session) return;
+  latestSession = session;
+
+  const modeEl = document.getElementById('robot-mode');
+  if (modeEl) modeEl.textContent = session.exerciseType || '—';
+
+  const repEl = document.getElementById('rep-count');
+  if (repEl && typeof session.reps === 'number') {
+    repEl.textContent = session.reps;
+  }
+
+  const plankEl = document.getElementById('plank-time');
+  if (plankEl && typeof session.holdTimeSec === 'number') {
+    plankEl.textContent = Math.round(session.holdTimeSec);
+  }
+
+  const clockEl = document.getElementById('session-clock');
+  if (clockEl && typeof session.durationSec === 'number') {
+    const m = Math.floor(session.durationSec / 60).toString().padStart(2, '0');
+    const s = (session.durationSec % 60).toString().padStart(2, '0');
+    clockEl.textContent = `${m}:${s}`;
+  }
+
+  // Small "last session" summary line under the robot state card
+  const lastInfo = document.getElementById('last-session-info');
+  if (lastInfo) {
+    const ex = session.exerciseType || session.exercise || 'Session';
+    let summary = ex;
+    if (typeof session.reps === 'number') {
+      summary += ` • ${session.reps} reps`;
+    } else if (typeof session.holdTimeSec === 'number') {
+      summary += ` • ${Math.round(session.holdTimeSec)}s hold`;
+    }
+    if (typeof session.durationSec === 'number') {
+      const m = Math.floor(session.durationSec / 60);
+      const s = session.durationSec % 60;
+      summary += ` • ${m}:${String(s).padStart(2, '0')}`;
+    }
+    lastInfo.textContent = `Last: ${summary}`;
+  }
+}
+
+// Update Live Telemetry UI directly from a live robot state push (mid-exercise)
+function updateLiveFromRobotState(state) {
+  if (!state) return;
+  lastRobotState = state;
+
+  // Current mode
+  const modeEl = document.getElementById('robot-mode');
+  if (modeEl && state.mode) {
+    modeEl.textContent = state.mode;
+  }
+
+  // Reps (only overwrite when the robot actually sends a number)
+  const repEl = document.getElementById('rep-count');
+  if (repEl && typeof state.reps === 'number') {
+    repEl.textContent = state.reps;
+  }
+
+  // Plank time (seconds)
+  const plankEl = document.getElementById('plank-time');
+  if (plankEl && typeof state.plankTime === 'number') {
+    plankEl.textContent = Math.round(state.plankTime);
+  }
+
+  // ESP32 motor command + speed
+  const espCmdEl = document.getElementById('esp-cmd');
+  if (espCmdEl && state.espCmd) {
+    espCmdEl.textContent = state.espCmd;
+  }
+  const espSpdEl = document.getElementById('esp-spd');
+  if (espSpdEl && typeof state.espSpd === 'number') {
+    espSpdEl.textContent = state.espSpd;
+  }
+
+  // Controls page "Active" label
+  const ctrlMode = document.getElementById('ctrl-active-mode');
+  if (ctrlMode && state.mode) {
+    ctrlMode.textContent = state.mode;
+  }
+
+  // ESP status pill on controls
+  const ctrlEsp = document.getElementById('ctrl-esp-status');
+  if (ctrlEsp && state.espCmd) {
+    const up = (state.espCmd || '').toUpperCase();
+    const isStop = up === 'STOP' || up === 'STOPPED';
+    ctrlEsp.textContent = isStop ? '● STOPPED' : '● ' + state.espCmd;
+    ctrlEsp.style.color = isStop ? 'var(--amber)' : 'var(--accent)';
+  }
+
+  // Header badge
+  const header = document.getElementById('header-state');
+  if (header) {
+    const up = (state.mode || '').toUpperCase();
+    if (up === 'STOPPED' || up === 'FORCE_STOP') {
+      header.textContent = 'FORCE STOPPED';
+    } else if (up === 'IDLE' || up === '') {
+      header.textContent = 'ROBOT IDLE';
+    } else {
+      header.textContent = 'ROBOT ONLINE';
+    }
+  }
+
+  // Optional short message from robot → feed (form hints, events, etc.)
+  if (state.message) {
+    const prevMsg = lastRobotState && lastRobotState.message;
+    if (state.message !== prevMsg) {
+      addFeedItem(state.message, 'info');
+    }
+  }
+
+  // Robot camera feed (MJPEG recommended)
+  updateRobotCamera(state.cameraUrl);
+}
+
+function updateRobotCamera(cameraUrl) {
+  const img = document.getElementById('robot-camera');
+  const placeholder = document.getElementById('camera-placeholder');
+  const badge = document.getElementById('camera-status');
+
+  if (!img || !placeholder) return;
+
+  if (cameraUrl && typeof cameraUrl === 'string' && cameraUrl.length > 6) {
+    // Only change src if it's a new/different URL to avoid reloading the stream constantly
+    if (img.src !== cameraUrl) {
+      img.src = cameraUrl;
+    }
+    img.style.display = 'block';
+    placeholder.style.display = 'none';
+    if (badge) badge.style.display = 'inline-flex';
+  } else {
+    img.style.display = 'none';
+    placeholder.style.display = 'block';
+    if (badge) badge.style.display = 'none';
+  }
+}
+
+// If the stream fails to load (robot offline, wrong URL, etc.), fall back to placeholder
+(function wireCameraError() {
+  // We attach this after DOM is ready (called later from init)
+  window.addEventListener('load', () => {
+    const img = document.getElementById('robot-camera');
+    if (img) {
+      img.onerror = () => {
+        img.style.display = 'none';
+        const ph = document.getElementById('camera-placeholder');
+        const badge = document.getElementById('camera-status');
+        if (ph) ph.style.display = 'block';
+        if (badge) badge.style.display = 'none';
+      };
+    }
+  });
+})();
+
+// Poll the robot's live state so the dashboard shows real-time outputs
+function startRobotStatePoll() {
+  if (robotStatePollTimer) clearInterval(robotStatePollTimer);
+  robotStatePollTimer = setInterval(async () => {
+    if (!currentUser) return;
+    const st = await fetchRobotState(currentUser.email);
+    if (st) {
+      updateLiveFromRobotState(st);
+    }
+  }, 1200); // ~1.2s feels live without hammering
+}
+
+// Periodic lightweight poll so the Live page feels alive
+function startLiveDataPoll() {
+  if (livePollTimer) clearInterval(livePollTimer);
+  livePollTimer = setInterval(async () => {
+    if (!currentUser) return;
+    const sessions = await fetchRecentSessions(currentUser.email, 1);
+    if (sessions && sessions.length > 0) {
+      const s = sessions[0];
+      const prevId = latestSession ? (latestSession.id || latestSession._id) : null;
+      const newId = s.id || s._id;
+      if (newId && newId !== prevId) {
+        addFeedItem(`<strong>Session saved</strong> — ${s.exerciseType}`, 'good');
+      }
+      updateLiveFromSession(s);
+    }
+  }, 4500);
+}
+
+// Real-data helper functions (MongoDB via FastAPI). Safe to call even if backend is down.
+async function loadInitialData() {
+  if (!currentUser) return;
+
+  const [sessions, analytics] = await Promise.all([
+    fetchRecentSessions(currentUser.email, 50),
+    fetchAnalytics(currentUser.email, 7)
+  ]);
+
+  if (sessions && sessions.length > 0) {
+    currentSessions = sessions;
+    latestSession = sessions[0];
+    updateLiveFromSession(latestSession);
+  }
+  if (analytics) {
+    currentAnalytics = analytics;
+    populateAnalyticsSummary(currentAnalytics);
+  }
+}
+
+// Populate the four big summary cards on the Analytics page from real backend data
+function populateAnalyticsSummary(analytics) {
+  if (!analytics) return;
+
+  const set = (id, val, unit = '') => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (unit) {
+      el.innerHTML = `${val}<span class="stat-unit">${unit}</span>`;
+    } else {
+      el.textContent = val;
+    }
+  };
+
+  if (typeof analytics.totalReps === 'number') {
+    set('stat-total-reps', analytics.totalReps, 'reps');
+  }
+  if (typeof analytics.totalPlankSeconds === 'number') {
+    const mins = Math.floor(analytics.totalPlankSeconds / 60);
+    const secs = Math.round(analytics.totalPlankSeconds % 60);
+    const val = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+    set('stat-plank-time', val);
+  }
+  if (typeof analytics.totalSessions === 'number') {
+    set('stat-sessions', analytics.totalSessions, 'sessions');
+  }
+  if (typeof analytics.totalGymMinutes === 'number') {
+    const h = Math.floor(analytics.totalGymMinutes / 60);
+    const m = Math.round(analytics.totalGymMinutes % 60);
+    const val = h > 0 ? `${h}h ${m}m` : `${m}m`;
+    set('stat-gym-time', val);
+  }
+
+  // Clear the demo "vs last week" deltas when we have real data
+  ['stat-delta-reps', 'stat-delta-plank', 'stat-delta-sessions', 'stat-delta-gym'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = 'From your saved sessions';
+  });
+}
+
+async function updateBackendStatus() {
+  const ok = await checkBackendHealth();
+  let el = document.getElementById('backend-status');
+  if (!el) {
+    const header = document.querySelector('.header') || document.querySelector('header') || document.body;
+    el = document.createElement('span');
+    el.id = 'backend-status';
+    el.style.cssText = 'margin-left:12px;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,0.1);';
+    const state = document.getElementById('header-state');
+    if (state && state.parentNode) {
+      state.parentNode.appendChild(el);
+    } else {
+      header.appendChild(el);
+    }
+  }
+  if (ok) {
+    el.textContent = '● DB';
+    el.style.color = 'var(--accent)';
+    el.title = 'Backend connected (MongoDB)';
+  } else {
+    el.textContent = '○ DB';
+    el.style.color = 'var(--amber)';
+    el.title = 'Backend offline — using local demo data';
+  }
+}
+
+// ── Legacy mock data kept as last-resort fallback for charts ──
 const mockUsers = [
   { email: 'alex@university.edu', password: 'password', name: 'Alex Johnson', initials: 'AJ' }
 ];
-
 const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 const analyticsData = {
-  reps: {
-    curls:   [18, 24, 0,  22, 20, 28, 15],
-    pushups: [10, 15, 0,  12, 18, 20, 8 ],
-    squats:  [15, 20, 0,  18, 25, 22, 12],
-  },
+  reps: { curls: [18, 24, 0, 22, 20, 28, 15], pushups: [10, 15, 0, 12, 18, 20, 8], squats: [15, 20, 0, 18, 25, 22, 12] },
   plankSeconds: [60, 90, 0, 75, 105, 120, 65],
   sessionTotalMins: [32, 45, 0, 38, 52, 60, 40],
   formAccuracy: {
@@ -1216,7 +1615,6 @@ const analyticsData = {
     { date: 'Sun Jun 08', exercise: 'BICEP_CURLS', workTime: '13:55', total: '40:00' },
   ]
 };
-
 const feedMessages = [
   { type: 'info',  msg: '<strong>Session started</strong> — Bicep Curls mode active' },
   { type: 'good',  msg: '<strong>Great rep!</strong> Perfect form on both arms' },
@@ -1257,19 +1655,17 @@ function switchAuthTab(tab) {
   document.getElementById('register-form').style.display = tab === 'register' ? 'flex' : 'none';
 }
 
-function handleLogin() {
+async function handleLogin() {
   const email = document.getElementById('login-email').value || 'alex@university.edu';
   const name = email.includes('@') ? email.split('@')[0].replace(/[^a-zA-Z ]/g, ' ') : 'Athlete';
-  const initials = name.split(' ').map(w => w[0]?.toUpperCase()).join('').slice(0, 2) || 'AT';
-  currentUser = { email, name: toTitleCase(name), initials };
+  currentUser = await loginUser(email, toTitleCase(name));
   enterApp();
 }
 
-function handleRegister() {
+async function handleRegister() {
   const name = document.getElementById('reg-name').value || 'New User';
   const email = document.getElementById('reg-email').value || 'user@university.edu';
-  const initials = name.split(' ').map(w => w[0]?.toUpperCase()).join('').slice(0, 2);
-  currentUser = { email, name, initials };
+  currentUser = await loginUser(email, name);
   showToast('Account created!', '✅');
   setTimeout(enterApp, 600);
 }
@@ -1300,16 +1696,41 @@ function showPage(page, btn) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
   if (btn) btn.classList.add('active');
-  if (page === 'analytics') initAnalyticsCharts();
+
+  if (page === 'analytics') {
+    // If we have real analytics from Mongo, reset charts so we can draw with live data
+    if (currentAnalytics && (chartInstances['reps'] || chartInstances['session-time'])) {
+      Object.keys(chartInstances).forEach(k => {
+        try { chartInstances[k].destroy(); } catch (e) {}
+      });
+      chartInstances = {};
+    }
+    initAnalyticsCharts();
+  }
 }
 
 // ════════════════════════════════════════════════
 //  APP INIT
 // ════════════════════════════════════════════════
-function initApp() {
+async function initApp() {
   renderFeed();
   startLiveSim();
   initSparkline();
+
+  // Load real data from MongoDB backend (graceful fallback if offline)
+  await loadInitialData();
+
+  // Start polling for newly completed sessions so Live Telemetry feels alive
+  startLiveDataPoll();
+
+  // Start polling live robot state (reps, mode, esp commands, etc.) while running
+  startRobotStatePoll();
+
+  // Prepare camera feed (error handling + initial state)
+  initCameraFeed();
+
+  // Show backend status
+  updateBackendStatus();
 }
 
 // ════════════════════════════════════════════════
@@ -1434,34 +1855,47 @@ function initSparkline() {
 // ════════════════════════════════════════════════
 //  CONTROLS
 // ════════════════════════════════════════════════
-function switchMode(mode, btn) {
+async function switchMode(mode, btn) {
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active-mode'));
   btn.classList.add('active-mode');
+
+  // Send real command to robot via backend
+  if (currentUser) {
+    await sendRobotCommand(currentUser.email, 'SWITCH_MODE', mode);
+  }
+
+  // Optimistic UI update (robot will confirm via live state poll)
   robotState.mode = mode;
   robotState.reps = 0;
   document.getElementById('ctrl-active-mode').textContent = mode;
   document.getElementById('robot-mode').textContent = mode;
   document.getElementById('rep-count').textContent = '0';
-  addFeedItem(`<strong>Mode switched</strong> → ${mode}`, 'info');
-  showToast(`Switched to ${mode.replace('_', ' ')}`, '🔄');
+  addFeedItem(`<strong>Mode switch requested</strong> → ${mode}`, 'info');
+  showToast(`Requested: ${mode.replace('_', ' ')}`, '🔄');
 }
 
-function terminateExercise() {
+async function terminateExercise() {
+  if (currentUser) {
+    await sendRobotCommand(currentUser.email, 'TERMINATE');
+  }
   robotState.espCmd = 'STOP';
   robotState.espSpd = 0;
   document.getElementById('esp-cmd').textContent = 'STOP';
   document.getElementById('esp-spd').textContent = '0';
   document.getElementById('ctrl-esp-status').textContent = '● STOPPED';
   document.getElementById('ctrl-esp-status').style.color = 'var(--amber)';
-  addFeedItem('<strong>Exercise terminated</strong> — robot idling', 'warn');
-  showToast('Exercise terminated', '⏹');
+  addFeedItem('<strong>Terminate requested</strong> — robot should stop', 'warn');
+  showToast('Terminate sent to robot', '⏹');
   setTimeout(() => {
     document.getElementById('ctrl-esp-status').textContent = '● READY';
     document.getElementById('ctrl-esp-status').style.color = 'var(--accent)';
   }, 3000);
 }
 
-function forceStop() {
+async function forceStop() {
+  if (currentUser) {
+    await sendRobotCommand(currentUser.email, 'FORCE_STOP');
+  }
   robotState.mode = 'STOPPED';
   robotState.espCmd = 'STOP';
   robotState.espSpd = 0;
@@ -1473,7 +1907,7 @@ function forceStop() {
   document.getElementById('ctrl-esp-status').style.color = 'var(--red)';
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active-mode'));
   addFeedItem('<strong>⚠ FORCE STOP</strong> — all movement halted immediately', 'warn');
-  showToast('Force stop executed!', '🛑');
+  showToast('Force stop sent to robot', '🛑');
   setTimeout(() => {
     document.getElementById('header-state').textContent = 'ROBOT ONLINE';
     document.getElementById('ctrl-esp-status').textContent = '● READY';
@@ -1485,7 +1919,16 @@ function forceStop() {
 //  ANALYTICS CHARTS
 // ════════════════════════════════════════════════
 function initAnalyticsCharts() {
-  if (chartInstances['reps']) return; // already initialized
+  // Always allow rebuild so we can switch from mock -> real data when the user opens Analytics
+  // (showPage() clears chartInstances before calling this when we have real analytics)
+  if (chartInstances['reps']) {
+    try { chartInstances['reps'].destroy(); } catch (e) {}
+    delete chartInstances['reps'];
+  }
+  if (chartInstances['session-time']) {
+    try { chartInstances['session-time'].destroy(); } catch (e) {}
+    delete chartInstances['session-time'];
+  }
 
   const chartDefaults = {
     responsive: true,
@@ -1514,30 +1957,49 @@ function initAnalyticsCharts() {
     }
   };
 
-  // Reps chart
+  const usingReal = !!(currentAnalytics && currentAnalytics.repsByExercise && currentAnalytics.weekLabels);
+  const labels = usingReal ? (currentAnalytics.weekLabels || DAYS) : DAYS;
+
+  // --- Reps datasets (real if available) ---
+  let curlsData, pushData, squatsData;
+  if (usingReal) {
+    const r = currentAnalytics.repsByExercise || {};
+    curlsData  = r['BICEP_CURLS'] || r['BICEP CURLS'] || Array(7).fill(0);
+    pushData   = r['PUSHUPS']     || r['PUSH_UP']     || Array(7).fill(0);
+    squatsData = r['SQUATS']      || Array(7).fill(0);
+  } else {
+    curlsData  = analyticsData.reps.curls;
+    pushData   = analyticsData.reps.pushups;
+    squatsData = analyticsData.reps.squats;
+  }
+
   const rCtx = document.getElementById('reps-chart').getContext('2d');
   chartInstances['reps'] = new Chart(rCtx, {
     type: 'bar',
     data: {
-      labels: DAYS,
+      labels: labels,
       datasets: [
-        { label: 'Bicep Curls', data: analyticsData.reps.curls,   backgroundColor: 'rgba(167,139,250,0.7)', borderRadius: 4 },
-        { label: 'Push-ups',    data: analyticsData.reps.pushups, backgroundColor: 'rgba(77,166,255,0.7)',  borderRadius: 4 },
-        { label: 'Squats',      data: analyticsData.reps.squats,  backgroundColor: 'rgba(255,181,71,0.7)',  borderRadius: 4 },
+        { label: 'Bicep Curls', data: curlsData,   backgroundColor: 'rgba(167,139,250,0.7)', borderRadius: 4 },
+        { label: 'Push-ups',    data: pushData,    backgroundColor: 'rgba(77,166,255,0.7)',  borderRadius: 4 },
+        { label: 'Squats',      data: squatsData,  backgroundColor: 'rgba(255,181,71,0.7)',  borderRadius: 4 },
       ]
     },
     options: { ...chartDefaults, scales: { ...chartDefaults.scales, x: { ...chartDefaults.scales.x, stacked: false }, y: { ...chartDefaults.scales.y, stacked: false } } }
   });
 
-  // Session time chart
+  // --- Session time line (real series if present) ---
+  const sessionMins = usingReal && Array.isArray(currentAnalytics.sessionMinsSeries)
+    ? currentAnalytics.sessionMinsSeries
+    : analyticsData.sessionTotalMins;
+
   const sCtx = document.getElementById('session-time-chart').getContext('2d');
   chartInstances['session-time'] = new Chart(sCtx, {
     type: 'line',
     data: {
-      labels: DAYS,
+      labels: labels,
       datasets: [{
         label: 'Total Session (min)',
-        data: analyticsData.sessionTotalMins,
+        data: sessionMins,
         borderColor: '#00e5a0',
         backgroundColor: 'rgba(0,229,160,0.08)',
         fill: true,
@@ -1549,10 +2011,15 @@ function initAnalyticsCharts() {
     options: chartDefaults
   });
 
-  // Form accuracy bars
+  // --- Form accuracy bars (real if present) ---
   const barsEl = document.getElementById('form-bars');
   barsEl.innerHTML = '';
-  Object.values(analyticsData.formAccuracy).forEach(f => {
+
+  const formSrc = (usingReal && currentAnalytics.formAccuracy)
+    ? currentAnalytics.formAccuracy
+    : analyticsData.formAccuracy;
+
+  Object.values(formSrc).forEach(f => {
     barsEl.innerHTML += `
       <div class="form-bar-row">
         <div class="form-bar-label">
@@ -1575,18 +2042,44 @@ function initAnalyticsCharts() {
     `;
   });
 
-  // Sessions table
+  // Sessions table (prefer real recentSessions from backend if present)
   const tbody = document.getElementById('sessions-tbody');
   const pillMap = { BICEP_CURLS: 'pill-curls', PUSHUPS: 'pill-pushups', SQUATS: 'pill-squats', PLANK: 'pill-plank', PERSON_TRACKING: 'pill-follow' };
   const labelMap = { BICEP_CURLS: 'Bicep Curls', PUSHUPS: 'Push-ups', SQUATS: 'Squats', PLANK: 'Plank', PERSON_TRACKING: 'Following' };
-  tbody.innerHTML = analyticsData.sessions.map(s => `
-    <tr>
-      <td>${s.date}</td>
-      <td><span class="exercise-pill ${pillMap[s.exercise]}">${labelMap[s.exercise]}</span></td>
-      <td style="font-family:var(--mono)">${s.workTime}</td>
-      <td style="font-family:var(--mono);color:var(--text3)">${s.total}</td>
-    </tr>
-  `).join('');
+
+  let tableRows = [];
+  const realRecent = (typeof currentAnalytics !== 'undefined' && currentAnalytics && Array.isArray(currentAnalytics.recentSessions))
+    ? currentAnalytics.recentSessions
+    : analyticsData.sessions;
+
+  if (realRecent && realRecent.length > 0 && realRecent[0].exerciseType) {
+    // Real data shape from backend
+    tableRows = realRecent.map(s => {
+      const ex = s.exercise || s.exerciseType || 'SESSION';
+      const pill = pillMap[ex] || 'pill-follow';
+      const lbl = labelMap[ex] || ex;
+      const work = s.workTime || (typeof s.durationSec === 'number' ? `${Math.floor(s.durationSec/60)}:${String(s.durationSec%60).padStart(2,'0')}` : '--');
+      const tot = s.total || work;
+      const dt = s.date || '';
+      return `<tr>
+        <td>${dt}</td>
+        <td><span class="exercise-pill ${pill}">${lbl}</span></td>
+        <td style="font-family:var(--mono)">${work}</td>
+        <td style="font-family:var(--mono);color:var(--text3)">${tot}</td>
+      </tr>`;
+    });
+  } else {
+    // Fallback mock
+    tableRows = realRecent.map(s => `
+      <tr>
+        <td>${s.date}</td>
+        <td><span class="exercise-pill ${pillMap[s.exercise]}">${labelMap[s.exercise]}</span></td>
+        <td style="font-family:var(--mono)">${s.workTime}</td>
+        <td style="font-family:var(--mono);color:var(--text3)">${s.total}</td>
+      </tr>
+    `);
+  }
+  tbody.innerHTML = tableRows.join('');
 }
 
 // ════════════════════════════════════════════════
