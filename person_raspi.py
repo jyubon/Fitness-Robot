@@ -905,9 +905,8 @@ def run_bicep_curls():
         angle = calculate_angle(shoulder, elbow, wrist)
 
         swing_error = False
-        if angle < 135:
-            if abs(wrist[0] - elbow[0]) > 0.08:
-                swing_error = True
+        if abs(wrist[0] - elbow[0]) > 0.08:
+            swing_error = True
 
         flare_error = abs(shoulder[0] - elbow[0]) > 0.1
         color = ACCENT_GREEN
@@ -1116,7 +1115,7 @@ def run_bicep_curls():
                 r_fb, r_clr, r_stg, r_swing = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
 
                 if l_swing or r_swing:
-                    swing_warning_active_until = now + 1.5
+                    swing_warning_active_until = now + 0.5
                     if now - last_swing_warning_time > 3.0:
                         log_session_error("Keep hands in straight position without swinging")
                         last_swing_warning_time = now
