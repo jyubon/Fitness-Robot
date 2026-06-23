@@ -18,8 +18,15 @@ You can override the user with an argument:
 
 import os
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
+# pyrefly: ignore [missing-import]
+from dotenv import load_dotenv
 from pymongo import MongoClient
+
+# Load environment variables from the server/.env file
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 # --- Config (matches backend defaults) ---
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")

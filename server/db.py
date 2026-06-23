@@ -5,10 +5,19 @@ Uses motor (async MongoDB driver) + FastAPI lifespan.
 """
 
 import os
+from pathlib import Path
+# pyrefly: ignore [missing-import]
+from dotenv import load_dotenv
+# pyrefly: ignore [missing-import]
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING
 from contextlib import asynccontextmanager
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI
+
+# Load environment variables from the server/.env file
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")

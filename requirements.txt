@@ -1,7 +1,10 @@
 # Python 3.9–3.12 required (MediaPipe supported range)
 # On Raspberry Pi OS, pip will use piwheels for ARM-compatible wheels.
 mediapipe>=0.10.9
+opencv-python>=4.8.0
 numpy>=1.24
+pyserial>=3.5
+google-genai>=0.1.1
 
 # For reporting completed sessions to the FastAPI + MongoDB backend
 requests>=2.31

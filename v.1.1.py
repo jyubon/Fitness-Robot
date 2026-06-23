@@ -8,6 +8,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io.wavfile import write
 from google import genai
+# pyrefly: ignore [missing-import]
 from google.genai import types
 import serial
 import json
@@ -18,6 +19,7 @@ from datetime import datetime, timezone
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+# pyrefly: ignore [missing-import]
 import api_keys
 
 # ─── Session Reporting to MongoDB Dashboard ───
@@ -1534,4 +1536,4 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         stop_exercise.set()
-        print("\n\n🛑 Shutting down. Goodbye!")
+        print("\n\n🛑 Shutting down. Goodbye!")
