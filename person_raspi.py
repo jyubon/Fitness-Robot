@@ -13,23 +13,38 @@ import cv2
 import mediapipe as mp
 import time
 import numpy as np
-import socket
+import serial
 import signal
 import sys
+import subprocess
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+# Global session variables
+home_clicked = False
+last_session_summary = None
+
+def on_mouse_click(event, x, y, flags, param):
+    global home_clicked
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # Check if click is inside the HOME button area: x in [390, 470], y in [5, 45]
+        if 390 <= x <= 470 and 5 <= y <= 45:
+            home_clicked = True
+
 
 
 # ═══════════════════════════════════════════════════════
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════
 
-# ─── ESP32 ───
-ESP32_IP   = "10.249.231.70"   # ← Your ESP32 IP
-ESP32_PORT = 8888
+# ─── ESP32 (UART5 Serial Connection) ───
+SERIAL_PORT = "/dev/ttyAMA5"   # Standard Raspberry Pi UART5 Serial Port
+BAUD_RATE   = 115200
 
 # ─── Camera (C270) ───
 CAMERA_INDEX  = 0
-CAMERA_WIDTH  = 320            # Lower = faster on RPi4
-CAMERA_HEIGHT = 240
+CAMERA_WIDTH  = 480            # Lower = faster on RPi4
+CAMERA_HEIGHT = 320
 FRAME_SKIP    = 2              # Process pose landmarks every N frames (optimized for RPi4)
 HAND_FRAME_SKIP = 6            # Process hand landmarks every N frames (optimized for RPi4)
 
@@ -164,31 +179,34 @@ def draw_positioning_overlay(image, position, elapsed_pct):
 
 
 # ═══════════════════════════════════════════════════════
-#  ESP32 UDP SENDER
+#  ESP32 SERIAL SENDER (UART5)
 # ═══════════════════════════════════════════════════════
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setblocking(False)
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    print(f"✅ UART5 Serial Active → {SERIAL_PORT} @ {BAUD_RATE}")
+except Exception as e:
+    ser = None
+    print(f"⚠️ Serial initialization failed: {e}")
+
 current_command  = "STOP"
 last_command_time = 0
-print(f"✅ UDP → {ESP32_IP}:{ESP32_PORT}")
 
 
 def send_command(command):
-    """Send command to ESP32 only when changed."""
+    """Send command to ESP32 over serial only when changed."""
     global current_command, last_command_time
     now = time.time()
 
     if (command != current_command or
             now - last_command_time > 1.0):
-        try:
-            sock.sendto(
-                command.encode('utf-8'),
-                (ESP32_IP, ESP32_PORT)
-            )
-            if DEBUG and command != current_command:
-                print(f"  📡 → ESP32: {command}")
-        except Exception:
-            pass
+        if ser is not None:
+            try:
+                ser.write((command + "\n").encode('utf-8'))
+                ser.flush()
+                if DEBUG and command != current_command:
+                    print(f"  📡 → ESP32 Serial: {command}")
+            except Exception:
+                pass
 
         current_command   = command
         last_command_time = now
@@ -288,6 +306,15 @@ def draw_glass_panel(frame, x, y, w, h, alpha=0.65, color=(20, 20, 20), radius=1
     blended = cv2.addWeighted(panel, alpha, sub, 1 - alpha, 0)
     np.copyto(sub, blended, where=(mask[..., None] == 255))
     frame[y:y2, x:x2] = sub
+
+
+def draw_home_button(frame):
+    """Draw a premium touch-friendly HOME button on the OpenCV frame."""
+    # Button is located at top right corner: x: [390, 470], y: [5, 45] for 480x320 display
+    draw_glass_panel(frame, 390, 5, 80, 40, alpha=0.75, color=(30, 30, 80), radius=8)
+    cv2.rectangle(frame, (390, 5), (470, 45), (100, 100, 200), 1, cv2.LINE_AA)
+    cv2.putText(frame, "HOME", (406, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 2, cv2.LINE_AA)
+
 
 
 def _draw_mini_arrow(frame, cx, cy, command, color, size=5):
@@ -1097,6 +1124,9 @@ def run_bicep_curls():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Bicep Curls', DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    global home_clicked
+    home_clicked = False
+    cv2.setMouseCallback('Bicep Curls', on_mouse_click)
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
@@ -1147,8 +1177,9 @@ def run_bicep_curls():
                         draw_skeleton(image, results)
                     draw_positioning_overlay(image, "FRONT", pct)
                     send_command("FRONT")
+                    draw_home_button(image)
                     cv2.imshow('Bicep Curls', image)
-                    if cv2.waitKey(10) & 0xFF == ord('q'):
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
                     continue
                 else:
@@ -1204,8 +1235,9 @@ def run_bicep_curls():
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Bicep Curls', image)
                         break
+                draw_home_button(image)
                 cv2.imshow('Bicep Curls', image)
-                if cv2.waitKey(10) & 0xFF == ord('q'):
+                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
                 continue
 
@@ -1371,8 +1403,9 @@ def run_bicep_curls():
                     show_palm_stop_message('Bicep Curls', image)
                     break
 
+            draw_home_button(image)
             cv2.imshow('Bicep Curls', image)
-            if cv2.waitKey(10) & 0xFF == ord('q'):
+            if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                 break
     finally:
         send_command("STOP")
@@ -1380,6 +1413,18 @@ def run_bicep_curls():
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
+        
+        # Populate session summary
+        global last_session_summary
+        last_session_summary = {
+            'exercise': 'Bicep Curls',
+            'metrics': [
+                ('Left Reps', arms['left']['counter']),
+                ('Right Reps', arms['right']['counter']),
+                ('Total Sets', current_set)
+            ],
+            'errors': list(session_errors)
+        }
         print_session_error_summary()
 
     cap.release()
@@ -1417,6 +1462,9 @@ def run_pushups():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     cv2.namedWindow('Push-ups', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Push-ups', DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    global home_clicked
+    home_clicked = False
+    cv2.setMouseCallback('Push-ups', on_mouse_click)
     print("💪 Push-up Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1463,8 +1511,9 @@ def run_pushups():
                         draw_skeleton(image, results)
                     draw_positioning_overlay(image, "SIDE", pct)
                     send_command("SIDE")
+                    draw_home_button(image)
                     cv2.imshow('Push-ups', image)
-                    if cv2.waitKey(10) & 0xFF == ord('q'):
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
                     continue
                 else:
@@ -1510,8 +1559,9 @@ def run_pushups():
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Push-ups', image)
                         break
+                draw_home_button(image)
                 cv2.imshow('Push-ups', image)
-                if cv2.waitKey(10) & 0xFF == ord('q'):
+                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
                 continue
 
@@ -1626,9 +1676,10 @@ def run_pushups():
                     show_palm_stop_message('Push-ups', image)
                     break
 
+            draw_home_button(image)
             cv2.imshow('Push-ups', image)
 
-            if cv2.waitKey(10) & 0xFF == ord('q'):
+            if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                 break
     finally:
         send_command("STOP")
@@ -1636,6 +1687,17 @@ def run_pushups():
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
+        
+        # Populate session summary
+        global last_session_summary
+        last_session_summary = {
+            'exercise': 'Push-ups',
+            'metrics': [
+                ('Total Reps', pushup_counter),
+                ('Total Sets', current_set)
+            ],
+            'errors': list(session_errors)
+        }
 
     cap.release()
     cv2.destroyAllWindows()
@@ -1677,6 +1739,9 @@ def run_squats():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     cv2.namedWindow('Squats', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Squats', DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    global home_clicked
+    home_clicked = False
+    cv2.setMouseCallback('Squats', on_mouse_click)
 
     print("🦵 Squat Counter Active! Press Q to quit.")
 
@@ -1724,8 +1789,9 @@ def run_squats():
                         draw_skeleton(image, results)
                     draw_positioning_overlay(image, "FRONT", pct)
                     send_command("FRONT")
+                    draw_home_button(image)
                     cv2.imshow('Squats', image)
-                    if cv2.waitKey(5) & 0xFF == ord('q'):
+                    if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                         break
                     continue
                 else:
@@ -1780,8 +1846,9 @@ def run_squats():
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Squats', image)
                         break
+                draw_home_button(image)
                 cv2.imshow('Squats', image)
-                if cv2.waitKey(5) & 0xFF == ord('q'):
+                if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                     break
                 continue
 
@@ -2027,9 +2094,10 @@ def run_squats():
                     show_palm_stop_message('Squats', image)
                     break
 
+            draw_home_button(image)
             cv2.imshow('Squats', image)
 
-            if cv2.waitKey(5) & 0xFF == ord('q'):
+            if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                 break
     finally:
         send_command("STOP")
@@ -2037,6 +2105,17 @@ def run_squats():
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
+        
+        # Populate session summary
+        global last_session_summary
+        last_session_summary = {
+            'exercise': 'Squats',
+            'metrics': [
+                ('Total Reps', counter),
+                ('Total Sets', current_set)
+            ],
+            'errors': list(session_errors)
+        }
         print_session_error_summary()
 
     cap.release()
@@ -2072,6 +2151,9 @@ def run_plank():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
     cv2.namedWindow('Plank', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Plank', DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    global home_clicked
+    home_clicked = False
+    cv2.setMouseCallback('Plank', on_mouse_click)
     print("🧘 Plank Timer Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -2117,8 +2199,9 @@ def run_plank():
                         draw_skeleton(image, results)
                     draw_positioning_overlay(image, "SIDE", pct)
                     send_command("SIDE")
+                    draw_home_button(image)
                     cv2.imshow('Plank', image)
-                    if cv2.waitKey(10) & 0xFF == ord('q'):
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
                     continue
                 else:
@@ -2168,8 +2251,9 @@ def run_plank():
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Plank', image)
                         break
+                draw_home_button(image)
                 cv2.imshow('Plank', image)
-                if cv2.waitKey(10) & 0xFF == ord('q'):
+                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
                 continue
 
@@ -2307,9 +2391,10 @@ def run_plank():
                     show_palm_stop_message('Plank', image)
                     break
 
+            draw_home_button(image)
             cv2.imshow('Plank', image)
 
-            if cv2.waitKey(10) & 0xFF == ord('q'):
+            if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                 break
     finally:
         send_command("STOP")
@@ -2317,6 +2402,16 @@ def run_plank():
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
+        
+        # Populate session summary
+        global last_session_summary
+        last_session_summary = {
+            'exercise': 'Plank',
+            'metrics': [
+                ('Total Hold Time', f"{plank_timer:.1f}s")
+            ],
+            'errors': list(session_errors)
+        }
         print_session_error_summary()
 
     cap.release()
@@ -2371,8 +2466,12 @@ def main():
         time.sleep(0.2)
         cap.release()
         cv2.destroyAllWindows()
-        landmarker.close()
-        sock.close()
+        try:
+            landmarker.close()
+        except:
+            pass
+        if ser is not None:
+            ser.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -2390,11 +2489,15 @@ def main():
     if SHOW_WINDOW:
         cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Person Follower', DISPLAY_WIDTH, DISPLAY_HEIGHT)
+        global home_clicked
+        home_clicked = False
+        cv2.setMouseCallback('Person Follower', on_mouse_click)
 
     fps          = 0
     fps_counter  = 0
     fps_time     = time.time()
     frame_counter = 0
+    start_time   = time.time()
 
     command        = "STOP"
     state          = "STARTING"
@@ -2510,12 +2613,13 @@ def main():
 
         draw_frame(display, command, state, person_x,
                    shoulder_width, fps, d_zone, h_zone)
+        draw_home_button(display)
 
         if SHOW_WINDOW:
             cv2.imshow('Person Follower', display)
 
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
+            if key == ord('q') or home_clicked:
                 break
 
         # FPS
@@ -2525,46 +2629,220 @@ def main():
             fps_counter = 0
             fps_time    = time.time()
 
-    # Cleanup
     send_command("STOP")
     time.sleep(0.2)
     cap.release()
     cv2.destroyAllWindows()
     landmarker.close()
-    sock.close()
-    print("\n✅ Done!")
+    if ser is not None:
+        ser.close()
+    
+    # Populate session summary
+    global last_session_summary
+    duration = time.time() - start_time
+    last_session_summary = {
+        'exercise': 'Person Follower',
+        'metrics': [
+            ('Duration', f"{duration:.1f}s")
+        ],
+        'errors': []
+    }
 
 
-def show_mode_menu():
-    print("\n═══════════════════════════════════════════")
-    print("  FITNESS PROJECT - Mode Selection")
-    print("═══════════════════════════════════════════")
-    print("  1. Person Following (Robot)")
-    print("  2. Bicep Curls")
-    print("  3. Push-ups")
-    print("  4. Squats")
-    print("  5. Plank")
-    print("  6. Exit / Q to Quit the session")
-    print("═══════════════════════════════════════════")
-    return input("  Enter choice (1-6, Q): ").strip().lower()
+class FitnessRobotUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Fitness Robot UI")
+        
+        # Open in fullscreen
+        self.attributes("-fullscreen", True)
+        self.bind("<Escape>", lambda e: self.quit_app())
+        
+        # Screen dimensions configuration
+        self.configure(bg="#1E1E24")
+        
+        # Custom styles
+        self.style = ttk.Style(self)
+        self.style.theme_use('clam')
+        self.style.configure('.', background='#1E1E24', foreground='#EBEBEF')
+        
+        self.main_container = tk.Frame(self, bg="#1E1E24")
+        self.main_container.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        self.show_home_screen()
+        
+    def show_home_screen(self):
+        # Clear container
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+            
+        # Title banner
+        title_label = tk.Label(self.main_container, text="FITNESS ROBOT", font=("Helvetica", 24, "bold"), fg="#96D75F", bg="#1E1E24")
+        title_label.pack(pady=(10, 20))
+        
+        # Grid frame for exercises
+        grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        grid_frame.pack(fill="both", expand=True)
+        
+        exercises = [
+            ("Person Following", self.launch_person_follower, "#50AFDF"),
+            ("Bicep Curls", self.launch_bicep_curls, "#96D75F"),
+            ("Push-ups", self.launch_pushups, "#96D75F"),
+            ("Squats", self.launch_squats, "#96D75F"),
+            ("Plank", self.launch_plank, "#96D75F"),
+        ]
+        
+        # Layout in grid
+        for i, (name, callback, color) in enumerate(exercises):
+            # Create a premium button card
+            btn = tk.Button(
+                grid_frame,
+                text=name,
+                font=("Helvetica", 14, "bold"),
+                bg="#2B2B36",
+                fg=color,
+                activebackground=color,
+                activeforeground="#1E1E24",
+                relief="flat",
+                bd=0,
+                padx=15,
+                pady=15,
+                command=callback
+            )
+            # 2 columns layout
+            row = i // 2
+            col = i % 2
+            btn.grid(row=row, column=col, sticky="nsew", padx=10, pady=10)
+            
+        grid_frame.columnconfigure(0, weight=1)
+        grid_frame.columnconfigure(1, weight=1)
+        grid_frame.rowconfigure(0, weight=1)
+        grid_frame.rowconfigure(1, weight=1)
+        grid_frame.rowconfigure(2, weight=1)
+        
+        # Bottom system buttons
+        sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        sys_frame.pack(fill="x", pady=(20, 10))
+        
+        sys_buttons = [
+            ("REBOOT", self.confirm_reboot, "#E5B05E"),
+            ("SHUTDOWN", self.confirm_shutdown, "#5F5FDF"),
+            ("EXIT APP", self.quit_app, "#5F5FDF"),
+        ]
+        
+        for name, callback, color in sys_buttons:
+            btn = tk.Button(
+                sys_frame,
+                text=name,
+                font=("Helvetica", 10, "bold"),
+                bg="#2B2B36",
+                fg=color,
+                activebackground=color,
+                activeforeground="#1E1E24",
+                relief="flat",
+                bd=0,
+                padx=10,
+                pady=10,
+                command=callback
+            )
+            btn.pack(side="left", fill="x", expand=True, padx=5)
+
+    def run_with_hide(self, func):
+        self.withdraw()  # Hide Tkinter GUI during camera feed
+        try:
+            func()
+        finally:
+            self.deiconify()  # Restore Tkinter GUI
+            self.show_summary_screen()
+
+    def launch_person_follower(self):
+        self.run_with_hide(main)
+        
+    def launch_bicep_curls(self):
+        self.run_with_hide(run_bicep_curls)
+        
+    def launch_pushups(self):
+        self.run_with_hide(run_pushups)
+        
+    def launch_squats(self):
+        self.run_with_hide(run_squats)
+        
+    def launch_plank(self):
+        self.run_with_hide(run_plank)
+
+    def show_summary_screen(self):
+        global last_session_summary
+        if not last_session_summary:
+            self.show_home_screen()
+            return
+            
+        summary = last_session_summary
+        last_session_summary = None  # Reset
+        
+        # Clear container
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+            
+        title_label = tk.Label(self.main_container, text=f"SESSION SUMMARY: {summary['exercise'].upper()}", font=("Helvetica", 18, "bold"), fg="#96D75F", bg="#1E1E24")
+        title_label.pack(pady=(10, 20))
+        
+        # Card style display for metrics
+        card_frame = tk.Frame(self.main_container, bg="#2B2B36", padx=20, pady=20)
+        card_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 14, "bold"), fg="#50AFDF", bg="#2B2B36").pack(anchor="w", pady=(0, 10))
+        
+        for metric, val in summary['metrics']:
+            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 12), fg="#EBEBEF", bg="#2B2B36")
+            lbl.pack(anchor="w", pady=2)
+            
+        # Warnings summary
+        if summary.get('errors'):
+            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 14, "bold"), fg="#E5B05E", bg="#2B2B36").pack(anchor="w", pady=(20, 10))
+            # Unique errors
+            for err in set(summary['errors']):
+                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 11), fg="#E5B05E", bg="#2B2B36", wraplength=400, justify="left")
+                lbl.pack(anchor="w", pady=2)
+        else:
+            tk.Label(card_frame, text="✅ Perfect posture! No mistakes detected.", font=("Helvetica", 12, "italic"), fg="#96D75F", bg="#2B2B36").pack(anchor="w", pady=(20, 10))
+            
+        # Back home button
+        btn = tk.Button(
+            self.main_container,
+            text="BACK TO MENU",
+            font=("Helvetica", 12, "bold"),
+            bg="#96D75F",
+            fg="#1E1E24",
+            activebackground="#EBEBEF",
+            activeforeground="#1E1E24",
+            relief="flat",
+            bd=0,
+            padx=15,
+            pady=10,
+            command=self.show_home_screen
+        )
+        btn.pack(pady=20)
+
+    def confirm_shutdown(self):
+        if messagebox.askyesno("Shutdown", "Are you sure you want to shutdown the Raspberry Pi?"):
+            self.destroy()
+            if os.name == 'posix':
+                subprocess.run(["sudo", "shutdown", "-h", "now"])
+            else:
+                subprocess.run(["shutdown", "/s", "/t", "0"])
+
+    def confirm_reboot(self):
+        if messagebox.askyesno("Reboot", "Are you sure you want to reboot the Raspberry Pi?"):
+            self.destroy()
+            if os.name == 'posix':
+                subprocess.run(["sudo", "reboot"])
+            else:
+                subprocess.run(["shutdown", "/r", "/t", "0"])
+
+    def quit_app(self):
+        self.destroy()
 
 
 if __name__ == "__main__":
-    while True:
-        choice = show_mode_menu()
-
-        if choice == "1":
-            main()
-        elif choice == "2":
-            run_bicep_curls()
-        elif choice == "3":
-            run_pushups()
-        elif choice == "4":
-            run_squats()
-        elif choice == "5":
-            run_plank()
-        elif choice in ("6", "q"):
-            print("  Exiting.")
-            break
-        else:
-            print("  Invalid choice. Please try again.")
+    app = FitnessRobotUI()
+    app.mainloop()
