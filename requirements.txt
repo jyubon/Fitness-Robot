@@ -2,3 +2,23 @@
 # On Raspberry Pi OS, pip will use piwheels for ARM-compatible wheels.
 mediapipe>=0.10.9
 numpy>=1.24
+
+# --- Web backend dependencies (FastAPI + Mongo + real-time + auth) ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+motor>=3.5
+pymongo>=4.8
+python-jose[cryptography]>=3.3
+passlib[bcrypt]>=1.7
+python-multipart>=0.0.9
+websockets>=12.0
+httpx>=0.27
+websocket-client>=1.8
+python-dotenv>=1.0
+pydantic>=2.8
+pydantic-settings>=2.4
+# For analytics charts data (backend can stay minimal)
+# Chart.js used on frontend via CDN
+
+# Optional: if you want to run the Pi-side publisher with asyncio WS client
+# (already covered by websocket-client above for simple thread-based, or use 'websockets' for async)
