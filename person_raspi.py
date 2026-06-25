@@ -1034,7 +1034,7 @@ def run_bicep_curls():
         if abs(wrist[0] - elbow[0]) > 0.08:
             swing_error = True
 
-        flare_error = abs(shoulder[0] - elbow[0]) > 0.1
+        flare_error = abs(shoulder[0] - elbow[0]) > 1.5
         color = ACCENT_GREEN
         feedback = "GOOD"
 
