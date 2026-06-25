@@ -890,6 +890,132 @@ def print_session_error_summary():
         print("=" * 50 + "\n")
 
 
+def adjust_robot_position(exercise_name, results):
+    """
+    Adjust the robot's physical position dynamically during exercise detection.
+    Optimized for a camera height of 2.5 feet above the ground.
+    """
+    if not results or not results.pose_landmarks or len(results.pose_landmarks) == 0:
+        send_command("STOP")
+        return
+
+    lm = results.pose_landmarks[0]
+
+    # Thresholds tailored for a camera height of 2.5 feet above the ground:
+    if exercise_name in ("BICEP_CURLS", "SQUATS"):
+        # Frontal view (standing)
+        l_shoulder = get_pt(lm, 11)
+        r_shoulder = get_pt(lm, 12)
+
+        if l_shoulder and r_shoulder:
+            shoulder_width = abs(l_shoulder[0] - r_shoulder[0])
+            shoulder_center = (l_shoulder[0] + r_shoulder[0]) / 2
+
+            # Curls need shoulders & arms/wrists in frame
+            if exercise_name == "BICEP_CURLS":
+                too_close = 0.22  # Larger means closer
+                too_far = 0.14
+            # Squats need full body from shoulders down to ankles in frame
+            else:  # SQUATS
+                too_close = 0.20
+                too_far = 0.12
+
+            # Distance zone
+            if shoulder_width > too_close:
+                d_zone = "CLOSE"
+            elif shoulder_width < too_far:
+                d_zone = "FAR"
+            else:
+                d_zone = "GOOD"
+
+            # Horizontal zone
+            if shoulder_center < CENTER_ZONE_LEFT:
+                h_zone = "LEFT"
+            elif shoulder_center > CENTER_ZONE_RIGHT:
+                h_zone = "RIGHT"
+            else:
+                h_zone = "CENTER"
+
+            # 8-direction mapping
+            matrix = {
+                ("FAR",   "LEFT"):   "FWD_LEFT",
+                ("FAR",   "CENTER"): "FORWARD",
+                ("FAR",   "RIGHT"):  "FWD_RIGHT",
+                ("GOOD",  "LEFT"):   "LEFT",
+                ("GOOD",  "CENTER"): "STOP",
+                ("GOOD",  "RIGHT"):  "RIGHT",
+                ("CLOSE", "LEFT"):   "BWD_LEFT",
+                ("CLOSE", "CENTER"): "BACKWARD",
+                ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+            }
+            command = matrix.get((d_zone, h_zone), "STOP")
+            send_command(command)
+        else:
+            send_command("STOP")
+
+    elif exercise_name in ("PUSH_UPS", "PLANK"):
+        # Side view (lying)
+        # We need to detect best side profile shoulder and ankle
+        left_shoulder = get_pt(lm, 11)
+        left_ankle = get_pt(lm, 27)
+        right_shoulder = get_pt(lm, 12)
+        right_ankle = get_pt(lm, 28)
+
+        shoulder, ankle = None, None
+        left_ok = left_shoulder and left_ankle
+        right_ok = right_shoulder and right_ankle
+
+        if left_ok and right_ok:
+            left_vis = lm[11].visibility + lm[27].visibility
+            right_vis = lm[12].visibility + lm[28].visibility
+            if left_vis > right_vis:
+                shoulder, ankle = left_shoulder, left_ankle
+            else:
+                shoulder, ankle = right_shoulder, right_ankle
+        elif left_ok:
+            shoulder, ankle = left_shoulder, left_ankle
+        elif right_ok:
+            shoulder, ankle = right_shoulder, right_ankle
+
+        if shoulder and ankle:
+            # Horizontal span of the body in normalized x coordinates
+            body_length = abs(shoulder[0] - ankle[0])
+            body_center = (shoulder[0] + ankle[0]) / 2
+
+            too_close = 0.60
+            too_far = 0.40
+
+            if body_length > too_close:
+                d_zone = "CLOSE"
+            elif body_length < too_far:
+                d_zone = "FAR"
+            else:
+                d_zone = "GOOD"
+
+            if body_center < CENTER_ZONE_LEFT:
+                h_zone = "LEFT"
+            elif body_center > CENTER_ZONE_RIGHT:
+                h_zone = "RIGHT"
+            else:
+                h_zone = "CENTER"
+
+            matrix = {
+                ("FAR",   "LEFT"):   "FWD_LEFT",
+                ("FAR",   "CENTER"): "FORWARD",
+                ("FAR",   "RIGHT"):  "FWD_RIGHT",
+                ("GOOD",  "LEFT"):   "LEFT",
+                ("GOOD",  "CENTER"): "STOP",
+                ("GOOD",  "RIGHT"):  "RIGHT",
+                ("CLOSE", "LEFT"):   "BWD_LEFT",
+                ("CLOSE", "CENTER"): "BACKWARD",
+                ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+            }
+            command = matrix.get((d_zone, h_zone), "STOP")
+            send_command(command)
+        else:
+            send_command("STOP")
+
+
 # ═══════════════════════════════════════════════════════
 #  EXERCISE MODES
 # ═══════════════════════════════════════════════════════
@@ -1069,6 +1195,7 @@ def run_bicep_curls():
 
             # If paused, render overlay and bypass main logic
             if paused:
+                send_command("STOP")
                 if results and results.pose_landmarks:
                     draw_skeleton(image, results)
                 draw_paused_overlay(image, thumbs_up_frames)
@@ -1102,6 +1229,8 @@ def run_bicep_curls():
                     last_uneven_warning_time = now
 
             if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                if positioning_completed and not paused:
+                    adjust_robot_position("BICEP_CURLS", results)
                 lm = results.pose_landmarks[0]
 
                 # Swapped to account for camera mirroring: MediaPipe Right (12, 14, 16) -> Left arm on display, MediaPipe Left (11, 13, 15) -> Right arm on display
@@ -1151,6 +1280,9 @@ def run_bicep_curls():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+            else:
+                if positioning_completed:
+                    send_command("STOP")
 
             # Show slow down warning banner on screen
             if time.time() < warning_active_until:
@@ -1369,6 +1501,7 @@ def run_pushups():
 
             # If paused, render overlay and bypass main logic
             if paused:
+                send_command("STOP")
                 if results and results.pose_landmarks:
                     draw_skeleton(image, results)
                 draw_paused_overlay(image, thumbs_up_frames)
@@ -1388,6 +1521,8 @@ def run_pushups():
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    if positioning_completed and not paused:
+                        adjust_robot_position("PUSH_UPS", results)
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -1445,6 +1580,9 @@ def run_pushups():
                             if reps_in_set > 0 and not set_ended:
                                 set_ended = True
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
+                else:
+                    if positioning_completed:
+                        send_command("STOP")
             except Exception:
                 pass
 
@@ -1633,6 +1771,7 @@ def run_squats():
 
             # If paused, render overlay and bypass main logic
             if paused:
+                send_command("STOP")
                 if results and results.pose_landmarks:
                     draw_skeleton(image, results)
                 draw_paused_overlay(image, thumbs_up_frames)
@@ -1657,6 +1796,8 @@ def run_squats():
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    if positioning_completed and not paused:
+                        adjust_robot_position("SQUATS", results)
                     lm = results.pose_landmarks[0]
 
                     L_shoulder = get_pt(lm, 11, use_z=True)
@@ -1798,6 +1939,9 @@ def run_squats():
                                       (depth_warning is None) and (knees_warning is None)
 
                     draw_skeleton(image, results)
+                else:
+                    if positioning_completed:
+                        send_command("STOP")
             except Exception:
                 pass
 
@@ -2011,6 +2155,7 @@ def run_plank():
 
             # If paused, render overlay and bypass main logic
             if paused:
+                send_command("STOP")
                 # Reset plank timer tracking variables so elapsed time is not added on resume
                 in_plank = False
                 start_time = None
@@ -2033,6 +2178,8 @@ def run_plank():
 
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    if positioning_completed and not paused:
+                        adjust_robot_position("PLANK", results)
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -2086,6 +2233,9 @@ def run_plank():
                         else:
                             in_plank = False
                             start_time = None
+                else:
+                    if positioning_completed:
+                        send_command("STOP")
             except Exception:
                 pass
 
