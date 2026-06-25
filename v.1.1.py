@@ -24,6 +24,7 @@ import api_keys
 
 # ─── Session Reporting to MongoDB Dashboard ───
 REPORT_USER_EMAIL = os.getenv("FITBOT_USER_EMAIL", "athlete@local.dev")
+CAMERA_STREAM_URL = os.getenv("FITBOT_CAMERA_URL", "http://localhost:8080/stream")
 
 try:
     from report_session import report_session
@@ -59,13 +60,19 @@ def _maybe_push_state(mode, reps=None, plank_time=None, esp_cmd=None, esp_spd=No
             esp_cmd=esp_cmd,
             esp_spd=esp_spd,
             message=message,
-            camera_url=camera_url,
+            camera_url=camera_url or CAMERA_STREAM_URL,
         )
     except Exception:
         pass
 
 # 1. Initialize the new client with the API key from api_keys.py
 client = genai.Client(api_key=api_keys.GEMINI_API_KEY)
+
+# Test connection to backend + publish camera stream URL
+print("[STARTUP] Testing backend connection...")
+_maybe_push_state(mode="STARTUP", message="Robot online, stream ready")
+time.sleep(0.5)
+print(f"[STARTUP] Camera stream URL: {CAMERA_STREAM_URL}")
 
 # Initialize serial connection
 SERIAL_PORT = '/dev/ttyS0'
