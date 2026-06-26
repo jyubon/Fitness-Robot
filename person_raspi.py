@@ -20,6 +20,22 @@ import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+# ─── Firebase Initialization ───
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    from datetime import datetime
+
+    # Initialize Firebase using the service account key
+    cred = credentials.Certificate("serviceAccountKey.json")
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("✅ Firebase initialized successfully.")
+except Exception as e:
+    db = None
+    print(f"⚠️ Firebase initialization failed: {e}")
+
+
 # Global session variables
 home_clicked = False
 last_session_summary = None
@@ -939,6 +955,29 @@ def log_session_error(err_msg, cooldown=3.0):
         print(f"  [SESSION WARNING] {err_msg}")
         last_printed_errors[err_msg] = now
 
+
+def save_session_to_firestore(summary):
+    if 'db' not in globals() or db is None:
+        print("⚠️ Cannot save to Firestore: Database not initialized.")
+        return
+        
+    try:
+        # Convert metrics list of tuples to a dictionary
+        metrics_dict = {k: v for k, v in summary['metrics']}
+        
+        doc_data = {
+            "exercise": summary['exercise'],
+            "metrics": metrics_dict,
+            "errors": summary.get('errors', []),
+            "timestamp": datetime.now()
+        }
+        
+        # Save to 'workout_sessions' collection
+        db.collection("workout_sessions").add(doc_data)
+        print(f"✅ Session saved to Firestore: {summary['exercise']}")
+    except Exception as e:
+        print(f"⚠️ Failed to save session to Firestore: {e}")
+
 def print_session_error_summary():
     """Print a summary of all unique errors logged in the session."""
     global session_errors
@@ -964,9 +1003,23 @@ def adjust_robot_position(exercise_name, results):
         if lost_person_since is None:
             lost_person_since = now
         
-        # 5.0 seconds safety timeout to prevent infinite rotation
-        if now - lost_person_since > 5.0:
-            send_command("STOP")
+        elapsed_lost = now - lost_person_since
+        if elapsed_lost > 2.0:
+            search_elapsed = elapsed_lost - 2.0
+            if search_elapsed > 8.0:
+                send_command("STOP")
+                return "LOST_TIMEOUT"
+            else:
+                dir1 = "VEER_LEFT" if last_person_side == "LEFT" else "VEER_RIGHT"
+                dir2 = "VEER_RIGHT" if dir1 == "VEER_LEFT" else "VEER_LEFT"
+                
+                if search_elapsed < 2.0:
+                    send_command(dir1)
+                elif search_elapsed < 6.0:
+                    send_command(dir2)
+                else:
+                    send_command(dir1)
+                return "SEARCHING"
         else:
             if last_person_side == "LEFT":
                 send_command("VEER_LEFT")
@@ -974,7 +1027,10 @@ def adjust_robot_position(exercise_name, results):
                 send_command("VEER_RIGHT")
             else:
                 send_command("STOP")
-        return
+            return "TRACKING"
+
+    # Reset lost person timer
+    lost_person_since = None
 
     # Reset lost person timer
     lost_person_since = None
@@ -1329,9 +1385,13 @@ def run_bicep_curls(ui=None):
                     log_session_error(f"Equalize both hands (Left: {current_set_left_reps} | Right: {current_set_right_reps})")
                     last_uneven_warning_time = now
 
+            robot_status = "TRACKING"
+            if positioning_completed and not paused:
+                robot_status = adjust_robot_position("BICEP_CURLS", results)
+                if robot_status == "LOST_TIMEOUT":
+                    break
+
             if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                if positioning_completed and not paused:
-                    adjust_robot_position("BICEP_CURLS", results)
                 lm = results.pose_landmarks[0]
 
                 # Swapped to account for camera mirroring: MediaPipe Right (12, 14, 16) -> Left arm on display, MediaPipe Left (11, 13, 15) -> Right arm on display
@@ -1507,8 +1567,15 @@ def run_bicep_curls(ui=None):
                         feedback_msgs.append("✅ Form is Good. Keep it up!")
                         feedback_color = ACCENT_GREEN
 
-                ui.update_feedback("\n".join(feedback_msgs), feedback_color)
+                if robot_status == "SEARCHING":
+                    ui.update_feedback("Searching...", ACCENT_ORANGE)
+                else:
+                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
                 ui.update()
+
+            if robot_status == "SEARCHING":
+                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
             if ui is None:
                 if hand_landmarker is not None:
@@ -1545,6 +1612,7 @@ def run_bicep_curls(ui=None):
             'errors': list(session_errors)
         }
         print_session_error_summary()
+        save_session_to_firestore(last_session_summary)
 
     cap.release()
     if ui is None:
@@ -1827,8 +1895,15 @@ def run_pushups(ui=None):
                 if not feedback_msgs:
                     feedback_msgs.append("✅ Form is Good. Keep it up!")
 
-                ui.update_feedback("\n".join(feedback_msgs), feedback_color)
+                if robot_status == "SEARCHING":
+                    ui.update_feedback("Searching...", ACCENT_ORANGE)
+                else:
+                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
                 ui.update()
+
+            if robot_status == "SEARCHING":
+                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
             if ui is None:
                 if hand_landmarker is not None:
@@ -2305,8 +2380,15 @@ def run_squats(ui=None):
                         feedback_msgs.append("✅ Form is Good. Keep it up!")
                         feedback_color = ACCENT_GREEN
 
-                ui.update_feedback("\n".join(feedback_msgs), feedback_color)
+                if robot_status == "SEARCHING":
+                    ui.update_feedback("Searching...", ACCENT_ORANGE)
+                else:
+                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
                 ui.update()
+
+            if robot_status == "SEARCHING":
+                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
             if ui is None:
                 if hand_landmarker is not None:
@@ -2344,6 +2426,7 @@ def run_squats(ui=None):
             'errors': list(session_errors)
         }
         print_session_error_summary()
+        save_session_to_firestore(last_session_summary)
 
     cap.release()
     cv2.destroyAllWindows()
@@ -2666,8 +2749,15 @@ def run_plank(ui=None):
                         feedback_msgs.append("✅ Aligning body...")
                         feedback_color = ACCENT_ORANGE
 
-                ui.update_feedback("\n".join(feedback_msgs), feedback_color)
+                if robot_status == "SEARCHING":
+                    ui.update_feedback("Searching...", ACCENT_ORANGE)
+                else:
+                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
                 ui.update()
+
+            if robot_status == "SEARCHING":
+                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
             if ui is None:
                 if hand_landmarker is not None:
@@ -2704,6 +2794,7 @@ def run_plank(ui=None):
             'errors': list(session_errors)
         }
         print_session_error_summary()
+        save_session_to_firestore(last_session_summary)
 
     cap.release()
     if ui is None:
