@@ -1,0 +1,114 @@
+/* Professional dark fitness dashboard styles */
+/* Glassmorphism inspired by the robot's on-screen overlays */
+
+:root {
+  --glass-bg: rgba(255, 255, 255, 0.06);
+  --glass-border: rgba(255, 255, 255, 0.12);
+}
+
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Tab buttons */
+.tab-btn {
+  transition: all 0.1s ease;
+}
+
+.tab-btn.active {
+  background-color: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Mode switch buttons */
+.mode-btn {
+  padding-left: 1rem;
+  padding-right: 1rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background-color: rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+}
+
+.mode-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.mode-btn:active {
+  transform: scale(0.985);
+}
+
+/* Form log styling */
+#formLog {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.2) transparent;
+}
+
+#formLog::-webkit-scrollbar {
+  width: 6px;
+}
+
+#formLog::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,0.2);
+  border-radius: 3px;
+}
+
+/* Robot state colors */
+#robotState {
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+#robotState[data-state="FOLLOWING"] {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #10b981;
+}
+
+#robotState[data-state="SEARCHING"] {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #f59e0b;
+}
+
+#robotState[data-state="STOPPED"] {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #a1a1aa;
+}
+
+/* Big numbers */
+.tabular-nums {
+  font-feature-settings: "tnum";
+}
+
+/* Force stop button emphasis */
+#forceStopBtn {
+  transition: transform 0.05s ease, background-color 0.1s ease;
+}
+
+#forceStopBtn:active {
+  transform: scale(0.97);
+}
+
+/* Camera container */
+#cameraFeed {
+  background: #000;
+  image-rendering: crisp-edges;
+}
+
+/* Small utility */
+.text-dim {
+  color: rgba(255, 255, 255, 0.55);
+}
