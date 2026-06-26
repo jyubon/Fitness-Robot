@@ -305,6 +305,15 @@ TEXT_WHITE     = (235, 235, 240)
 TEXT_DIM       = (155, 155, 165)
 PANEL_BG      = (25, 25, 30)
 
+def bgr_to_hex(color):
+    """Convert a BGR tuple or hex string color to a Tkinter-compatible hex string."""
+    if isinstance(color, str):
+        return color
+    if isinstance(color, (tuple, list)) and len(color) >= 3:
+        b, g, r = int(color[0]), int(color[1]), int(color[2])
+        return f"#{r:02x}{g:02x}{b:02x}"
+    return "#EBEBEF"
+
 SKELETON_LANDMARK = (190, 210, 235)
 SKELETON_LINE     = (170, 170, 90)
 
@@ -1465,8 +1474,6 @@ def run_bicep_curls(ui=None):
                 ui.update_stat_card("Reps", current_set_reps)
                 ui.update_stat_card("L Reps", arms['left']['counter'])
                 ui.update_stat_card("R Reps", arms['right']['counter'])
-                ui.update_stat_card("L Stage", arms['left']['stage'].upper())
-                ui.update_stat_card("R Stage", arms['right']['stage'].upper())
 
                 feedback_msgs = []
                 feedback_color = ACCENT_GREEN
@@ -1801,7 +1808,6 @@ def run_pushups(ui=None):
                 ui.update_stat_card("Set", current_set)
                 ui.update_stat_card("Reps", reps_in_set)
                 ui.update_stat_card("Total Reps", pushup_counter)
-                ui.update_stat_card("Stage", pushup_stage.upper())
 
                 feedback_msgs = []
                 feedback_color = ACCENT_GREEN
@@ -2271,7 +2277,6 @@ def run_squats(ui=None):
                 ui.update_stat_card("Set", current_set)
                 ui.update_stat_card("Reps", reps_in_set)
                 ui.update_stat_card("Total Reps", counter)
-                ui.update_stat_card("Stage", stage.upper())
                 ui.update_stat_card("Hip Angle", f"{int(current_hip_angle)}°")
 
                 feedback_msgs = []
@@ -2937,7 +2942,7 @@ def main():
 
 
 class RoundedButton(tk.Canvas):
-    def __init__(self, parent, text, command, bg_color, fg_color="#1E1E24", radius=15, font=("Helvetica", 12, "bold"), height=50, width=None, **kwargs):
+    def __init__(self, parent, text, command, bg_color, fg_color="#1E1E24", radius=15, font=("Helvetica", 12, "bold"), height=50, width=None, outline_color=None, outline_width=3, **kwargs):
         super().__init__(parent, borderwidth=0, highlightthickness=0, bg=parent["bg"], height=height, **kwargs)
         if width:
             self.configure(width=width)
@@ -2948,6 +2953,8 @@ class RoundedButton(tk.Canvas):
         self.text = text
         self.font = font
         self.pressed = False
+        self.outline_color = outline_color
+        self.outline_width = outline_width
         
         self.bind("<Configure>", self._draw)
         self.bind("<ButtonPress-1>", self._on_press)
@@ -2960,6 +2967,7 @@ class RoundedButton(tk.Canvas):
         w = self.winfo_width()
         h = self.winfo_height()
         r = min(self.radius, w//2, h//2)
+        bw = self.outline_width if self.outline_color else 0
         
         if w <= 0 or h <= 0:
             return
@@ -2970,15 +2978,27 @@ class RoundedButton(tk.Canvas):
             
         # Draw rounded rectangle parts
         # Circles for corners
-        self.create_oval(0, 0, r*2, r*2, fill=color, outline=color)
-        self.create_oval(w - r*2, 0, w, r*2, fill=color, outline=color)
-        self.create_oval(0, h - r*2, r*2, h, fill=color, outline=color)
-        self.create_oval(w - r*2, h - r*2, w, h, fill=color, outline=color)
+        self.create_oval(bw, bw, r*2+bw, r*2+bw, fill=color, outline=color)
+        self.create_oval(w - r*2 - bw, bw, w - bw, r*2+bw, fill=color, outline=color)
+        self.create_oval(bw, h - r*2 - bw, r*2+bw, h - bw, fill=color, outline=color)
+        self.create_oval(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, fill=color, outline=color)
         
         # Rectangles to fill the center
-        self.create_rectangle(r, 0, w - r, h, fill=color, outline=color)
-        self.create_rectangle(0, r, w, h - r, fill=color, outline=color)
+        self.create_rectangle(r+bw, bw, w - r - bw, h - bw, fill=color, outline=color)
+        self.create_rectangle(bw, r+bw, w - bw, h - r - bw, fill=color, outline=color)
         
+        # Draw outline if color is specified
+        if self.outline_color and bw > 0:
+            self.create_arc(bw, bw, r*2+bw, r*2+bw, start=90, extent=90, style="arc", outline=self.outline_color, width=bw)
+            self.create_arc(w - r*2 - bw, bw, w - bw, r*2+bw, start=0, extent=90, style="arc", outline=self.outline_color, width=bw)
+            self.create_arc(bw, h - r*2 - bw, r*2+bw, h - bw, start=180, extent=90, style="arc", outline=self.outline_color, width=bw)
+            self.create_arc(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, start=270, extent=90, style="arc", outline=self.outline_color, width=bw)
+            
+            self.create_line(r+bw, bw, w - r - bw, bw, fill=self.outline_color, width=bw)
+            self.create_line(r+bw, h - bw, w - r - bw, h - bw, fill=self.outline_color, width=bw)
+            self.create_line(bw, r+bw, bw, h - r - bw, fill=self.outline_color, width=bw)
+            self.create_line(w - bw, r+bw, w - bw, h - r - bw, fill=self.outline_color, width=bw)
+
         # Text in the center
         self.create_text(w//2, h//2, text=self.text, fill=self.fg_color, font=self.font)
         
@@ -3014,6 +3034,74 @@ class RoundedButton(tk.Canvas):
             self._draw()
 
 
+class OutlinedLabel(tk.Canvas):
+    def __init__(self, parent, text, font, fg, outline_color, bg_color="#1E1E24", **kwargs):
+        super().__init__(parent, borderwidth=0, highlightthickness=0, bg=bg_color, **kwargs)
+        self.text = text
+        self.font = font
+        self.fg = fg
+        self.outline_color = outline_color
+        self.bind("<Configure>", self._draw)
+        
+    def _draw(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w <= 0 or h <= 0:
+            return
+        
+        x = w // 2
+        y = h // 2
+        
+        # Draw outline border around text
+        offsets = [(-2, -2), (-2, 0), (-2, 2), (0, -2), (0, 2), (2, -2), (2, 0), (2, 2)]
+        for dx, dy in offsets:
+            self.create_text(x + dx, y + dy, text=self.text, font=self.font, fill=self.outline_color, anchor="center")
+            
+        # Center main text
+        self.create_text(x, y, text=self.text, font=self.font, fill=self.fg, anchor="center")
+
+
+class RoundedFrame(tk.Canvas):
+    def __init__(self, parent, bg_color, border_color, border_width=3, radius=20, **kwargs):
+        super().__init__(parent, borderwidth=0, highlightthickness=0, bg=parent["bg"], **kwargs)
+        self.bg_color = bg_color
+        self.border_color = border_color
+        self.border_width = border_width
+        self.radius = radius
+        self.bind("<Configure>", self._draw)
+        
+    def _draw(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        r = self.radius
+        bw = self.border_width
+        
+        if w <= 0 or h <= 0:
+            return
+            
+        # Draw background rounded rect
+        self.create_oval(bw, bw, r*2+bw, r*2+bw, fill=self.bg_color, outline=self.bg_color)
+        self.create_oval(w - r*2 - bw, bw, w - bw, r*2+bw, fill=self.bg_color, outline=self.bg_color)
+        self.create_oval(bw, h - r*2 - bw, r*2+bw, h - bw, fill=self.bg_color, outline=self.bg_color)
+        self.create_oval(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, fill=self.bg_color, outline=self.bg_color)
+        self.create_rectangle(r+bw, bw, w - r - bw, h - bw, fill=self.bg_color, outline=self.bg_color)
+        self.create_rectangle(bw, r+bw, w - bw, h - r - bw, fill=self.bg_color, outline=self.bg_color)
+        
+        # Draw outline border
+        if self.border_color and bw > 0:
+            self.create_arc(bw, bw, r*2+bw, r*2+bw, start=90, extent=90, style="arc", outline=self.border_color, width=bw)
+            self.create_arc(w - r*2 - bw, bw, w - bw, r*2+bw, start=0, extent=90, style="arc", outline=self.border_color, width=bw)
+            self.create_arc(bw, h - r*2 - bw, r*2+bw, h - bw, start=180, extent=90, style="arc", outline=self.border_color, width=bw)
+            self.create_arc(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, start=270, extent=90, style="arc", outline=self.border_color, width=bw)
+            
+            self.create_line(r+bw, bw, w - r - bw, bw, fill=self.border_color, width=bw)
+            self.create_line(r+bw, h - bw, w - r - bw, h - bw, fill=self.border_color, width=bw)
+            self.create_line(bw, r+bw, bw, h - r - bw, fill=self.border_color, width=bw)
+            self.create_line(w - bw, r+bw, w - bw, h - r - bw, fill=self.border_color, width=bw)
+
+
 class FitnessRobotUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -3032,7 +3120,7 @@ class FitnessRobotUI(tk.Tk):
         self.style.configure('.', background='#1E1E24', foreground='#EBEBEF')
         
         self.main_container = tk.Frame(self, bg="#1E1E24")
-        self.main_container.pack(fill="both", expand=True, padx=20, pady=20)
+        self.main_container.pack(fill="both", expand=True, padx=5, pady=5)
         
         self.show_home_screen()
         
@@ -3041,9 +3129,16 @@ class FitnessRobotUI(tk.Tk):
         for widget in self.main_container.winfo_children():
             widget.destroy()
             
-        # Title banner
-        title_label = tk.Label(self.main_container, text="FITNESS ROBOT", font=("Helvetica", 24, "bold"), fg="#96D75F", bg="#1E1E24")
-        title_label.pack(pady=(10, 20))
+        # Title banner with Outlined Label
+        title_canvas = OutlinedLabel(
+            self.main_container,
+            text="FITNESS ROBOT",
+            font=("Helvetica", 24, "bold"),
+            fg="#96D75F",
+            outline_color="#000000",
+            height=40
+        )
+        title_canvas.pack(pady=(5, 10))
         
         # Grid frame for exercises
         grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
@@ -3065,14 +3160,16 @@ class FitnessRobotUI(tk.Tk):
                 command=callback,
                 bg_color="#2B2B36",
                 fg_color=color,
-                radius=15,
-                font=("Helvetica", 14, "bold"),
-                height=65
+                outline_color=color,
+                outline_width=2,
+                radius=10,
+                font=("Helvetica", 12, "bold"),
+                height=45
             )
             # 2 columns layout
             row = i // 2
             col = i % 2
-            btn.grid(row=row, column=col, sticky="nsew", padx=10, pady=10)
+            btn.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
             
         grid_frame.columnconfigure(0, weight=1)
         grid_frame.columnconfigure(1, weight=1)
@@ -3081,7 +3178,9 @@ class FitnessRobotUI(tk.Tk):
         
         # Bottom system buttons
         sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        sys_frame.pack(fill="x", pady=(20, 10))
+        sys_frame.pack(fill="x", pady=(10, 5))
+        for i in range(3):
+            sys_frame.columnconfigure(i, weight=1)
         
         sys_buttons = [
             ("REBOOT", self.confirm_reboot, "#E5B05E"),
@@ -3089,18 +3188,20 @@ class FitnessRobotUI(tk.Tk):
             ("EXIT APP", self.quit_app, "#5F5FDF"),
         ]
         
-        for name, callback, color in sys_buttons:
+        for i, (name, callback, color) in enumerate(sys_buttons):
             btn = RoundedButton(
                 sys_frame,
                 text=name,
                 command=callback,
                 bg_color="#2B2B36",
                 fg_color=color,
-                radius=10,
+                outline_color=color,
+                outline_width=2,
+                radius=8,
                 font=("Helvetica", 10, "bold"),
-                height=40
+                height=35
             )
-            btn.pack(side="left", fill="x", expand=True, padx=5)
+            btn.grid(row=0, column=i, sticky="ew", padx=5)
 
     def run_exercise(self, exercise_name, func):
         try:
@@ -3130,79 +3231,83 @@ class FitnessRobotUI(tk.Tk):
         # Title Banner (Exercise Type)
         self.ex_title_label = tk.Label(
             self.main_container, 
-            text=exercise_name.upper(), 
-            font=("Helvetica", 24, "bold"), 
+            text=exercise_name, 
+            font=("Helvetica", 20, "bold"), 
             fg="#96D75F", 
             bg="#1E1E24"
         )
-        self.ex_title_label.pack(pady=(10, 20))
+        self.ex_title_label.pack(anchor="w", pady=(5, 10), padx=5)
         
         # Row Frame for Count Boxes/Stats
         self.stats_row_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        self.stats_row_frame.pack(fill="x", pady=20)
+        self.stats_row_frame.pack(anchor="w", fill="x", pady=5, padx=5)
         
         # Dictionary to hold the dynamically updated count/stat cards
         self.stat_cards = {}
         
-        # Frame for comments/feedback
-        self.feedback_frame = tk.Frame(self.main_container, bg="#2B2B36", padx=20, pady=20)
-        self.feedback_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        self.feedback_title = tk.Label(
-            self.feedback_frame, 
-            text="POSTURE FEEDBACK / ERROR COMMENTS", 
-            font=("Helvetica", 14, "bold"), 
-            fg="#50AFDF", 
-            bg="#2B2B36"
-        )
-        self.feedback_title.pack(anchor="w", pady=(0, 10))
-        
+        # Direct Label for comments/feedback (no framing/no border to match screenshot)
         self.feedback_label = tk.Label(
-            self.feedback_frame, 
+            self.main_container, 
             text="Aligning and tracking...", 
-            font=("Helvetica", 16, "bold"), 
+            font=("Helvetica", 14, "bold"), 
             fg="#EBEBEF", 
-            bg="#2B2B36",
-            wraplength=600,
-            justify="left"
+            bg="#1E1E24",
+            wraplength=450,
+            justify="left",
+            anchor="w"
         )
-        self.feedback_label.pack(anchor="w", fill="both", expand=True)
+        self.feedback_label.pack(anchor="w", fill="x", pady=10, padx=5)
         
         # Bottom bar for Home Button
         self.bottom_bar = tk.Frame(self.main_container, bg="#1E1E24")
         self.bottom_bar.pack(fill="x", side="bottom", pady=10)
         
-        # Home button on bottom right corner
+        # Home button on bottom right corner (orange background, white text)
         self.home_btn = RoundedButton(
             self.bottom_bar,
-            text="HOME",
+            text="Home",
             command=self.set_home_clicked,
-            bg_color="#E5B05E",
-            fg_color="#1E1E24",
-            radius=15,
-            width=120,
-            height=40
+            bg_color="#FF9500",
+            fg_color="#FFFFFF",
+            radius=10,
+            width=100,
+            height=35,
+            font=("Helvetica", 12, "bold")
         )
         self.home_btn.pack(side="right", padx=10)
 
     def update_stat_card(self, label, value, color="#96D75F"):
+        color = bgr_to_hex(color)
         if label not in self.stat_cards:
-            # Create a card frame
-            card = tk.Frame(self.stats_row_frame, bg="#2B2B36", padx=15, pady=15)
-            card.pack(side="left", fill="both", expand=True, padx=10)
+            # Create a card frame using RoundedFrame
+            card = RoundedFrame(
+                self.stats_row_frame, 
+                bg_color="#2B2B36", 
+                border_color=color, 
+                border_width=2, 
+                radius=10,
+                width=110,
+                height=75
+            )
+            card.pack(side="left", padx=3)
+            card.pack_propagate(False)
             
-            lbl = tk.Label(card, text=label.upper(), font=("Helvetica", 10, "bold"), fg="#50AFDF", bg="#2B2B36")
-            lbl.pack(pady=(0, 5))
+            lbl = tk.Label(card, text=f"{label}:", font=("Helvetica", 10, "bold"), fg=color, bg="#2B2B36")
+            lbl.pack(anchor="w", padx=10, pady=(10, 2))
             
-            val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 20, "bold"), fg=color, bg="#2B2B36")
-            val_lbl.pack()
+            val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 18, "bold"), fg="#FFFFFF", bg="#2B2B36")
+            val_lbl.pack(anchor="w", padx=10)
             
-            self.stat_cards[label] = (card, val_lbl)
+            self.stat_cards[label] = (card, val_lbl, lbl)
         else:
-            card, val_lbl = self.stat_cards[label]
-            val_lbl.configure(text=str(value), fg=color)
+            card, val_lbl, lbl = self.stat_cards[label]
+            val_lbl.configure(text=str(value))
+            card.border_color = color
+            card._draw()
+            lbl.configure(fg=color)
 
     def update_feedback(self, text, color="#EBEBEF"):
+        color = bgr_to_hex(color)
         self.feedback_label.configure(text=text, fg=color)
 
     def set_home_clicked(self):
@@ -3222,42 +3327,56 @@ class FitnessRobotUI(tk.Tk):
         for widget in self.main_container.winfo_children():
             widget.destroy()
             
-        title_label = tk.Label(self.main_container, text=f"SESSION SUMMARY: {summary['exercise'].upper()}", font=("Helvetica", 18, "bold"), fg="#96D75F", bg="#1E1E24")
-        title_label.pack(pady=(10, 20))
+        title_label = tk.Label(self.main_container, text=f"SESSION SUMMARY: {summary['exercise'].upper()}", font=("Helvetica", 14, "bold"), fg="#96D75F", bg="#1E1E24")
+        title_label.pack(pady=(5, 10))
         
         # Card style display for metrics
-        card_frame = tk.Frame(self.main_container, bg="#2B2B36", padx=20, pady=20)
-        card_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        card_container = tk.Frame(self.main_container, bg="#2B2B36", height=150)
+        card_container.pack(fill="x", padx=10, pady=5)
+        card_container.pack_propagate(False)
         
-        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 14, "bold"), fg="#50AFDF", bg="#2B2B36").pack(anchor="w", pady=(0, 10))
+        canvas = tk.Canvas(card_container, bg="#2B2B36", highlightthickness=0)
+        scrollbar = tk.Scrollbar(card_container, orient="vertical", command=canvas.yview)
+        card_frame = tk.Frame(canvas, bg="#2B2B36", padx=10, pady=10)
+        
+        card_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=card_frame, anchor="nw", width=420)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 12, "bold"), fg="#50AFDF", bg="#2B2B36").pack(anchor="w", pady=(0, 5))
         
         for metric, val in summary['metrics']:
-            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 12), fg="#EBEBEF", bg="#2B2B36")
-            lbl.pack(anchor="w", pady=2)
+            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 10), fg="#EBEBEF", bg="#2B2B36")
+            lbl.pack(anchor="w", pady=1)
             
         # Warnings summary
         if summary.get('errors'):
-            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 14, "bold"), fg="#E5B05E", bg="#2B2B36").pack(anchor="w", pady=(20, 10))
+            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 12, "bold"), fg="#E5B05E", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
             # Unique errors
             for err in set(summary['errors']):
-                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 11), fg="#E5B05E", bg="#2B2B36", wraplength=400, justify="left")
-                lbl.pack(anchor="w", pady=2)
+                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 10), fg="#E5B05E", bg="#2B2B36", wraplength=380, justify="left")
+                lbl.pack(anchor="w", pady=1)
         else:
-            tk.Label(card_frame, text="✅ Perfect posture! No mistakes detected.", font=("Helvetica", 12, "italic"), fg="#96D75F", bg="#2B2B36").pack(anchor="w", pady=(20, 10))
+            tk.Label(card_frame, text="✅ Perfect posture! No mistakes detected.", font=("Helvetica", 10, "italic"), fg="#96D75F", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
             
         # Back home button
         btn = RoundedButton(
             self.main_container,
             text="BACK TO MENU",
             command=self.show_home_screen,
-            bg_color="#96D75F",
-            fg_color="#1E1E24",
-            radius=15,
+            bg_color="#2B2B36",
+            fg_color="#96D75F",
+            outline_color="#96D75F",
+            outline_width=2,
+            radius=10,
             font=("Helvetica", 12, "bold"),
-            width=200,
-            height=45
+            width=180,
+            height=35
         )
-        btn.pack(pady=20)
+        btn.pack(pady=10)
 
     def confirm_shutdown(self):
         if messagebox.askyesno("Shutdown", "Are you sure you want to shutdown the Raspberry Pi?"):
