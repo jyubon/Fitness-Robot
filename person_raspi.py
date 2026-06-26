@@ -6,6 +6,16 @@ Logitech C270 Camera
 """
 
 import os
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parent
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_DIR / ".env")
+except ImportError:
+    pass
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['GLOG_minloglevel'] = '3'
 
@@ -29,11 +39,11 @@ from tkinter import messagebox, ttk
 # ─── Firebase Initialization ───
 try:
     import firebase_admin
-    from firebase_admin import credentials, firestore
+    from firebase_admin import auth as firebase_auth, credentials, firestore
     from datetime import datetime
 
     # Initialize Firebase using the service account key
-    cred = credentials.Certificate("serviceAccountKey.json")
+    cred = credentials.Certificate(str(PROJECT_DIR / "serviceAccountKey.json"))
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     print("✅ Firebase initialized successfully.")
@@ -99,7 +109,36 @@ SHOW_FPS = True
 
 # ─── Backend publishing (real data only) ───
 BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000").rstrip("/")
-BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTNkMmIwNjNkZmI0YWEzYzAzMmYwNDAiLCJleHAiOjE3ODIzOTcyMzB9.kQ8F-gNV-z82DWnwrWjt79ssHsPLZHkFq6P9Rsnr8AY")  # JWT from /auth/login
+BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "").strip()
+FIREBASE_USER_ID = os.getenv("FIREBASE_USER_ID", "").strip()
+FIREBASE_USER_EMAIL = os.getenv("FIREBASE_USER_EMAIL", "").strip()
+
+
+def _resolve_firebase_user_id():
+    """Resolve the dashboard account while keeping an explicit UID authoritative."""
+    global FIREBASE_USER_ID
+    if db is None or FIREBASE_USER_ID:
+        return
+
+    try:
+        if FIREBASE_USER_EMAIL:
+            FIREBASE_USER_ID = firebase_auth.get_user_by_email(FIREBASE_USER_EMAIL).uid
+            print(f"Firebase dashboard user resolved from {FIREBASE_USER_EMAIL}.")
+            return
+
+        users = list(firebase_auth.list_users(max_results=2).users)
+        if len(users) == 1:
+            FIREBASE_USER_ID = users[0].uid
+            print(f"Firebase dashboard user auto-selected: {users[0].email or FIREBASE_USER_ID}")
+        elif not users:
+            print("WARNING: Firebase Auth has no dashboard users. Register in the web app first.")
+        else:
+            print("WARNING: Multiple Firebase users found. Set FIREBASE_USER_ID or FIREBASE_USER_EMAIL in .env.")
+    except Exception as exc:
+        print(f"WARNING: Could not resolve Firebase dashboard user: {exc}")
+
+
+_resolve_firebase_user_id()
 
 # Session / pause tracking for accurate active vs total time
 _session_id = None
@@ -119,10 +158,18 @@ from mediapipe.tasks.python import vision
 #  All values come from the live exercise loops. No dummy data.
 # ═══════════════════════════════════════════════════════
 
+def _firebase_user_ref():
+    """Return the Firestore user document used by this Pi."""
+    if 'db' not in globals() or db is None or not FIREBASE_USER_ID:
+        return None
+    return db.collection("users").document(FIREBASE_USER_ID)
+
+
 def _post_json(path, payload):
-    """Fire-and-forget POST. Never raises."""
+    """Legacy backend fallback. Never raises."""
     if not BACKEND_TOKEN:
-        return
+        print("WARNING: Data was not published: Firebase user is unset and BACKEND_TOKEN is missing.")
+        return None
     url = f"{BACKEND_BASE_URL}{path}"
     try:
         req = urllib.request.Request(
@@ -134,59 +181,189 @@ def _post_json(path, payload):
             },
             method="POST"
         )
-        urllib.request.urlopen(req, timeout=2.5)
+        resp = urllib.request.urlopen(req, timeout=2.5)
+        return json.loads(resp.read().decode("utf-8") or "{}")
     except Exception:
-        # Silent: the exercise must never be interrupted by network issues
-        pass
+        return None
+
+
+# ─── Non-blocking publish worker ───
+# All Firebase / HTTP calls are offloaded here so they never block the
+# main exercise / camera loop.
+_publish_queue = queue.Queue()
+
+def _publish_worker():
+    """Background thread: drain _publish_queue and execute each task."""
+    while True:
+        try:
+            task = _publish_queue.get(timeout=1)
+            if task is None:          # sentinel → exit
+                break
+            task()
+        except queue.Empty:
+            continue
+        except Exception:
+            pass
+
+_publish_thread = threading.Thread(target=_publish_worker, daemon=True)
+_publish_thread.start()
+
+
+def _enqueue(fn):
+    """Schedule fn() to run in the background publish thread."""
+    try:
+        _publish_queue.put_nowait(fn)
+    except queue.Full:
+        pass  # drop silently rather than block
 
 
 def publish_event(event_type, payload):
-    """Publish a generic event (used for form, rep, robot_state, etc.)."""
+    """Publish a generic event (non-blocking). Fire-and-forget."""
     p = dict(payload or {})
     if _session_id and "session_id" not in p:
         p["session_id"] = _session_id
-    _post_json("/api/events", {
-        "type": event_type,
-        "payload": p,
-        "ts": datetime.now(timezone.utc).isoformat()
-    })
+    now = datetime.now(timezone.utc)
+
+    def _do():
+        user_ref = _firebase_user_ref()
+        if user_ref is not None:
+            try:
+                event_ref = user_ref.collection("events").document()
+                event_ref.set({
+                    "type": event_type,
+                    "payload": p,
+                    "ts": now
+                })
+                _update_daily_aggregate_from_event(user_ref, event_type, p, now)
+                return
+            except Exception:
+                pass
+        _post_json("/api/events", {
+            "type": event_type,
+            "payload": p,
+            "ts": now.isoformat()
+        })
+
+    _enqueue(_do)
+
+
+def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
+    """Keep the same lightweight rollups the old backend maintained."""
+    try:
+        date_str = ts.date().isoformat()
+        aggregate_ref = user_ref.collection("daily_aggregates").document(date_str)
+
+        if event_type == "rep":
+            aggregate_ref.set({
+                "date": date_str,
+                "form_good_count": firestore.Increment(1),
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+
+        elif event_type == "form_error":
+            aggregate_ref.set({
+                "date": date_str,
+                "form_flaw_count": firestore.Increment(1),
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+
+        elif event_type == "session_end":
+            updates = {"date": date_str, "updated_at": firestore.SERVER_TIMESTAMP}
+            active = float(payload.get("active_duration_s") or 0)
+            total_dur = float(payload.get("total_duration_s") or 0)
+            if active:
+                updates["active_time_s"] = firestore.Increment(round(active, 2))
+            if total_dur:
+                updates["total_time_s"] = firestore.Increment(round(total_dur, 2))
+
+            summary = payload.get("summary") or {}
+            exercise = summary.get("exercise") or payload.get("exercise")
+            if exercise == "plank":
+                plank_time = float(summary.get("total_plank_time_s") or summary.get("plank_time_s") or 0)
+                if plank_time:
+                    updates["plank_time_s"] = firestore.Increment(round(plank_time, 2))
+            elif exercise in ("pushups", "squats"):
+                reps = int(summary.get("total_reps") or 0)
+                if reps:
+                    updates[f"reps.{exercise}"] = firestore.Increment(reps)
+            elif exercise == "bicep_curls":
+                total_reps = int(summary.get("left_reps") or 0) + int(summary.get("right_reps") or 0)
+                if total_reps:
+                    updates["reps.bicep_curls"] = firestore.Increment(total_reps)
+
+            aggregate_ref.set(updates, merge=True)
+    except Exception:
+        pass
 
 
 def publish_session_start(exercise_type):
-    """Create a session on the backend and store the id locally."""
+    """Create a session and store the id locally. Firestore/HTTP done in background."""
     global _session_id, _session_start_wall, _pause_accumulator
+    now = datetime.now(timezone.utc)
+
+    # Always stamp local timing immediately so the exercise loop is never blocked.
+    _session_start_wall = time.time()
+    _pause_accumulator = 0.0
+
+    user_ref = _firebase_user_ref()
+    if user_ref is not None:
+        try:
+            # Create the document reference synchronously (just a local object),
+            # then write it in the background.
+            session_ref = user_ref.collection("sessions").document()
+            _session_id = session_ref.id
+            sid = _session_id
+
+            def _do():
+                try:
+                    session_ref.set({
+                        "user_id": FIREBASE_USER_ID,
+                        "exercise_type": exercise_type,
+                        "started_at": now,
+                        "ended_at": None,
+                        "total_duration_s": None,
+                        "active_duration_s": None,
+                        "rest_duration_s": None,
+                        "summary": {},
+                        "robot_involved": exercise_type == "person_follow"
+                    })
+                    publish_event("session_start", {
+                        "session_id": sid,
+                        "exercise_type": exercise_type
+                    })
+                except Exception:
+                    pass
+            _enqueue(_do)
+            return
+        except Exception:
+            _session_id = None
+
     if not BACKEND_TOKEN:
         _session_id = None
         return
-    now = datetime.now(timezone.utc)
+
     payload = {
         "exercise_type": exercise_type,
         "started_at": now.isoformat()
     }
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_BASE_URL}/api/sessions/start",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {BACKEND_TOKEN}"
-            },
-            method="POST"
-        )
-        resp = urllib.request.urlopen(req, timeout=3)
-        body = json.loads(resp.read().decode("utf-8"))
-        _session_id = body.get("session_id")
-        _session_start_wall = time.time()
-        _pause_accumulator = 0.0
-        publish_event("session_start", {"exercise_type": exercise_type})
-    except Exception:
-        _session_id = None
+
+    def _do_http():
+        try:
+            body = _post_json("/api/sessions/start", payload) or {}
+            # session_id may arrive late; that's fine — events will still carry it.
+            global _session_id
+            if not _session_id:
+                _session_id = body.get("session_id")
+            publish_event("session_start", {"exercise_type": exercise_type})
+        except Exception:
+            pass
+    _enqueue(_do_http)
 
 
 def publish_session_end(summary=None):
-    """End the current session with accurate active vs total time."""
+    """End the current session. Firestore/HTTP writes done in background."""
     global _session_id, _session_start_wall, _pause_accumulator
-    if not _session_id or not BACKEND_TOKEN:
+    if not _session_id:
         _session_id = None
         _session_start_wall = None
         _pause_accumulator = 0.0
@@ -195,32 +372,44 @@ def publish_session_end(summary=None):
     total = (time.time() - _session_start_wall) if _session_start_wall else 0.0
     active = max(0.0, total - _pause_accumulator)
     now = datetime.now(timezone.utc)
+    sid = _session_id
+
+    # Reset state immediately so the UI is never held up.
+    _session_id = None
+    _session_start_wall = None
+    _pause_accumulator = 0.0
 
     payload = {
-        "session_id": _session_id,
-        "ended_at": now.isoformat(),
+        "session_id": sid,
+        "ended_at": now,
         "total_duration_s": round(total, 2),
         "active_duration_s": round(active, 2),
+        "rest_duration_s": round(max(0.0, total - active), 2),
         "summary": summary or {}
     }
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_BASE_URL}/api/sessions/end",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {BACKEND_TOKEN}"
-            },
-            method="POST"
-        )
-        urllib.request.urlopen(req, timeout=3)
-        publish_event("session_end", payload)
-    except Exception:
-        pass
-    finally:
-        _session_id = None
-        _session_start_wall = None
-        _pause_accumulator = 0.0
+
+    user_ref = _firebase_user_ref()
+
+    def _do():
+        if user_ref is not None:
+            try:
+                user_ref.collection("sessions").document(sid).set(payload, merge=True)
+                publish_event("session_end", payload)
+                return
+            except Exception:
+                pass
+
+        if not BACKEND_TOKEN:
+            return
+        try:
+            legacy_payload = dict(payload)
+            legacy_payload["ended_at"] = now.isoformat()
+            _post_json("/api/sessions/end", legacy_payload)
+            publish_event("session_end", legacy_payload)
+        except Exception:
+            pass
+
+    _enqueue(_do)
 
 
 def publish_rep(exercise, set_num=None, count=None, left=None, right=None, **extra):
@@ -263,50 +452,37 @@ def publish_resume():
 
 # ─── Control listener (background thread) ───
 def _control_listener():
-    """Connects to backend control WS and reacts to force_stop / switch_mode."""
-    if not BACKEND_TOKEN:
-        return
-    try:
-        import websocket  # websocket-client package
-    except Exception:
+    """Poll Firestore control commands and react to force_stop / switch_mode."""
+    user_ref = _firebase_user_ref()
+    if user_ref is None:
         return
 
-    ws_url = f"{'wss' if BACKEND_BASE_URL.startswith('https') else 'ws'}://{BACKEND_BASE_URL.split('://')[-1]}/ws/control?token={BACKEND_TOKEN}"
-
-    def on_message(wsapp, message):
-        try:
-            data = json.loads(message)
-            action = data.get("action") or data.get("raw")
-            if not action:
-                return
-            if isinstance(action, str):
-                action_lower = action.lower()
-                if "force_stop" in action_lower:
-                    force_stop.set()
-                elif action == "switch_mode" or "switch" in action_lower:
-                    mode = data.get("mode") or data.get("payload", {}).get("mode")
-                    if mode:
-                        remote_mode_queue.put(("switch", str(mode).upper()))
-        except Exception:
-            pass
-
-    def on_error(wsapp, error):
-        pass
-
-    def on_close(wsapp, close_status_code, close_msg):
-        pass
-
+    processed = set()
     while True:
         try:
-            wsapp = websocket.WebSocketApp(
-                ws_url,
-                on_message=on_message,
-                on_error=on_error,
-                on_close=on_close
-            )
-            wsapp.run_forever(ping_interval=20, ping_timeout=10)
+            commands = user_ref.collection("control_commands").where("status", "==", "pending").stream()
+            for doc in commands:
+                if doc.id in processed:
+                    continue
+
+                data = doc.to_dict() or {}
+                action = str(data.get("action") or "").lower()
+                if action == "force_stop":
+                    force_stop.set()
+                elif action == "switch_mode":
+                    mode = data.get("mode")
+                    if mode:
+                        remote_mode_queue.put(("switch", str(mode).upper()))
+
+                processed.add(doc.id)
+                doc.reference.set({
+                    "status": "processed",
+                    "processed_at": firestore.SERVER_TIMESTAMP,
+                    "processed_by": "raspi"
+                }, merge=True)
         except Exception:
-            time.sleep(2)
+            pass
+        time.sleep(0.5)
 
 # ═══════════════════════════════════════════════════════
 #  EXERCISE HELPER FUNCTIONS
@@ -1197,7 +1373,11 @@ def save_session_to_firestore(summary):
         }
         
         # Save to 'workout_sessions' collection
-        db.collection("workout_sessions").add(doc_data)
+        user_ref = _firebase_user_ref()
+        if user_ref is not None:
+            user_ref.collection("workout_sessions").add(doc_data)
+        else:
+            db.collection("workout_sessions").add(doc_data)
         print(f"✅ Session saved to Firestore: {summary['exercise']}")
     except Exception as e:
         print(f"⚠️ Failed to save session to Firestore: {e}")

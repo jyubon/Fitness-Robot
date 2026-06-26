@@ -1,25 +1,47 @@
 /**
- * Fitness Robot Dashboard - Frontend (vanilla JS)
- * All data is real and comes from the backend / Pi.
- * No dummy data is ever generated here.
+ * Fitness Robot Dashboard - Firebase frontend.
+ * Auth, telemetry, analytics, and robot control all use Firebase directly.
  */
 
-const API_BASE = 'http://localhost:8000'; // Same origin or configure if backend is on different port
-const DEFAULT_CAMERA_URL = ''; // Set this to your Pi MJPEG stream URL if you want auto camera load
+const DEFAULT_CAMERA_URL = '';
 let currentCameraUrl = DEFAULT_CAMERA_URL;
-let currentToken = null;
 let currentUserId = null;
-let telemetryWs = null;
-let controlWs = null;
+let currentUserEmail = null;
+let telemetryUnsubscribe = null;
+let watchUnsubscribe = null;
 
-// Charts (lazy init)
 let repsChart = null;
 let timeChart = null;
 let formChart = null;
 
-// Live state
 let currentSessionId = null;
 let currentExercise = null;
+let latestEventTimestamp = null;
+
+const STEP_SERVICE_UUID = '12345678-1234-1234-1234-123456789001';
+const STEP_COUNT_UUID = '12345678-1234-1234-1234-123456789002';
+const STEP_TIME_SYNC_UUID = '12345678-1234-1234-1234-123456789003';
+const STEP_DAILY_DATA_UUID = '12345678-1234-1234-1234-123456789004';
+const STEP_COMMAND_UUID = '12345678-1234-1234-1234-123456789005';
+const STEP_HISTORY_KEY = 'fitness_robot_step_history';
+const STEP_GOAL = 10000;
+
+let stepDevice = null;
+let stepServer = null;
+let stepCountChar = null;
+let stepTimeSyncChar = null;
+let stepDailyDataChar = null;
+let stepCommandChar = null;
+let stepConnected = false;
+
+if (!window.firebaseConfig || window.firebaseConfig.apiKey === 'PASTE_FIREBASE_WEB_API_KEY') {
+  console.warn('Firebase web config is not set. Edit frontend/firebase-config.js.');
+} else {
+  firebase.initializeApp(window.firebaseConfig);
+}
+
+const auth = firebase.apps.length ? firebase.auth() : null;
+const db = firebase.apps.length ? firebase.firestore() : null;
 
 // ---------- Auth ----------
 
@@ -28,24 +50,20 @@ async function register() {
   const email = document.getElementById('regEmail').value.trim();
   const password = document.getElementById('regPassword').value;
 
+  if (!auth || !db) {
+    showAuthError('Firebase config is missing. Edit frontend/firebase-config.js first.');
+    return;
+  }
   if (!email || !password) {
     showAuthError('Please enter email and password');
     return;
   }
 
   try {
-    const res = await fetch(`${API_BASE}/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Registration failed');
-
-    // Auto-login after register
-    await doLogin(email, password);
+    const result = await auth.createUserWithEmailAndPassword(email, password);
+    await ensureUserDocument(result.user);
   } catch (e) {
-    showAuthError(e.message);
+    showAuthError(firebaseAuthMessage(e));
   }
 }
 
@@ -53,43 +71,43 @@ async function login() {
   clearAuthError();
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
-  await doLogin(email, password);
-}
 
-async function doLogin(email, password) {
+  if (!auth) {
+    showAuthError('Firebase config is missing. Edit frontend/firebase-config.js first.');
+    return;
+  }
+  if (!email || !password) {
+    showAuthError('Please enter email and password');
+    return;
+  }
+
   try {
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Login failed');
-
-    currentToken = data.access_token;
-    currentUserId = data.user_id;
-
-    localStorage.setItem('fr_token', currentToken);
-    localStorage.setItem('fr_user_id', currentUserId);
-
-    showAppView(email);
-    connectWebSockets();
+    await auth.signInWithEmailAndPassword(email, password);
   } catch (e) {
-    showAuthError(e.message);
+    showAuthError(firebaseAuthMessage(e));
   }
 }
 
-function logout() {
-  disconnectWebSockets();
-  localStorage.removeItem('fr_token');
-  localStorage.removeItem('fr_user_id');
-  currentToken = null;
+async function logout() {
+  disconnectRealtime();
+  if (stepConnected) disconnectStepTracker();
+  if (auth) await auth.signOut();
   currentUserId = null;
+  currentUserEmail = null;
 
   document.getElementById('appView').classList.add('hidden');
   document.getElementById('authView').classList.remove('hidden');
   document.getElementById('userInfo').classList.add('hidden');
   document.getElementById('forceStopBtn').classList.add('hidden');
+}
+
+async function ensureUserDocument(user) {
+  if (!db || !user) return;
+  await db.collection('users').doc(user.uid).set({
+    email: user.email,
+    updated_at: firebase.firestore.FieldValue.serverTimestamp(),
+    created_at: firebase.firestore.FieldValue.serverTimestamp()
+  }, { merge: true });
 }
 
 function showAuthError(msg) {
@@ -111,173 +129,177 @@ function showAppView(email) {
   const userInfo = document.getElementById('userInfo');
   userInfo.classList.remove('hidden');
   userInfo.classList.add('flex');
-  document.getElementById('userEmail').textContent = email;
+  document.getElementById('userEmail').textContent = email || 'You';
 
   document.getElementById('forceStopBtn').classList.remove('hidden');
-
-  // Default to live tab
   showTab('live');
   startCameraStreamIfNeeded();
+}
+
+function firebaseAuthMessage(error) {
+  const map = {
+    'auth/email-already-in-use': 'Email already registered',
+    'auth/invalid-email': 'Invalid email address',
+    'auth/invalid-login-credentials': 'Incorrect email or password',
+    'auth/user-not-found': 'Incorrect email or password',
+    'auth/wrong-password': 'Incorrect email or password',
+    'auth/weak-password': 'Password should be at least 6 characters'
+  };
+  return map[error.code] || error.message || 'Authentication failed';
 }
 
 // ---------- Tabs ----------
 
 function showTab(tab) {
   const live = document.getElementById('liveView');
+  const steps = document.getElementById('stepsView');
   const analytics = document.getElementById('analyticsView');
   const btnLive = document.getElementById('tab-live');
+  const btnSteps = document.getElementById('tab-steps');
   const btnAnalytics = document.getElementById('tab-analytics');
 
   if (tab === 'live') {
     live.classList.remove('hidden');
+    steps.classList.add('hidden');
     analytics.classList.add('hidden');
     btnLive.classList.add('active');
+    btnSteps.classList.remove('active');
     btnAnalytics.classList.remove('active');
+  } else if (tab === 'steps') {
+    live.classList.add('hidden');
+    steps.classList.remove('hidden');
+    analytics.classList.add('hidden');
+    btnLive.classList.remove('active');
+    btnSteps.classList.add('active');
+    btnAnalytics.classList.remove('active');
+    renderStepHistory();
   } else {
     live.classList.add('hidden');
+    steps.classList.add('hidden');
     analytics.classList.remove('hidden');
     btnLive.classList.remove('active');
+    btnSteps.classList.remove('active');
     btnAnalytics.classList.add('active');
     loadAnalytics();
   }
 }
 
-// ---------- WebSocket ----------
+// ---------- Firestore realtime ----------
 
-function connectWebSockets() {
-  if (!currentToken) return;
+function connectRealtime() {
+  if (!db || !currentUserId) return;
+  disconnectRealtime();
 
-  disconnectWebSockets();
+  latestEventTimestamp = new Date();
 
-  const backendUrl = API_BASE ? new URL(API_BASE) : new URL(`${location.protocol}//${location.host}`);
-  const wsProtocol = backendUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsBase = `${wsProtocol}//${backendUrl.host}`;
+  telemetryUnsubscribe = db.collection('users').doc(currentUserId)
+    .collection('events')
+    .orderBy('ts', 'desc')
+    .limit(50)
+    .onSnapshot((snapshot) => {
+      const changes = snapshot.docChanges()
+        .filter(change => change.type === 'added')
+        .map(change => ({ id: change.doc.id, ...change.doc.data() }))
+        .sort((a, b) => toMillis(a.ts) - toMillis(b.ts));
 
-  // Telemetry (receives reps, form, robot_state, watch, etc.)
-  const telemetryUrl = `${wsBase}/ws/telemetry?token=${currentToken}`;
-  telemetryWs = new WebSocket(telemetryUrl);
+      changes.forEach((msg) => {
+        if (toMillis(msg.ts) >= latestEventTimestamp.getTime() - 1000) {
+          handleTelemetryMessage(msg);
+        }
+      });
+    }, (error) => appendLog(`Telemetry listener failed: ${error.message}`, true));
 
-  telemetryWs.onopen = () => {
-    appendLog('Connected to live telemetry');
-  };
+  const today = dateKey(new Date());
+  watchUnsubscribe = db.collection('users').doc(currentUserId)
+    .collection('watch_data')
+    .doc(today)
+    .onSnapshot((doc) => {
+      if (doc.exists) handleTelemetryMessage({ type: 'watch_steps', ...doc.data() });
+    });
 
-  telemetryWs.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      handleTelemetryMessage(msg);
-    } catch (e) {
-      console.warn('Bad telemetry message', event.data);
-    }
-  };
-
-  telemetryWs.onclose = () => {
-    // Silent - will reconnect on next action or manual refresh
-  };
-
-  // Control (for receiving acks or raw from Pi)
-  const controlUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/control?token=${currentToken}`;
-  controlWs = new WebSocket(controlUrl);
-
-  controlWs.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.action || msg.raw) {
-        appendLog(`Control: ${msg.action || msg.raw}`);
-      }
-    } catch { }
-  };
+  appendLog('Connected to Firebase telemetry');
 }
 
-function disconnectWebSockets() {
-  if (telemetryWs) {
-    try { telemetryWs.close(); } catch { }
-    telemetryWs = null;
-  }
-  if (controlWs) {
-    try { controlWs.close(); } catch { }
-    controlWs = null;
-  }
+function disconnectRealtime() {
+  if (telemetryUnsubscribe) telemetryUnsubscribe();
+  if (watchUnsubscribe) watchUnsubscribe();
+  telemetryUnsubscribe = null;
+  watchUnsubscribe = null;
 }
 
 function handleTelemetryMessage(msg) {
   const type = msg.type;
+  const payload = msg.payload || msg;
 
   if (type === 'session_start') {
-    currentSessionId = msg.session_id;
-    currentExercise = msg.exercise_type;
+    currentSessionId = msg.session_id || payload.session_id || msg.id;
+    currentExercise = msg.exercise_type || payload.exercise_type;
     document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
     appendLog(`Session started: ${formatExercise(currentExercise)}`);
     return;
   }
 
   if (type === 'session_end') {
-    appendLog(`Session ended. Active: ${msg.active_duration_s?.toFixed?.(1) || '?'}s`);
+    appendLog(`Session ended. Active: ${Number(payload.active_duration_s || 0).toFixed(1)}s`);
     currentSessionId = null;
     return;
   }
 
   if (type === 'robot_state') {
     const pill = document.getElementById('robotState');
-    const state = (msg.payload?.state || msg.state || 'STOPPED').toUpperCase();
+    const state = (payload.state || 'STOPPED').toUpperCase();
     pill.textContent = state;
     pill.setAttribute('data-state', state);
     return;
   }
 
   if (type === 'rep') {
-    const p = msg.payload || msg;
-    currentExercise = p.exercise || currentExercise;
-
+    currentExercise = payload.exercise || currentExercise;
     document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
 
-    if (p.set !== undefined) {
-      document.getElementById('currentSet').textContent = p.set;
+    if (payload.set !== undefined) {
+      document.getElementById('currentSet').textContent = payload.set;
     }
 
-    let repText = '';
-    if (p.exercise === 'bicep_curls' && (p.left !== undefined || p.right !== undefined)) {
-      repText = `L:${p.left ?? 0}  R:${p.right ?? 0}`;
-      document.getElementById('currentReps').textContent = Math.max(p.left || 0, p.right || 0);
+    if (payload.exercise === 'bicep_curls' && (payload.left !== undefined || payload.right !== undefined)) {
+      document.getElementById('currentReps').textContent = Math.max(payload.left || 0, payload.right || 0);
+      document.getElementById('repsDetail').textContent = `L:${payload.left ?? 0}  R:${payload.right ?? 0}`;
     } else {
-      const count = p.count ?? p.reps ?? p.total ?? 0;
-      document.getElementById('currentReps').textContent = count;
-      repText = '';
+      document.getElementById('currentReps').textContent = payload.count ?? payload.reps ?? payload.total ?? 0;
+      document.getElementById('repsDetail').textContent = '';
     }
-    document.getElementById('repsDetail').textContent = repText;
     return;
   }
 
   if (type === 'plank_time' || type === 'plank') {
-    const val = msg.payload?.value ?? msg.value ?? msg.plank_timer ?? 0;
+    const val = payload.value ?? payload.plank_timer ?? 0;
     document.getElementById('plankTime').textContent = formatSeconds(val);
     return;
   }
 
   if (type === 'form_error' || type === 'encouragement') {
-    const text = msg.payload?.message || msg.message || JSON.stringify(msg.payload || msg);
-    appendLog(text, true);
+    appendLog(payload.message || JSON.stringify(payload), true);
     return;
   }
 
   if (type === 'watch_steps') {
-    document.getElementById('watchSteps').textContent = msg.steps ?? '—';
-    document.getElementById('watchLastSync').textContent = msg.synced_at ? new Date(msg.synced_at).toLocaleTimeString() : '';
-    if (msg.calories != null || msg.distance_km != null) {
-      document.getElementById('watchExtra').textContent =
-        `${msg.calories ?? '?'} cal • ${(msg.distance_km ?? 0).toFixed(2)} km`;
-    }
+    updateStepDisplay({
+      steps: Number(payload.steps || 0),
+      cal: payload.calories,
+      km: payload.distance_km,
+      min: payload.active_min
+    }, false);
+    document.getElementById('watchLastSync').textContent = payload.last_synced_at ? formatTime(payload.last_synced_at) : '';
     return;
   }
 
   if (type === 'set_complete') {
-    const p = msg.payload || msg;
-    appendLog(`Set ${p.set} complete (${p.reps ?? '?'} reps)`);
+    appendLog(`Set ${payload.set} complete (${payload.reps ?? '?'} reps)`);
     return;
   }
 
-  // Fallback: show raw interesting events
   if (['pause', 'resume', 'robot_command'].includes(type)) {
-    appendLog(`${type}: ${JSON.stringify(msg.payload || msg)}`);
+    appendLog(`${type}: ${JSON.stringify(payload)}`);
   }
 }
 
@@ -289,61 +311,47 @@ function appendLog(text, isForm = false) {
   container.appendChild(entry);
   container.scrollTop = container.scrollHeight;
 
-  // Keep only last 60 lines
   while (container.children.length > 60) {
     container.removeChild(container.firstChild);
   }
 }
 
 function clearLog() {
-  const container = document.getElementById('formLog');
-  container.innerHTML = '';
+  document.getElementById('formLog').innerHTML = '';
 }
 
 // ---------- Control ----------
 
 async function sendForceStop() {
-  if (!currentToken) return;
-  try {
-    await fetch(`${API_BASE}/api/control`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentToken}`
-      },
-      body: JSON.stringify({ action: 'force_stop' })
-    });
-    appendLog('Force Stop sent to robot');
-  } catch (e) {
-    appendLog('Failed to send Force Stop: ' + e.message);
-  }
+  await sendControlCommand({ action: 'force_stop' }, 'Force Stop sent to robot');
 }
 
 async function switchMode(mode) {
-  if (!currentToken) return;
-
   const mapping = {
-    'bicep_curls': 'BICEP_CURLS',
-    'pushups': 'PUSHUPS',
-    'squats': 'SQUATS',
-    'plank': 'PLANK',
-    'person_follow': 'PERSON_FOLLOW'
+    bicep_curls: 'BICEP_CURLS',
+    pushups: 'PUSHUPS',
+    squats: 'SQUATS',
+    plank: 'PLANK',
+    person_follow: 'PERSON_FOLLOW'
   };
+  await sendControlCommand({
+    action: 'switch_mode',
+    mode: mapping[mode] || mode.toUpperCase()
+  }, `Requested mode: ${mode}`);
+}
 
-  const payloadMode = mapping[mode] || mode.toUpperCase();
-
+async function sendControlCommand(command, successMessage) {
+  if (!db || !currentUserId) return;
   try {
-    await fetch(`${API_BASE}/api/control`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${currentToken}`
-      },
-      body: JSON.stringify({ action: 'switch_mode', mode: payloadMode })
+    await db.collection('users').doc(currentUserId).collection('control_commands').add({
+      ...command,
+      from: 'web',
+      status: 'pending',
+      created_at: firebase.firestore.FieldValue.serverTimestamp()
     });
-    appendLog(`Requested mode: ${mode}`);
+    appendLog(successMessage);
   } catch (e) {
-    appendLog('Failed to switch mode: ' + e.message);
+    appendLog(`Failed to send command: ${e.message}`, true);
   }
 }
 
@@ -365,7 +373,7 @@ function setCameraStream() {
   img.onerror = () => {
     img.classList.add('hidden');
     placeholder.classList.remove('hidden');
-    placeholder.innerHTML = `<div class="text-red-400">Failed to load stream.<br>Check Pi MJPEG server is running.</div>`;
+    placeholder.innerHTML = '<div class="text-red-400">Failed to load stream.<br>Check Pi MJPEG server is running.</div>';
   };
 }
 
@@ -378,67 +386,97 @@ function startCameraStreamIfNeeded() {
   setCameraStream();
 }
 
-function showAppView(email) {
-  document.getElementById('authView').classList.add('hidden');
-  document.getElementById('appView').classList.remove('hidden');
-
-  const userInfo = document.getElementById('userInfo');
-  userInfo.classList.remove('hidden');
-  userInfo.classList.add('flex');
-  document.getElementById('userEmail').textContent = email;
-
-  document.getElementById('forceStopBtn').classList.remove('hidden');
-
-  // Default to live tab
-  showTab('live');
-  startCameraStreamIfNeeded();
-}
-
 // ---------- Analytics ----------
 
 async function loadAnalytics() {
-  if (!currentToken) return;
+  if (!db || !currentUserId) return;
 
   try {
-    const res = await fetch(`${API_BASE}/api/analytics/weekly`, {
-      headers: { 'Authorization': `Bearer ${currentToken}` }
+    const today = new Date();
+    const fromDate = new Date(today);
+    fromDate.setDate(today.getDate() - 6);
+
+    const aggregateSnap = await db.collection('users').doc(currentUserId)
+      .collection('daily_aggregates')
+      .where('date', '>=', dateKey(fromDate))
+      .where('date', '<=', dateKey(today))
+      .get();
+
+    const dailyByDate = new Map();
+    for (let i = 0; i < 7; i += 1) {
+      const day = new Date(fromDate);
+      day.setDate(fromDate.getDate() + i);
+      dailyByDate.set(dateKey(day), emptyDaily(dateKey(day)));
+    }
+
+    aggregateSnap.forEach(doc => {
+      const data = doc.data();
+      dailyByDate.set(data.date || doc.id, { ...emptyDaily(data.date || doc.id), ...data });
     });
-    if (!res.ok) throw new Error('Failed to load analytics');
-    const data = await res.json();
 
-    // KPIs
-    document.getElementById('kpiTotalReps').textContent = Object.values(data.totals?.reps || {}).reduce((a, b) => a + b, 0) || '0';
-    const plank = data.totals?.plank_time_s ?? 0;
-    document.getElementById('kpiPlankTime').textContent = formatSeconds(plank);
-    document.getElementById('kpiSteps').textContent = data.totals?.steps ?? '0';
+    const daily = Array.from(dailyByDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+    const sessionsSnap = await db.collection('users').doc(currentUserId)
+      .collection('sessions')
+      .where('started_at', '>=', fromDate)
+      .get();
 
-    const form = data.form_accuracy || { good: 0, flawed: 0 };
-    const totalForm = (form.good || 0) + (form.flawed || 0);
-    const pct = totalForm > 0 ? Math.round((form.good / totalForm) * 100) : 100;
-    document.getElementById('kpiForm').textContent = `${pct}% good`;
+    const sessionHistory = [];
+    sessionsSnap.forEach(doc => sessionHistory.push({ id: doc.id, ...doc.data() }));
+    sessionHistory.sort((a, b) => toMillis(b.started_at) - toMillis(a.started_at));
 
-    // Charts
-    renderRepsChart(data.daily);
-    renderTimeChart(data.daily);
+    const form = {
+      good: daily.reduce((sum, d) => sum + Number(d.form_good_count || d.form_good || 0), 0),
+      flawed: daily.reduce((sum, d) => sum + Number(d.form_flaw_count || d.form_flawed || 0), 0)
+    };
+    const totals = daily.reduce((acc, d) => {
+      acc.steps += Number(d.steps || 0);
+      acc.plank_time_s += Number(d.plank_time_s || 0);
+      acc.active_time_s += Number(d.active_time_s || 0);
+      acc.total_time_s += Number(d.total_time_s || 0);
+      Object.entries(d.reps || {}).forEach(([exercise, count]) => {
+        acc.reps[exercise] = (acc.reps[exercise] || 0) + Number(count || 0);
+      });
+      return acc;
+    }, { steps: 0, plank_time_s: 0, active_time_s: 0, total_time_s: 0, reps: {} });
+
+    document.getElementById('kpiTotalReps').textContent = Object.values(totals.reps).reduce((a, b) => a + b, 0) || '0';
+    document.getElementById('kpiPlankTime').textContent = formatSeconds(totals.plank_time_s);
+    document.getElementById('kpiSteps').textContent = totals.steps || '0';
+
+    const totalForm = form.good + form.flawed;
+    document.getElementById('kpiForm').textContent = `${totalForm > 0 ? Math.round((form.good / totalForm) * 100) : 100}% good`;
+
+    renderRepsChart(daily);
+    renderTimeChart(daily);
     renderFormChart(form);
-
-    // Session history
-    renderSessionHistory(data.session_history || []);
+    renderSessionHistory(sessionHistory);
   } catch (e) {
     console.error(e);
+    appendLog(`Failed to load analytics: ${e.message}`, true);
   }
+}
+
+function emptyDaily(date) {
+  return {
+    date,
+    steps: 0,
+    reps: {},
+    plank_time_s: 0,
+    active_time_s: 0,
+    total_time_s: 0,
+    form_good_count: 0,
+    form_flaw_count: 0
+  };
 }
 
 function renderRepsChart(daily) {
   const ctx = document.getElementById('repsChart');
-  const labels = daily.map(d => d.date.slice(5)); // MM-DD
-
+  const labels = daily.map(d => d.date.slice(5));
   const curls = daily.map(d => (d.reps && d.reps.bicep_curls) || 0);
   const push = daily.map(d => (d.reps && d.reps.pushups) || 0);
   const squats = daily.map(d => (d.reps && d.reps.squats) || 0);
 
   if (repsChart) repsChart.destroy();
-
   repsChart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -460,12 +498,10 @@ function renderRepsChart(daily) {
 function renderTimeChart(daily) {
   const ctx = document.getElementById('timeChart');
   const labels = daily.map(d => d.date.slice(5));
-
   const active = daily.map(d => d.active_time_s || 0);
   const total = daily.map(d => d.total_time_s || 0);
 
   if (timeChart) timeChart.destroy();
-
   timeChart = new Chart(ctx, {
     type: 'line',
     data: {
@@ -485,19 +521,12 @@ function renderTimeChart(daily) {
 
 function renderFormChart(form) {
   const ctx = document.getElementById('formChart');
-  const good = form.good || 0;
-  const flawed = form.flawed || 0;
-
   if (formChart) formChart.destroy();
-
   formChart = new Chart(ctx, {
     type: 'doughnut',
     data: {
       labels: ['Good Form', 'Flawed Form'],
-      datasets: [{
-        data: [good, flawed],
-        backgroundColor: ['#34d399', '#f87171']
-      }]
+      datasets: [{ data: [form.good || 0, form.flawed || 0], backgroundColor: ['#34d399', '#f87171'] }]
     },
     options: {
       plugins: { legend: { position: 'bottom', labels: { color: '#a1a1aa' } } }
@@ -517,11 +546,11 @@ function renderSessionHistory(sessions) {
   sessions.forEach(s => {
     const div = document.createElement('div');
     div.className = 'flex justify-between text-xs border-b border-white/10 py-1';
-    const dur = s.active_duration_s != null ? `${s.active_duration_s.toFixed(0)}s active` : '';
+    const dur = s.active_duration_s != null ? `${Number(s.active_duration_s).toFixed(0)}s active` : '';
     div.innerHTML = `
       <div>
         <span class="font-medium">${formatExercise(s.exercise_type)}</span>
-        <span class="text-white/40 ml-2">${new Date(s.started_at).toLocaleDateString()}</span>
+        <span class="text-white/40 ml-2">${formatDate(s.started_at)}</span>
       </div>
       <div class="text-white/50">${dur}</div>
     `;
@@ -529,55 +558,402 @@ function renderSessionHistory(sessions) {
   });
 }
 
+// ---------- Step Tracker ----------
+
+async function toggleStepConnection() {
+  if (stepConnected) {
+    disconnectStepTracker();
+  } else {
+    await connectStepTracker();
+  }
+}
+
+async function connectStepTracker() {
+  if (!navigator.bluetooth) {
+    stepLog('Web Bluetooth is not supported in this browser. Use Chrome or Edge.');
+    setStepStatus('disconnected');
+    return;
+  }
+
+  try {
+    setStepStatus('connecting');
+    stepLog('Opening Bluetooth device picker...');
+
+    stepDevice = await requestStepDevice();
+    stepLog(`Selected: ${stepDevice.name || 'Unknown Device'}`);
+    stepDevice.addEventListener('gattserverdisconnected', onStepDisconnected);
+
+    stepServer = await stepDevice.gatt.connect();
+    stepLog('GATT connected');
+
+    const service = await stepServer.getPrimaryService(STEP_SERVICE_UUID);
+    stepCountChar = await service.getCharacteristic(STEP_COUNT_UUID);
+    stepTimeSyncChar = await service.getCharacteristic(STEP_TIME_SYNC_UUID);
+    stepDailyDataChar = await service.getCharacteristic(STEP_DAILY_DATA_UUID);
+    stepCommandChar = await service.getCharacteristic(STEP_COMMAND_UUID);
+    stepLog('Tracker characteristics ready');
+
+    await stepCountChar.startNotifications();
+    stepCountChar.addEventListener('characteristicvaluechanged', onStepCountChanged);
+
+    await stepDailyDataChar.startNotifications();
+    stepDailyDataChar.addEventListener('characteristicvaluechanged', onStepDailyDataChanged);
+
+    stepConnected = true;
+    setStepStatus('connected');
+    stepLog('Connected successfully');
+
+    setTimeout(async () => {
+      await syncStepTime();
+      await requestStepData();
+    }, 500);
+  } catch (error) {
+    stepLog(`Connection error: ${error.message}`);
+    setStepStatus('disconnected');
+  }
+}
+
+async function requestStepDevice() {
+  try {
+    return await navigator.bluetooth.requestDevice({
+      filters: [{ services: [STEP_SERVICE_UUID] }],
+      optionalServices: [STEP_SERVICE_UUID]
+    });
+  } catch (serviceError) {
+    stepLog(`Service filter failed: ${serviceError.message}`);
+  }
+
+  try {
+    return await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'StepTracker' }, { namePrefix: 'Step' }],
+      optionalServices: [STEP_SERVICE_UUID]
+    });
+  } catch (nameError) {
+    stepLog(`Name filter failed: ${nameError.message}`);
+  }
+
+  return navigator.bluetooth.requestDevice({
+    acceptAllDevices: true,
+    optionalServices: [STEP_SERVICE_UUID]
+  });
+}
+
+function disconnectStepTracker() {
+  if (stepDevice && stepDevice.gatt.connected) {
+    stepDevice.gatt.disconnect();
+  }
+  stepConnected = false;
+  setStepStatus('disconnected');
+  stepLog('Disconnected');
+}
+
+function onStepDisconnected() {
+  stepConnected = false;
+  setStepStatus('disconnected');
+  stepLog('Device disconnected');
+}
+
+function onStepCountChanged(event) {
+  const value = new TextDecoder().decode(event.target.value);
+  const steps = parseInt(value, 10) || 0;
+  updateStepDisplay({ steps }, true);
+}
+
+function onStepDailyDataChanged(event) {
+  const value = new TextDecoder().decode(event.target.value);
+  stepLog(`Data: ${value}`);
+
+  try {
+    const data = JSON.parse(value);
+    updateStepDisplay(data, true);
+    saveStepHistory(data);
+    syncStepsToFirestore(data);
+  } catch (error) {
+    stepLog(`Parse error: ${error.message}`);
+  }
+}
+
+async function syncStepTime() {
+  if (!stepConnected || !stepTimeSyncChar) {
+    stepLog('Not connected');
+    return;
+  }
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+    view.setUint32(0, now, true);
+    await stepTimeSyncChar.writeValue(buffer);
+    stepLog(`Time synced: ${new Date().toLocaleTimeString()}`);
+  } catch (error) {
+    stepLog(`Time sync error: ${error.message}`);
+  }
+}
+
+async function requestStepData() {
+  if (!stepConnected || !stepCommandChar) {
+    stepLog('Not connected');
+    return;
+  }
+
+  try {
+    await stepCommandChar.writeValue(new TextEncoder().encode('SYNC'));
+    stepLog('Data requested');
+  } catch (error) {
+    stepLog(`Request error: ${error.message}`);
+  }
+}
+
+async function resetStepCount() {
+  if (!stepConnected || !stepCommandChar) {
+    stepLog('Not connected');
+    return;
+  }
+
+  if (!confirm('Reset step count to 0?')) return;
+
+  try {
+    await stepCommandChar.writeValue(new TextEncoder().encode('RESET'));
+    stepLog('Steps reset command sent');
+  } catch (error) {
+    stepLog(`Reset error: ${error.message}`);
+  }
+}
+
+function exportStepData() {
+  const history = getStepHistory();
+  if (!history.length) {
+    stepLog('No data to export');
+    return;
+  }
+
+  let csv = 'Date,Steps,Calories,Distance(km),ActiveMinutes\n';
+  history.forEach(entry => {
+    csv += `${entry.date},${entry.steps || 0},${entry.cal || 0},${entry.km || 0},${entry.min || 0}\n`;
+  });
+
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `step_tracker_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  stepLog('Data exported as CSV');
+}
+
+function updateStepDisplay(data, updateSyncTime) {
+  const steps = Number(data.steps || 0);
+  const cal = Number(data.cal ?? data.calories ?? 0);
+  const km = Number(data.km ?? data.distance_km ?? 0);
+  const min = Number(data.min ?? data.active_min ?? 0);
+  const goal = Number(data.goal || STEP_GOAL);
+  const pct = Math.min(100, Math.round(Number(data.pct ?? ((steps / goal) * 100))));
+
+  setTextIfPresent('stepCount', steps.toLocaleString());
+  setTextIfPresent('stepCalories', Math.round(cal).toString());
+  setTextIfPresent('stepDistance', km.toFixed(2));
+  setTextIfPresent('stepActiveMin', min.toString());
+  setTextIfPresent('stepGoalText', `${pct}% of ${goal.toLocaleString()} goal`);
+  setTextIfPresent('watchSteps', steps ? steps.toLocaleString() : '-');
+  setTextIfPresent('watchExtra', `${Math.round(cal)} cal - ${km.toFixed(2)} km`);
+
+  const bar = document.getElementById('stepProgressBar');
+  if (bar) bar.style.width = `${pct}%`;
+  if (updateSyncTime) setTextIfPresent('watchLastSync', new Date().toLocaleTimeString());
+}
+
+function setStepStatus(status) {
+  const badge = document.getElementById('stepStatusBadge');
+  const btn = document.getElementById('stepConnectBtn');
+  if (!badge || !btn) return;
+
+  badge.className = `step-status ${status}`;
+  if (status === 'connected') {
+    badge.textContent = 'Connected';
+    btn.textContent = 'Disconnect';
+    btn.disabled = false;
+  } else if (status === 'connecting') {
+    badge.textContent = 'Connecting...';
+    btn.textContent = 'Connecting...';
+    btn.disabled = true;
+  } else {
+    badge.textContent = 'Disconnected';
+    btn.textContent = 'Connect to Tracker';
+    btn.disabled = false;
+  }
+}
+
+function stepLog(msg) {
+  const container = document.getElementById('stepLogContainer');
+  if (!container) return;
+
+  const entry = document.createElement('div');
+  entry.className = 'text-white/70';
+  entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  container.appendChild(entry);
+  container.scrollTop = container.scrollHeight;
+
+  while (container.children.length > 50) {
+    container.removeChild(container.firstChild);
+  }
+}
+
+function clearStepLog() {
+  const container = document.getElementById('stepLogContainer');
+  if (container) container.innerHTML = '';
+}
+
+function getStepHistory() {
+  const data = localStorage.getItem(STEP_HISTORY_KEY);
+  return data ? JSON.parse(data) : [];
+}
+
+function saveStepHistory(entry) {
+  const history = getStepHistory();
+  const today = new Date().toLocaleDateString();
+  const existingIndex = history.findIndex(h => h.date === today);
+  const next = {
+    date: today,
+    steps: Number(entry.steps || 0),
+    cal: Number(entry.cal ?? entry.calories ?? 0),
+    km: Number(entry.km ?? entry.distance_km ?? 0),
+    min: Number(entry.min ?? entry.active_min ?? 0),
+    pct: Number(entry.pct || 0)
+  };
+
+  if (existingIndex >= 0) {
+    history[existingIndex] = next;
+  } else {
+    history.unshift(next);
+  }
+
+  while (history.length > 30) history.pop();
+  localStorage.setItem(STEP_HISTORY_KEY, JSON.stringify(history));
+  renderStepHistory();
+}
+
+function renderStepHistory() {
+  const container = document.getElementById('stepHistoryList');
+  if (!container) return;
+
+  const history = getStepHistory();
+  if (!history.length) {
+    container.innerHTML = '<div class="text-white/40 text-xs">No data yet.</div>';
+    return;
+  }
+
+  container.innerHTML = history.map(entry => `
+    <div class="flex items-center justify-between border-b border-white/10 pb-2">
+      <span class="text-white/60">${entry.date}</span>
+      <span class="font-medium">${Number(entry.steps || 0).toLocaleString()} steps</span>
+      <span class="text-white/45">${Number(entry.km || 0).toFixed(2)} km</span>
+    </div>
+  `).join('');
+}
+
+async function syncStepsToFirestore(data) {
+  if (!db || !currentUserId) return;
+
+  try {
+    const today = dateKey(new Date());
+    await db.collection('users').doc(currentUserId)
+      .collection('watch_data')
+      .doc(today)
+      .set({
+        steps: Number(data.steps || 0),
+        calories: Number(data.cal ?? data.calories ?? 0),
+        distance_km: Number(data.km ?? data.distance_km ?? 0),
+        active_min: Number(data.min ?? data.active_min ?? 0),
+        last_synced_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+  } catch (error) {
+    stepLog(`Firestore sync failed: ${error.message}`);
+  }
+}
+
+function setTextIfPresent(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
 // ---------- Helpers ----------
 
 function formatExercise(ex) {
-  if (!ex) return '—';
+  if (!ex) return '-';
   const map = {
-    'bicep_curls': 'Bicep Curls',
-    'pushups': 'Push-ups',
-    'squats': 'Squats',
-    'plank': 'Plank',
-    'person_follow': 'Person Following'
+    bicep_curls: 'Bicep Curls',
+    pushups: 'Push-ups',
+    squats: 'Squats',
+    plank: 'Plank',
+    person_follow: 'Person Following'
   };
   return map[ex] || ex;
 }
 
 function formatSeconds(sec) {
-  if (sec == null || isNaN(sec)) return '—';
+  if (sec == null || isNaN(sec)) return '-';
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return m > 0 ? `${m}:${s.toString().padStart(2, '0')}` : `${s}s`;
 }
 
+function dateKey(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function toDate(value) {
+  if (!value) return null;
+  if (value.toDate) return value.toDate();
+  if (value instanceof Date) return value;
+  return new Date(value);
+}
+
+function toMillis(value) {
+  const date = toDate(value);
+  return date ? date.getTime() : 0;
+}
+
+function formatTime(value) {
+  const date = toDate(value);
+  return date ? date.toLocaleTimeString() : '';
+}
+
+function formatDate(value) {
+  const date = toDate(value);
+  return date ? date.toLocaleDateString() : '';
+}
+
 // ---------- Boot ----------
 
 (function init() {
-  // Try restore session
-  const savedToken = localStorage.getItem('fr_token');
-  const savedUser = localStorage.getItem('fr_user_id');
-
-  if (savedToken && savedUser) {
-    currentToken = savedToken;
-    currentUserId = savedUser;
-
-    // We don't have email stored, so fetch a minimal profile or just show logged-in state
-    // For simplicity we show a generic "logged in" until they interact
-    document.getElementById('authView').classList.add('hidden');
-    document.getElementById('appView').classList.remove('hidden');
-
-    const userInfo = document.getElementById('userInfo');
-    userInfo.classList.remove('hidden');
-    userInfo.classList.add('flex');
-    document.getElementById('userEmail').textContent = 'You';
-
-    document.getElementById('forceStopBtn').classList.remove('hidden');
-
-    connectWebSockets();
-    showTab('live');
+  renderStepHistory();
+  if (!navigator.bluetooth) {
+    const button = document.getElementById('stepConnectBtn');
+    if (button) button.disabled = true;
+    stepLog('Web Bluetooth is not supported. Use Chrome or Edge on a secure origin.');
   }
 
-  // Allow pressing Enter in auth fields
+  if (auth) {
+    auth.onAuthStateChanged(async (user) => {
+      if (!user) {
+        disconnectRealtime();
+        document.getElementById('authView').classList.remove('hidden');
+        document.getElementById('appView').classList.add('hidden');
+        return;
+      }
+
+      currentUserId = user.uid;
+      currentUserEmail = user.email;
+      await ensureUserDocument(user);
+      showAppView(currentUserEmail);
+      connectRealtime();
+    });
+  } else {
+    showAuthError('Firebase config is missing. Edit frontend/firebase-config.js first.');
+  }
+
   ['loginEmail', 'loginPassword', 'regEmail', 'regPassword'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {

@@ -112,3 +112,73 @@ body {
 .text-dim {
   color: rgba(255, 255, 255, 0.55);
 }
+
+.step-status {
+  display: inline-flex;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.step-status.disconnected {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fca5a5;
+}
+
+.step-status.connecting {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fbbf24;
+}
+
+.step-status.connected {
+  background: rgba(52, 211, 153, 0.14);
+  color: #34d399;
+}
+
+.step-metric {
+  min-width: 0;
+  border-radius: 1rem;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1rem 0.75rem;
+  text-align: center;
+}
+
+.step-metric-value {
+  font-size: clamp(1.25rem, 3vw, 1.75rem);
+  line-height: 1.1;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.step-metric-label {
+  margin-top: 0.25rem;
+  font-size: 0.6875rem;
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.step-action-btn {
+  min-height: 2.75rem;
+  border-radius: 0.875rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.step-action-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+@media (max-width: 640px) {
+  #appView > .flex {
+    flex-wrap: wrap;
+  }
+
+  .tab-btn {
+    flex: 1 1 auto;
+  }
+}
