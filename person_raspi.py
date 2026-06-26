@@ -16,6 +16,12 @@ import numpy as np
 import serial
 import signal
 import sys
+import json
+import urllib.request
+import urllib.error
+import threading
+import queue
+from datetime import datetime, timezone
 import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -91,8 +97,216 @@ DISPLAY_HEIGHT = 320         # Fixed display height for 480x320 screen
 DEBUG    = True
 SHOW_FPS = True
 
+# ─── Backend publishing (real data only) ───
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000").rstrip("/")
+BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTNkMmIwNjNkZmI0YWEzYzAzMmYwNDAiLCJleHAiOjE3ODIzOTcyMzB9.kQ8F-gNV-z82DWnwrWjt79ssHsPLZHkFq6P9Rsnr8AY")  # JWT from /auth/login
+
+# Session / pause tracking for accurate active vs total time
+_session_id = None
+_session_start_wall = None
+_pause_accumulator = 0.0
+
+# Remote control from web UI
+force_stop = threading.Event()
+remote_mode_queue = queue.Queue()  # ("switch", "BICEP_CURLS") etc.
+
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+
+
+# ═══════════════════════════════════════════════════════
+#  REAL-TIME PUBLISHING HELPERS (HTTP to backend)
+#  All values come from the live exercise loops. No dummy data.
+# ═══════════════════════════════════════════════════════
+
+def _post_json(path, payload):
+    """Fire-and-forget POST. Never raises."""
+    if not BACKEND_TOKEN:
+        return
+    url = f"{BACKEND_BASE_URL}{path}"
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BACKEND_TOKEN}"
+            },
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=2.5)
+    except Exception:
+        # Silent: the exercise must never be interrupted by network issues
+        pass
+
+
+def publish_event(event_type, payload):
+    """Publish a generic event (used for form, rep, robot_state, etc.)."""
+    p = dict(payload or {})
+    if _session_id and "session_id" not in p:
+        p["session_id"] = _session_id
+    _post_json("/api/events", {
+        "type": event_type,
+        "payload": p,
+        "ts": datetime.now(timezone.utc).isoformat()
+    })
+
+
+def publish_session_start(exercise_type):
+    """Create a session on the backend and store the id locally."""
+    global _session_id, _session_start_wall, _pause_accumulator
+    if not BACKEND_TOKEN:
+        _session_id = None
+        return
+    now = datetime.now(timezone.utc)
+    payload = {
+        "exercise_type": exercise_type,
+        "started_at": now.isoformat()
+    }
+    try:
+        req = urllib.request.Request(
+            f"{BACKEND_BASE_URL}/api/sessions/start",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BACKEND_TOKEN}"
+            },
+            method="POST"
+        )
+        resp = urllib.request.urlopen(req, timeout=3)
+        body = json.loads(resp.read().decode("utf-8"))
+        _session_id = body.get("session_id")
+        _session_start_wall = time.time()
+        _pause_accumulator = 0.0
+        publish_event("session_start", {"exercise_type": exercise_type})
+    except Exception:
+        _session_id = None
+
+
+def publish_session_end(summary=None):
+    """End the current session with accurate active vs total time."""
+    global _session_id, _session_start_wall, _pause_accumulator
+    if not _session_id or not BACKEND_TOKEN:
+        _session_id = None
+        _session_start_wall = None
+        _pause_accumulator = 0.0
+        return
+
+    total = (time.time() - _session_start_wall) if _session_start_wall else 0.0
+    active = max(0.0, total - _pause_accumulator)
+    now = datetime.now(timezone.utc)
+
+    payload = {
+        "session_id": _session_id,
+        "ended_at": now.isoformat(),
+        "total_duration_s": round(total, 2),
+        "active_duration_s": round(active, 2),
+        "summary": summary or {}
+    }
+    try:
+        req = urllib.request.Request(
+            f"{BACKEND_BASE_URL}/api/sessions/end",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {BACKEND_TOKEN}"
+            },
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=3)
+        publish_event("session_end", payload)
+    except Exception:
+        pass
+    finally:
+        _session_id = None
+        _session_start_wall = None
+        _pause_accumulator = 0.0
+
+
+def publish_rep(exercise, set_num=None, count=None, left=None, right=None, **extra):
+    p = {"exercise": exercise}
+    if set_num is not None: p["set"] = set_num
+    if count is not None: p["count"] = count
+    if left is not None: p["left"] = left
+    if right is not None: p["right"] = right
+    p.update(extra)
+    publish_event("rep", p)
+
+
+def publish_set_complete(exercise, set_num, reps):
+    publish_event("set_complete", {"exercise": exercise, "set": set_num, "reps": reps})
+
+
+def publish_form_error(message, side=None):
+    p = {"message": message}
+    if side: p["side"] = side
+    publish_event("form_error", p)
+
+
+def publish_robot_state(state, command=None):
+    p = {"state": state}
+    if command: p["command"] = command
+    publish_event("robot_state", p)
+
+
+def publish_plank_time(value):
+    publish_event("plank_time", {"value": round(float(value), 2)})
+
+
+def publish_pause():
+    publish_event("pause", {})
+
+
+def publish_resume():
+    publish_event("resume", {})
+
+
+# ─── Control listener (background thread) ───
+def _control_listener():
+    """Connects to backend control WS and reacts to force_stop / switch_mode."""
+    if not BACKEND_TOKEN:
+        return
+    try:
+        import websocket  # websocket-client package
+    except Exception:
+        return
+
+    ws_url = f"{'wss' if BACKEND_BASE_URL.startswith('https') else 'ws'}://{BACKEND_BASE_URL.split('://')[-1]}/ws/control?token={BACKEND_TOKEN}"
+
+    def on_message(wsapp, message):
+        try:
+            data = json.loads(message)
+            action = data.get("action") or data.get("raw")
+            if not action:
+                return
+            if isinstance(action, str):
+                action_lower = action.lower()
+                if "force_stop" in action_lower:
+                    force_stop.set()
+                elif action == "switch_mode" or "switch" in action_lower:
+                    mode = data.get("mode") or data.get("payload", {}).get("mode")
+                    if mode:
+                        remote_mode_queue.put(("switch", str(mode).upper()))
+        except Exception:
+            pass
+
+    def on_error(wsapp, error):
+        pass
+
+    def on_close(wsapp, close_status_code, close_msg):
+        pass
+
+    while True:
+        try:
+            wsapp = websocket.WebSocketApp(
+                ws_url,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
+            wsapp.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception:
+            time.sleep(2)
 
 # ═══════════════════════════════════════════════════════
 #  EXERCISE HELPER FUNCTIONS
@@ -251,6 +465,9 @@ def send_command(command):
 
         current_command   = command
         last_command_time = now
+
+        # Publish robot command for live dashboard (real)
+        publish_event("robot_command", {"command": command})
 
 
 # ═══════════════════════════════════════════════════════
@@ -947,13 +1164,20 @@ def clear_session_errors():
     last_printed_errors = {}
 
 def log_session_error(err_msg, cooldown=3.0):
-    """Log an error to the session errors set and print it with a cooldown."""
+    """Log an error to the session errors set and print it with a cooldown.
+    Also publishes the form feedback to the web backend (real data only).
+    """
     global session_errors, last_printed_errors
     session_errors.add(err_msg)
     now = time.time()
     if err_msg not in last_printed_errors or now - last_printed_errors[err_msg] > cooldown:
         print(f"  [SESSION WARNING] {err_msg}")
         last_printed_errors[err_msg] = now
+        # Publish to live dashboard (exact message shown on-robot / console)
+        try:
+            publish_form_error(err_msg)
+        except Exception:
+            pass
 
 
 def save_session_to_firestore(summary):
@@ -1272,6 +1496,12 @@ def run_bicep_curls(ui=None):
             if not ret:
                 break
 
+            # Remote Force Stop from web dashboard
+            if force_stop.is_set():
+                print("  [REMOTE] Force Stop received from web UI")
+                send_command("STOP")
+                break
+
             frame_counter += 1
             frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
@@ -1306,6 +1536,12 @@ def run_bicep_curls(ui=None):
                 else:
                     send_command("STOP")
                     positioning_completed = True
+                    # Start real session for live dashboard (no dummy data)
+                    if _session_id is None:
+                        try:
+                            publish_session_start("bicep_curls")
+                        except Exception:
+                            pass
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -1325,8 +1561,20 @@ def run_bicep_curls(ui=None):
                                 thumbs_up_cooldown_active = True
                                 if paused:
                                     pause_start_time = time.time()
+                                    try:
+                                        publish_pause()
+                                    except Exception:
+                                        pass
                                 else:
                                     pause_duration = time.time() - pause_start_time
+                                    try:
+                                        _pause_accumulator += pause_duration
+                                    except Exception:
+                                        pass
+                                    try:
+                                        publish_resume()
+                                    except Exception:
+                                        pass
                                     # Adjust timestamps
                                     if last_rep_time is not None:
                                         last_rep_time += pause_duration
@@ -1413,11 +1661,25 @@ def run_bicep_curls(ui=None):
                 if (arms['left']['counter'] > prev_l_cnt) or (arms['right']['counter'] > prev_r_cnt):
                     curl_timestamps.append(now)
                     if set_finished:
+                        try:
+                            publish_set_complete("bicep_curls", current_set, current_set_reps)
+                        except Exception:
+                            pass
                         current_set += 1
                         left_reps_at_set_start = prev_l_cnt
                         right_reps_at_set_start = prev_r_cnt
                         set_finished = False
                     last_rep_time = now
+                    # Publish live rep update (real data from MediaPipe)
+                    try:
+                        publish_rep(
+                            "bicep_curls",
+                            set_num=current_set,
+                            left=arms['left']['counter'],
+                            right=arms['right']['counter']
+                        )
+                    except Exception:
+                        pass
 
                 curl_timestamps = [t for t in curl_timestamps if now - t <= 2.0]
                 if len(curl_timestamps) >= 4:
@@ -1636,6 +1898,11 @@ def run_pushups(ui=None):
                 stage = 'up'
                 counter += 1
                 print(f"  Push-ups Count: {counter}")
+                # Publish live rep (real data)
+                try:
+                    publish_rep("pushups", set_num=current_set, count=counter)
+                except Exception:
+                    pass
 
         return stage, counter, is_body_straight, elbow_angle
 
@@ -1669,6 +1936,7 @@ def run_pushups(ui=None):
     paused = False
     thumbs_up_frames = 0
     thumbs_up_cooldown_active = False
+    pause_start_time = 0.0
 
     # Positioning state
     positioning_duration = 3.0
@@ -1680,6 +1948,12 @@ def run_pushups(ui=None):
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
+                break
+
+            # Remote Force Stop from web dashboard
+            if force_stop.is_set():
+                print("  [REMOTE] Force Stop received from web UI")
+                send_command("STOP")
                 break
 
             frame_counter += 1
@@ -1714,6 +1988,12 @@ def run_pushups(ui=None):
                 else:
                     send_command("STOP")
                     positioning_completed = True
+                    # Start real session for live dashboard (no dummy data)
+                    if _session_id is None:
+                        try:
+                            publish_session_start("pushups")
+                        except Exception:
+                            pass
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -1731,6 +2011,22 @@ def run_pushups(ui=None):
                                 paused = not paused
                                 thumbs_up_frames = 0
                                 thumbs_up_cooldown_active = True
+                                if paused:
+                                    pause_start_time = time.time()
+                                    try:
+                                        publish_pause()
+                                    except Exception:
+                                        pass
+                                else:
+                                    if pause_start_time:
+                                        try:
+                                            _pause_accumulator += (time.time() - pause_start_time)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        publish_resume()
+                                    except Exception:
+                                        pass
                                 print(f"⏸️ Push-ups: {'PAUSED' if paused else 'RESUMED'}")
                     else:
                         thumbs_up_frames = 0
@@ -1829,6 +2125,10 @@ def run_pushups(ui=None):
                             if reps_in_set > 0 and not set_ended:
                                 set_ended = True
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
+                                try:
+                                    publish_set_complete("pushups", current_set, reps_in_set)
+                                except Exception:
+                                    pass
                 else:
                     if positioning_completed and not paused:
                         adjust_robot_position("PUSH_UPS", None)
@@ -2014,6 +2314,12 @@ def run_squats(ui=None):
             if not ret:
                 break
 
+            # Remote Force Stop from web dashboard
+            if force_stop.is_set():
+                print("  [REMOTE] Force Stop received from web UI")
+                send_command("STOP")
+                break
+
             frame_counter += 1
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             # Run Pose detection every FRAME_SKIP frames
@@ -2045,6 +2351,12 @@ def run_squats(ui=None):
                 else:
                     send_command("STOP")
                     positioning_completed = True
+                    # Start real session for live dashboard (no dummy data)
+                    if _session_id is None:
+                        try:
+                            publish_session_start("squats")
+                        except Exception:
+                            pass
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -2064,8 +2376,19 @@ def run_squats(ui=None):
                                 thumbs_up_cooldown_active = True
                                 if paused:
                                     pause_start_time = time.time()
+                                    try:
+                                        publish_pause()
+                                        # accumulate from previous resume if any
+                                        # (we will add on resume)
+                                    except Exception:
+                                        pass
                                 else:
                                     pause_duration = time.time() - pause_start_time
+                                    try:
+                                        _pause_accumulator += pause_duration
+                                        publish_resume()
+                                    except Exception:
+                                        pass
                                     # Adjust timestamps
                                     if last_rep_time is not None:
                                         last_rep_time += pause_duration
@@ -2224,6 +2547,11 @@ def run_squats(ui=None):
                                 print(f"  Rep {reps_in_set} completed! Angle: {int(down_angle)}")
                                 last_rep_time = time.time()
                                 set_started = True
+                                # Publish live squat rep (real data)
+                                try:
+                                    publish_rep("squats", set_num=current_set, count=reps_in_set)
+                                except Exception:
+                                    pass
                             else:
                                 print(f"  Rep ignored: Whole body did not lower. Shoulders: {lowered_shoulders}, Hips: {lowered_hips}, Wrists: {lowered_wrists}, Knees: {lowered_knees}")
 
@@ -2276,6 +2604,10 @@ def run_squats(ui=None):
 
                 if time_elapsed > time_limit:
                     print(f"\n✅ Set {current_set} Finished! Completed {reps_in_set} reps.")
+                    try:
+                        publish_set_complete("squats", current_set, reps_in_set)
+                    except Exception:
+                        pass
                     current_set += 1
                     reps_in_set = 0
                     set_started = False
@@ -2493,6 +2825,12 @@ def run_plank(ui=None):
             if not ret:
                 break
 
+            # Remote Force Stop from web dashboard
+            if force_stop.is_set():
+                print("  [REMOTE] Force Stop received from web UI")
+                send_command("STOP")
+                break
+
             frame_counter += 1
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             # Run Pose detection every FRAME_SKIP frames
@@ -2524,6 +2862,12 @@ def run_plank(ui=None):
                 else:
                     send_command("STOP")
                     positioning_completed = True
+                    # Start real session for live dashboard (no dummy data)
+                    if _session_id is None:
+                        try:
+                            publish_session_start("plank")
+                        except Exception:
+                            pass
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -2541,6 +2885,19 @@ def run_plank(ui=None):
                                 paused = not paused
                                 thumbs_up_frames = 0
                                 thumbs_up_cooldown_active = True
+                                if paused:
+                                    pause_start_time = time.time()
+                                    try:
+                                        publish_pause()
+                                    except Exception:
+                                        pass
+                                else:
+                                    if 'pause_start_time' in dir() and pause_start_time:
+                                        _pause_accumulator += (time.time() - pause_start_time)
+                                    try:
+                                        publish_resume()
+                                    except Exception:
+                                        pass
                                 print(f"⏸️ Plank: {'PAUSED' if paused else 'RESUMED'}")
                     else:
                         thumbs_up_frames = 0
@@ -2630,6 +2987,10 @@ def run_plank(ui=None):
                                 neck, hip, ankle, in_plank, start_time
                             )
                             plank_timer += elapsed_time
+                            try:
+                                publish_plank_time(plank_timer)
+                            except Exception:
+                                pass
 
                             if not in_plank:
                                 log_session_error("Form a straight line with body")
@@ -2896,6 +3257,12 @@ def main():
         if not ret:
             continue
 
+        # Remote Force Stop from web dashboard
+        if force_stop.is_set():
+            print("  [REMOTE] Force Stop received from web UI")
+            send_command("STOP")
+            break
+
         frame_counter += 1
 
         if frame_counter % FRAME_SKIP == 0:
@@ -2966,6 +3333,17 @@ def main():
                     )
 
                     send_command(command)
+
+                    # Publish high-level robot state for the web dashboard (real)
+                    try:
+                        if person_x is not None and command not in ("STOP", "SEARCH"):
+                            publish_robot_state("FOLLOWING", command)
+                        elif command == "SEARCH":
+                            publish_robot_state("SEARCHING", command)
+                        else:
+                            publish_robot_state("STOPPED", command)
+                    except Exception:
+                        pass
             else:
                 # No person
                 now = time.time()
