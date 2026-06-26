@@ -4,7 +4,9 @@
  * No dummy data is ever generated here.
  */
 
-const API_BASE = ''; // Same origin or configure if backend is on different port
+const API_BASE = 'http://localhost:8000'; // Same origin or configure if backend is on different port
+const DEFAULT_CAMERA_URL = ''; // Set this to your Pi MJPEG stream URL if you want auto camera load
+let currentCameraUrl = DEFAULT_CAMERA_URL;
 let currentToken = null;
 let currentUserId = null;
 let telemetryWs = null;
@@ -115,6 +117,7 @@ function showAppView(email) {
 
   // Default to live tab
   showTab('live');
+  startCameraStreamIfNeeded();
 }
 
 // ---------- Tabs ----------
@@ -146,8 +149,12 @@ function connectWebSockets() {
 
   disconnectWebSockets();
 
+  const backendUrl = API_BASE ? new URL(API_BASE) : new URL(`${location.protocol}//${location.host}`);
+  const wsProtocol = backendUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsBase = `${wsProtocol}//${backendUrl.host}`;
+
   // Telemetry (receives reps, form, robot_state, watch, etc.)
-  const telemetryUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/telemetry?token=${currentToken}`;
+  const telemetryUrl = `${wsBase}/ws/telemetry?token=${currentToken}`;
   telemetryWs = new WebSocket(telemetryUrl);
 
   telemetryWs.onopen = () => {
@@ -177,17 +184,17 @@ function connectWebSockets() {
       if (msg.action || msg.raw) {
         appendLog(`Control: ${msg.action || msg.raw}`);
       }
-    } catch {}
+    } catch { }
   };
 }
 
 function disconnectWebSockets() {
   if (telemetryWs) {
-    try { telemetryWs.close(); } catch {}
+    try { telemetryWs.close(); } catch { }
     telemetryWs = null;
   }
   if (controlWs) {
-    try { controlWs.close(); } catch {}
+    try { controlWs.close(); } catch { }
     controlWs = null;
   }
 }
@@ -349,6 +356,7 @@ function setCameraStream() {
 
   if (!url) return;
 
+  currentCameraUrl = url;
   img.src = url;
   img.onload = () => {
     img.classList.remove('hidden');
@@ -359,6 +367,31 @@ function setCameraStream() {
     placeholder.classList.remove('hidden');
     placeholder.innerHTML = `<div class="text-red-400">Failed to load stream.<br>Check Pi MJPEG server is running.</div>`;
   };
+}
+
+function startCameraStreamIfNeeded() {
+  if (!currentCameraUrl) return;
+  const cameraUrlInput = document.getElementById('cameraUrl');
+  if (cameraUrlInput.value.trim() !== currentCameraUrl) {
+    cameraUrlInput.value = currentCameraUrl;
+  }
+  setCameraStream();
+}
+
+function showAppView(email) {
+  document.getElementById('authView').classList.add('hidden');
+  document.getElementById('appView').classList.remove('hidden');
+
+  const userInfo = document.getElementById('userInfo');
+  userInfo.classList.remove('hidden');
+  userInfo.classList.add('flex');
+  document.getElementById('userEmail').textContent = email;
+
+  document.getElementById('forceStopBtn').classList.remove('hidden');
+
+  // Default to live tab
+  showTab('live');
+  startCameraStreamIfNeeded();
 }
 
 // ---------- Analytics ----------

@@ -29,7 +29,24 @@ body {
 
 /* Mode switch buttons */
 .mode-btn {
-  @apply px-4 py-2 rounded-2xl text-sm font-medium border border-white/20 bg-white/5 hover:bg-white/10 active:scale-[0.985] transition;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background-color: rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+}
+
+.mode-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.mode-btn:active {
+  transform: scale(0.985);
 }
 
 /* Form log styling */

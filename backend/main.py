@@ -5,9 +5,26 @@ Professional, real-time, no dummy data.
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
+from pathlib import Path
 from datetime import datetime, timezone
+
+# Load environment variables from backend/.env (if present)
+try:
+    from dotenv import load_dotenv
+    # Explicitly load backend/.env because the project root is the working directory
+    load_dotenv(dotenv_path="backend/.env", override=True)
+except Exception:
+    pass  # python-dotenv not installed or no .env file — will use real env vars
+
+# Debug: show if JWT_SECRET was loaded (only first few chars for safety)
+_jwt = os.getenv("JWT_SECRET", "")
+if _jwt and _jwt != "REPLACE_WITH_A_LONG_RANDOM_SECRET_FOR_PRODUCTION":
+    print(f"[Startup] JWT_SECRET loaded from env (first 8 chars): {_jwt[:8]}...")
+else:
+    print("[Startup] WARNING: JWT_SECRET not set properly! Using default (insecure).")
 
 from .database import init_indexes, close_db, get_db
 from .auth import register_user, login_user, get_current_user_id
@@ -20,6 +37,8 @@ from .models import (
 )
 from .ws_manager import ws_manager
 from bson import ObjectId
+
+frontend_path = Path(__file__).resolve().parent.parent / "frontend"
 
 # --- Lifespan: DB init / cleanup ---
 @asynccontextmanager

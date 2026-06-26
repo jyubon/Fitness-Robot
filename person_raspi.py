@@ -66,7 +66,7 @@ SHOW_FPS = True
 
 # ─── Backend publishing (real data only) ───
 BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000").rstrip("/")
-BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "")  # JWT from /auth/login
+BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTNkMmIwNjNkZmI0YWEzYzAzMmYwNDAiLCJleHAiOjE3ODIzOTcyMzB9.kQ8F-gNV-z82DWnwrWjt79ssHsPLZHkFq6P9Rsnr8AY")  # JWT from /auth/login
 
 # Session / pause tracking for accurate active vs total time
 _session_id = None
