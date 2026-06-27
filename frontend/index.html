@@ -329,7 +329,10 @@
             <canvas id="formChart" height="110"></canvas>
           </div>
           <div class="glass rounded-3xl p-4">
-            <div class="text-sm font-medium mb-2">Session History</div>
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-medium">Session History</div>
+              <button onclick="generateDemoData()" class="text-xs px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/30 transition-all">Generate Demo Data</button>
+            </div>
             <div id="sessionHistory" class="text-sm max-h-[220px] overflow-auto space-y-1"></div>
           </div>
         </div>

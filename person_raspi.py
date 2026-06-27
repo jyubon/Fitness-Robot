@@ -143,6 +143,7 @@ _resolve_firebase_user_id()
 
 # Session / pause tracking for accurate active vs total time
 _session_id = None
+_session_exercise_type = None   # tracks current exercise for aggregate rollup
 _session_start_wall = None
 _pause_accumulator = 0.0
 
@@ -261,11 +262,15 @@ def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
         aggregate_ref = user_ref.collection("daily_aggregates").document(date_str)
 
         if event_type == "rep":
-            aggregate_ref.set({
+            exercise = payload.get("exercise")
+            updates = {
                 "date": date_str,
                 "form_good_count": firestore.Increment(1),
                 "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
+            }
+            if exercise in ("pushups", "squats", "bicep_curls"):
+                updates[f"reps.{exercise}"] = firestore.Increment(1)
+            aggregate_ref.set(updates, merge=True)
 
         elif event_type == "form_error":
             aggregate_ref.set({
@@ -283,20 +288,13 @@ def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
             if total_dur:
                 updates["total_time_s"] = firestore.Increment(round(total_dur, 2))
 
+            # exercise_type is now explicitly included in the payload
             summary = payload.get("summary") or {}
-            exercise = summary.get("exercise") or payload.get("exercise")
+            exercise = payload.get("exercise_type") or summary.get("exercise") or payload.get("exercise")
             if exercise == "plank":
                 plank_time = float(summary.get("total_plank_time_s") or summary.get("plank_time_s") or 0)
                 if plank_time:
                     updates["plank_time_s"] = firestore.Increment(round(plank_time, 2))
-            elif exercise in ("pushups", "squats"):
-                reps = int(summary.get("total_reps") or 0)
-                if reps:
-                    updates[f"reps.{exercise}"] = firestore.Increment(reps)
-            elif exercise == "bicep_curls":
-                total_reps = int(summary.get("left_reps") or 0) + int(summary.get("right_reps") or 0)
-                if total_reps:
-                    updates["reps.bicep_curls"] = firestore.Increment(total_reps)
 
             aggregate_ref.set(updates, merge=True)
     except Exception:
@@ -305,7 +303,8 @@ def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
 
 def publish_session_start(exercise_type):
     """Create a session and store the id locally. Firestore/HTTP done in background."""
-    global _session_id, _session_start_wall, _pause_accumulator
+    global _session_id, _session_exercise_type, _session_start_wall, _pause_accumulator
+    _session_exercise_type = exercise_type
     now = datetime.now(timezone.utc)
 
     # Always stamp local timing immediately so the exercise loop is never blocked.
@@ -369,9 +368,10 @@ def publish_session_start(exercise_type):
 
 def publish_session_end(summary=None):
     """End the current session. Firestore/HTTP writes done in background."""
-    global _session_id, _session_start_wall, _pause_accumulator
+    global _session_id, _session_exercise_type, _session_start_wall, _pause_accumulator
     if not _session_id:
         _session_id = None
+        _session_exercise_type = None
         _session_start_wall = None
         _pause_accumulator = 0.0
         return
@@ -380,14 +380,17 @@ def publish_session_end(summary=None):
     active = max(0.0, total - _pause_accumulator)
     now = datetime.now(timezone.utc)
     sid = _session_id
+    exercise_type = _session_exercise_type  # capture before reset
 
     # Reset state immediately so the UI is never held up.
     _session_id = None
+    _session_exercise_type = None
     _session_start_wall = None
     _pause_accumulator = 0.0
 
     payload = {
         "session_id": sid,
+        "exercise_type": exercise_type,          # enables aggregate plank/active_time rollup
         "ended_at": now,
         "total_duration_s": round(total, 2),
         "active_duration_s": round(active, 2),

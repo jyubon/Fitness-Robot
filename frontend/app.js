@@ -18,6 +18,10 @@ let currentSessionId = null;
 let currentExercise = null;
 let latestEventTimestamp = null;
 
+// Analytics real-time listeners (unsubscribed when tab is hidden)
+let analyticsAggUnsubscribe = null;
+let analyticsSessionUnsubscribe = null;
+
 const STEP_SERVICE_UUID = '12345678-1234-1234-1234-123456789001';
 const STEP_COUNT_UUID = '12345678-1234-1234-1234-123456789002';
 const STEP_TIME_SYNC_UUID = '12345678-1234-1234-1234-123456789003';
@@ -91,6 +95,7 @@ async function login() {
 
 async function logout() {
   disconnectRealtime();
+  disconnectAnalyticsListeners();
   if (stepConnected) disconnectStepTracker();
   if (auth) await auth.signOut();
   currentUserId = null;
@@ -166,6 +171,8 @@ function showTab(tab) {
     btnLive.classList.add('active');
     btnSteps.classList.remove('active');
     btnAnalytics.classList.remove('active');
+    // tear down live analytics listeners to save quota
+    disconnectAnalyticsListeners();
   } else if (tab === 'steps') {
     live.classList.add('hidden');
     steps.classList.remove('hidden');
@@ -173,6 +180,7 @@ function showTab(tab) {
     btnLive.classList.remove('active');
     btnSteps.classList.add('active');
     btnAnalytics.classList.remove('active');
+    disconnectAnalyticsListeners();
     renderStepHistory();
   } else {
     live.classList.add('hidden');
@@ -181,8 +189,13 @@ function showTab(tab) {
     btnLive.classList.remove('active');
     btnSteps.classList.remove('active');
     btnAnalytics.classList.add('active');
-    loadAnalytics();
+    connectAnalyticsListeners();   // live real-time updates
   }
+}
+
+function disconnectAnalyticsListeners() {
+  if (analyticsAggUnsubscribe) { analyticsAggUnsubscribe(); analyticsAggUnsubscribe = null; }
+  if (analyticsSessionUnsubscribe) { analyticsSessionUnsubscribe(); analyticsSessionUnsubscribe = null; }
 }
 
 // ---------- Firestore realtime ----------
@@ -498,43 +511,158 @@ function startCameraStreamIfNeeded() {
   setCameraStream();
 }
 
-// ---------- Analytics ----------
+async function generateDemoData() {
+  if (!db || !currentUserId) {
+    alert("Please log in first before generating demo data.");
+    return;
+  }
 
-async function loadAnalytics() {
-  if (!db || !currentUserId) return;
+  const btn = document.querySelector("button[onclick='generateDemoData()']");
+  const originalText = btn ? btn.textContent : "Generate Demo Data";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Generating...";
+  }
 
   try {
+    const batch = db.batch();
     const today = new Date();
-    const fromDate = new Date(today);
-    fromDate.setDate(today.getDate() - 6);
 
-    const aggregateSnap = await db.collection('users').doc(currentUserId)
-      .collection('daily_aggregates')
-      .where('date', '>=', dateKey(fromDate))
-      .where('date', '<=', dateKey(today))
-      .get();
+    // Generate daily aggregates and session data for the past 7 days
+    for (let i = 0; i < 7; i++) {
+      const dayDate = new Date(today);
+      dayDate.setDate(today.getDate() - i);
+      const dateStr = dateKey(dayDate);
 
+      // 1. Daily Aggregates doc — exact same schema as person_raspi.py writes
+      const aggRef = db.collection('users').doc(currentUserId)
+        .collection('daily_aggregates')
+        .doc(dateStr);
+
+      const reps = {
+        bicep_curls: Math.floor(Math.random() * 25) + 15,
+        pushups: Math.floor(Math.random() * 20) + 10,
+        squats: Math.floor(Math.random() * 30) + 20
+      };
+
+      const plank_time = Math.floor(Math.random() * 90) + 40;
+      const active_time = Math.floor(Math.random() * 900) + 500;
+      const total_time = active_time + Math.floor(Math.random() * 500) + 200;
+
+      batch.set(aggRef, {
+        date: dateStr,
+        steps: Math.floor(Math.random() * 7000) + 3000,
+        reps: reps,
+        plank_time_s: plank_time,
+        active_time_s: active_time,
+        total_time_s: total_time,
+        form_good_count: Math.floor(Math.random() * 60) + 40,
+        form_flaw_count: Math.floor(Math.random() * 10) + 1,
+        updated_at: firebase.firestore.FieldValue.serverTimestamp()   // matches Pi field name
+      }, { merge: true });
+
+      // 2. Workout session doc — exact same schema as person_raspi.py publish_session_end
+      const sessionRef = db.collection('users').doc(currentUserId)
+        .collection('sessions')
+        .doc();
+
+      const exercises = ['bicep_curls', 'pushups', 'squats', 'plank'];
+      const chosenExercise = exercises[Math.floor(Math.random() * exercises.length)];
+
+      const sessionTime = new Date(dayDate);
+      sessionTime.setHours(8 + Math.floor(Math.random() * 10), Math.floor(Math.random() * 60));
+
+      // Build summary matching the exact structure person_raspi.py produces
+      let sessionSummary = {};
+      if (chosenExercise === 'plank') {
+        sessionSummary = { total_plank_time_s: plank_time };
+      } else if (chosenExercise === 'bicep_curls') {
+        const leftReps = Math.floor(reps.bicep_curls / 2);
+        const rightReps = reps.bicep_curls - leftReps;
+        sessionSummary = { left_reps: leftReps, right_reps: rightReps };
+      } else {
+        sessionSummary = { total_reps: reps[chosenExercise] || 15 };
+      }
+
+      batch.set(sessionRef, {
+        exercise_type: chosenExercise,
+        started_at: firebase.firestore.Timestamp.fromDate(sessionTime),
+        ended_at: firebase.firestore.Timestamp.fromDate(new Date(sessionTime.getTime() + 20 * 60000)),
+        active_duration_s: active_time,
+        total_duration_s: total_time,
+        summary: sessionSummary,
+        robot_involved: false
+      });
+    }
+
+    await batch.commit();
+
+    // 3. watch_data for today — exact same schema as syncStepsToFirestore
+    const watchRef = db.collection('users').doc(currentUserId)
+      .collection('watch_data')
+      .doc(dateKey(today));
+
+    await watchRef.set({
+      steps: 8420,
+      calories: 336.8,
+      distance_km: 6.31,
+      active_min: 42,
+      last_synced_at: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    alert("Demo data generated! Charts will update automatically.");
+  } catch (error) {
+    console.error("Error generating demo data: ", error);
+    alert("Failed to generate demo data: " + error.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+// ---------- Analytics ----------
+
+/**
+ * connectAnalyticsListeners — sets up live onSnapshot listeners for
+ * daily_aggregates and sessions. Charts re-render automatically whenever
+ * the Pi writes new reps, a BLE watch syncs steps, or a session ends.
+ * Safe to call multiple times (tears down old listeners first).
+ */
+function connectAnalyticsListeners() {
+  if (!db || !currentUserId) return;
+  disconnectAnalyticsListeners();   // clean up any previous listeners
+
+  const today = new Date();
+  const fromDate = new Date(today);
+  fromDate.setDate(today.getDate() - 6);
+
+  // Snapshot storage shared between the two listeners
+  let cachedAggDocs = [];
+  let cachedSessionDocs = [];
+  let watchStepsToday = 0;
+
+  function rebuildAndRender() {
     const dailyByDate = new Map();
-    for (let i = 0; i < 7; i += 1) {
+    for (let i = 0; i < 7; i++) {
       const day = new Date(fromDate);
       day.setDate(fromDate.getDate() + i);
       dailyByDate.set(dateKey(day), emptyDaily(dateKey(day)));
     }
 
-    aggregateSnap.forEach(doc => {
-      const data = doc.data();
-      dailyByDate.set(data.date || doc.id, { ...emptyDaily(data.date || doc.id), ...data });
+    cachedAggDocs.forEach(data => {
+      dailyByDate.set(data.date || data._docId, { ...emptyDaily(data.date || data._docId), ...data });
     });
 
     const daily = Array.from(dailyByDate.values()).sort((a, b) => a.date.localeCompare(b.date));
-    const sessionsSnap = await db.collection('users').doc(currentUserId)
-      .collection('sessions')
-      .where('started_at', '>=', fromDate)
-      .get();
 
-    const sessionHistory = [];
-    sessionsSnap.forEach(doc => sessionHistory.push({ id: doc.id, ...doc.data() }));
-    sessionHistory.sort((a, b) => toMillis(b.started_at) - toMillis(a.started_at));
+    // Merge today's watch steps into the daily aggregate for KPI accuracy
+    const todayStr = dateKey(new Date());
+    if (watchStepsToday > 0) {
+      const todayAgg = daily.find(d => d.date === todayStr);
+      if (todayAgg) todayAgg.steps = Math.max(todayAgg.steps || 0, watchStepsToday);
+    }
 
     const form = {
       good: daily.reduce((sum, d) => sum + Number(d.form_good_count || d.form_good || 0), 0),
@@ -553,7 +681,7 @@ async function loadAnalytics() {
 
     document.getElementById('kpiTotalReps').textContent = Object.values(totals.reps).reduce((a, b) => a + b, 0) || '0';
     document.getElementById('kpiPlankTime').textContent = formatSeconds(totals.plank_time_s);
-    document.getElementById('kpiSteps').textContent = totals.steps || '0';
+    document.getElementById('kpiSteps').textContent = totals.steps ? totals.steps.toLocaleString() : '0';
 
     const totalForm = form.good + form.flawed;
     document.getElementById('kpiForm').textContent = `${totalForm > 0 ? Math.round((form.good / totalForm) * 100) : 100}% good`;
@@ -561,11 +689,48 @@ async function loadAnalytics() {
     renderRepsChart(daily);
     renderTimeChart(daily);
     renderFormChart(form);
+
+    // Re-sort sessions descending by start time
+    const sessionHistory = [...cachedSessionDocs].sort((a, b) => toMillis(b.started_at) - toMillis(a.started_at));
     renderSessionHistory(sessionHistory);
-  } catch (e) {
-    console.error(e);
-    appendLog(`Failed to load analytics: ${e.message}`, true);
   }
+
+  // Listener 1: daily_aggregates (updates when Pi writes a rep or session ends)
+  analyticsAggUnsubscribe = db.collection('users').doc(currentUserId)
+    .collection('daily_aggregates')
+    .where('date', '>=', dateKey(fromDate))
+    .where('date', '<=', dateKey(today))
+    .onSnapshot(snap => {
+      cachedAggDocs = snap.docs.map(doc => ({ _docId: doc.id, ...doc.data() }));
+      rebuildAndRender();
+    }, err => appendLog(`Analytics listener error: ${err.message}`, true));
+
+  // Listener 2: sessions (updates when a session starts or ends)
+  analyticsSessionUnsubscribe = db.collection('users').doc(currentUserId)
+    .collection('sessions')
+    .where('started_at', '>=', fromDate)
+    .onSnapshot(snap => {
+      cachedSessionDocs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      rebuildAndRender();
+    }, err => appendLog(`Session listener error: ${err.message}`, true));
+
+  // One-shot today's watch_data for step KPI (not worth a persistent listener)
+  db.collection('users').doc(currentUserId)
+    .collection('watch_data')
+    .doc(dateKey(today))
+    .get()
+    .then(doc => {
+      if (doc.exists) {
+        watchStepsToday = Number(doc.data().steps || 0);
+        rebuildAndRender();
+      }
+    })
+    .catch(() => {});
+}
+
+// Kept for backward compatibility (called after generateDemoData)
+async function loadAnalytics() {
+  connectAnalyticsListeners();
 }
 
 function emptyDaily(date) {

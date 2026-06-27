@@ -16,26 +16,30 @@ service cloud.firestore {
 
       match /sessions/{sessionId} {
         allow read: if ownsUser(userId);
-        allow write: if false;
+        allow create, update: if ownsUser(userId);
+        allow delete: if false;
       }
 
+      // events: Pi writes via Admin SDK (bypasses rules), but allow create
+      // from the web for demo/testing and allow read for the live log.
       match /events/{eventId} {
         allow read: if ownsUser(userId);
-        allow write: if false;
+        allow create: if ownsUser(userId);
+        allow update, delete: if false;
       }
 
       match /daily_aggregates/{dateId} {
         allow read: if ownsUser(userId);
-        allow write: if false;
+        allow create, update: if ownsUser(userId);
+        allow delete: if false;
       }
 
+      // watch_data: written by the web page via BLE sync.
+      // Steps must be a non-negative number (int or float from JS).
       match /watch_data/{dateId} {
         allow read: if ownsUser(userId);
         allow create, update: if ownsUser(userId)
-          && request.resource.data.keys().hasOnly([
-            "steps", "calories", "distance_km", "active_min", "last_synced_at"
-          ])
-          && request.resource.data.steps is int
+          && request.resource.data.steps is number
           && request.resource.data.steps >= 0;
         allow delete: if false;
       }
