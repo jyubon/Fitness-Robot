@@ -33,7 +33,7 @@ service cloud.firestore {
         allow read: if ownsUser(userId);
         allow create, update: if ownsUser(userId)
           && request.resource.data.keys().hasOnly([
-            "steps", "cal", "km", "min", "goal", "pct", "last_synced_at"
+            "steps", "calories", "distance_km", "active_min", "last_synced_at"
           ])
           && request.resource.data.steps is int
           && request.resource.data.steps >= 0;

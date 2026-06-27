@@ -33,6 +33,7 @@ let stepTimeSyncChar = null;
 let stepDailyDataChar = null;
 let stepCommandChar = null;
 let stepConnected = false;
+let lastSyncedStepCount = -1;
 
 if (!window.firebaseConfig || window.firebaseConfig.apiKey === 'PASTE_FIREBASE_WEB_API_KEY') {
   console.warn('Firebase web config is not set. Edit frontend/firebase-config.js.');
@@ -767,7 +768,33 @@ function onStepDisconnected() {
 function onStepCountChanged(event) {
   const value = new TextDecoder().decode(event.target.value);
   const steps = parseInt(value, 10) || 0;
-  updateStepDisplay({ steps }, true);
+  
+  // Calculate metrics using watch coefficients (calPerStep=0.04, metersPerStep=0.75)
+  const cal = steps * 0.04;
+  const km = (steps * 0.75) / 1000.0;
+  
+  // Read current active minutes from UI if present, to keep it consistent
+  const activeMinEl = document.getElementById('stepActiveMin');
+  const min = activeMinEl ? parseInt(activeMinEl.textContent, 10) || 0 : 0;
+  
+  const data = {
+    steps: steps,
+    cal: cal,
+    km: km,
+    min: min
+  };
+  
+  // Update local UI immediately in real time so the user sees changes instantly
+  updateStepDisplay(data, true);
+  
+  // Only sync to Firestore on the initial connection (when lastSyncedStepCount is -1)
+  // or when the steps have increased by at least 10 since the last write.
+  if (lastSyncedStepCount !== -1 && Math.abs(steps - lastSyncedStepCount) < 10) {
+    return;
+  }
+  
+  lastSyncedStepCount = steps;
+  syncStepsToFirestore(data);
 }
 
 function onStepDailyDataChanged(event) {
@@ -776,6 +803,10 @@ function onStepDailyDataChanged(event) {
 
   try {
     const data = JSON.parse(value);
+    
+    // Keep lastSyncedStepCount updated to prevent duplicate step notifications
+    lastSyncedStepCount = Number(data.steps || 0);
+    
     updateStepDisplay(data, true);
     saveStepHistory(data);
     syncStepsToFirestore(data);
@@ -969,16 +1000,23 @@ async function syncStepsToFirestore(data) {
 
   try {
     const today = dateKey(new Date());
+    const steps = Number(data.steps || 0);
+    const cal = Number(data.cal ?? data.calories ?? 0);
+    const km = Number(data.km ?? data.distance_km ?? 0);
+    const min = Number(data.min ?? data.active_min ?? 0);
+    
     await db.collection('users').doc(currentUserId)
       .collection('watch_data')
       .doc(today)
       .set({
-        steps: Number(data.steps || 0),
-        calories: Number(data.cal ?? data.calories ?? 0),
-        distance_km: Number(data.km ?? data.distance_km ?? 0),
-        active_min: Number(data.min ?? data.active_min ?? 0),
+        steps: steps,
+        calories: cal,
+        distance_km: km,
+        active_min: min,
         last_synced_at: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
+      
+    stepLog(`Firestore synced: ${steps.toLocaleString()} steps, ${cal.toFixed(1)} cal, ${km.toFixed(2)} km, ${min} active min`);
   } catch (error) {
     stepLog(`Firestore sync failed: ${error.message}`);
   }
