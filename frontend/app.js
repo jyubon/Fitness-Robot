@@ -3,7 +3,7 @@
  * Auth, telemetry, analytics, and robot control all use Firebase directly.
  */
 
-const DEFAULT_CAMERA_URL = '';
+const DEFAULT_CAMERA_URL = localStorage.getItem('currentCameraUrl') || '';
 let currentCameraUrl = DEFAULT_CAMERA_URL;
 let currentUserId = null;
 let currentUserEmail = null;
@@ -322,6 +322,54 @@ function clearLog() {
 
 // ---------- Control ----------
 
+let localControlSocket = null;
+
+function connectLocalWebSocket(piIp) {
+  if (!piIp) return;
+
+  if (localControlSocket) {
+    try {
+      localControlSocket.close();
+    } catch (e) {}
+  }
+
+  console.log(`🔌 Attempting to connect to local robot control at ws://${piIp}:8001`);
+  localControlSocket = new WebSocket(`ws://${piIp}:8001`);
+
+  localControlSocket.onopen = () => {
+    console.log("✅ Local WebSocket control channel connected");
+    appendLog("Connected to local robot control channel");
+    const pill = document.getElementById('robotState');
+    if (pill) {
+      pill.textContent = "CONNECTED";
+      pill.setAttribute('data-state', 'CONNECTED');
+    }
+  };
+
+  localControlSocket.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log("📩 Received response from local robot:", data);
+      if (data.type) {
+        handleTelemetryMessage(data);
+      }
+    } catch (e) {
+      console.warn("⚠️ Failed to parse local robot response:", event.data);
+    }
+  };
+
+  localControlSocket.onclose = () => {
+    console.log("❌ Local WebSocket control channel closed");
+    appendLog("Disconnected from local robot control channel", true);
+    localControlSocket = null;
+    const pill = document.getElementById('robotState');
+    if (pill) {
+      pill.textContent = "OFFLINE";
+      pill.setAttribute('data-state', 'OFFLINE');
+    }
+  };
+}
+
 async function sendForceStop() {
   await sendControlCommand({ action: 'force_stop' }, 'Force Stop sent to robot');
 }
@@ -341,30 +389,82 @@ async function switchMode(mode) {
 }
 
 async function sendControlCommand(command, successMessage) {
-  if (!db || !currentUserId) return;
-  try {
-    await db.collection('users').doc(currentUserId).collection('control_commands').add({
-      ...command,
-      from: 'web',
-      status: 'pending',
-      created_at: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    appendLog(successMessage);
-  } catch (e) {
-    appendLog(`Failed to send command: ${e.message}`, true);
+  let sentLocally = false;
+
+  // 1. Send via local WebSockets if connected
+  if (localControlSocket && localControlSocket.readyState === WebSocket.OPEN) {
+    try {
+      localControlSocket.send(JSON.stringify(command));
+      sentLocally = true;
+      appendLog(`${successMessage} (Direct Local Connection)`);
+    } catch (err) {
+      console.warn("⚠️ Failed to send direct local command:", err);
+    }
+  }
+
+  // 2. Send via Firestore if database and session exist
+  if (db && currentUserId) {
+    try {
+      await db.collection('users').doc(currentUserId).collection('control_commands').add({
+        ...command,
+        from: 'web',
+        status: 'pending',
+        created_at: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      if (!sentLocally) {
+        appendLog(successMessage);
+      }
+    } catch (e) {
+      if (!sentLocally) {
+        appendLog(`Failed to sync command to cloud: ${e.message}`, true);
+      }
+    }
+  } else if (!sentLocally) {
+    appendLog("⚠️ Command failed: local robot not connected and not synced with cloud", true);
   }
 }
 
 // ---------- Camera Stream ----------
 
+function normalizeUrl(input) {
+  let url = input.trim();
+  if (!url) return '';
+  
+  // If it doesn't have a protocol, prepend http://
+  if (!/^https?:\/\//i.test(url)) {
+    url = 'http://' + url;
+  }
+  
+  try {
+    const parsed = new URL(url);
+    // If no port is specified, default to 8081 for the stream
+    if (!parsed.port) {
+      parsed.port = '8081';
+    }
+    // If no path is specified or it is just a root slash, default to "/stream"
+    if (parsed.pathname === '/') {
+      parsed.pathname = '/stream';
+    }
+    return parsed.toString();
+  } catch (e) {
+    return url;
+  }
+}
+
 function setCameraStream() {
-  const url = document.getElementById('cameraUrl').value.trim();
+  const rawUrl = document.getElementById('cameraUrl').value.trim();
+  if (!rawUrl) return;
+
+  const url = normalizeUrl(rawUrl);
+  // Update the input field with the normalized URL
+  document.getElementById('cameraUrl').value = url;
+
   const img = document.getElementById('cameraFeed');
   const placeholder = document.getElementById('cameraPlaceholder');
 
-  if (!url) return;
-
   currentCameraUrl = url;
+  localStorage.setItem('currentCameraUrl', url); // Save to localStorage
+
   img.src = url;
   img.onload = () => {
     img.classList.remove('hidden');
@@ -375,6 +475,17 @@ function setCameraStream() {
     placeholder.classList.remove('hidden');
     placeholder.innerHTML = '<div class="text-red-400">Failed to load stream.<br>Check Pi MJPEG server is running.</div>';
   };
+
+  // Extract hostname or IP address to connect to WebSocket control server
+  try {
+    const parsedUrl = new URL(url);
+    const hostname = parsedUrl.hostname;
+    if (hostname) {
+      connectLocalWebSocket(hostname);
+    }
+  } catch (e) {
+    console.warn("⚠️ Failed to parse local connection URL:", e);
+  }
 }
 
 function startCameraStreamIfNeeded() {

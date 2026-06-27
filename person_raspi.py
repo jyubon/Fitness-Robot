@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
+import local_stream_server
 
 # ─── Firebase Initialization ───
 try:
@@ -223,6 +224,12 @@ def publish_event(event_type, payload):
     if _session_id and "session_id" not in p:
         p["session_id"] = _session_id
     now = datetime.now(timezone.utc)
+
+    # Broadcast to local WebSocket dashboard clients immediately
+    try:
+        local_stream_server.broadcast_telemetry(event_type, p)
+    except Exception:
+        pass
 
     def _do():
         user_ref = _firebase_user_ref()
@@ -1650,6 +1657,7 @@ def run_bicep_curls(ui=None):
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
+    publish_robot_state("LOADING")
     landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -1699,15 +1707,17 @@ def run_bicep_curls(ui=None):
                 elapsed = time.time() - positioning_start_time
                 if elapsed < positioning_duration:
                     pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "FRONT", pct)
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
                     if ui is not None:
                         ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to FRONT view... ({int(pct*100)}%)", ACCENT_CYAN)
                         ui.update()
                     else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "FRONT", pct)
                         send_command("FRONT")
-                        draw_home_button(image)
                         cv2.imshow('Bicep Curls', image)
                         if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                             break
@@ -1720,6 +1730,7 @@ def run_bicep_curls(ui=None):
                     if _session_id is None:
                         try:
                             publish_session_start("bicep_curls")
+                            publish_robot_state("ACTIVE")
                         except Exception:
                             pass
 
@@ -1776,19 +1787,25 @@ def run_bicep_curls(ui=None):
             # If paused, render overlay and bypass main logic
             if paused:
                 send_command("STOP")
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+
                 if ui is not None:
                     ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
                     ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
                     if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                            break
+                else:
+                    if hand_landmarker is not None:
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Bicep Curls', image)
                             break
-                    draw_home_button(image)
                     cv2.imshow('Bicep Curls', image)
                     if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
@@ -1815,7 +1832,9 @@ def run_bicep_curls(ui=None):
 
             robot_status = "TRACKING"
             if positioning_completed and not paused:
-                robot_status = adjust_robot_position("BICEP_CURLS", results)
+                robot_status = robot_status = adjust_robot_position("BICEP_CURLS", results)
+                if robot_status == "LOST_TIMEOUT":
+                    break
                 if robot_status == "LOST_TIMEOUT":
                     break
 
@@ -1885,7 +1904,7 @@ def run_bicep_curls(ui=None):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
             else:
                 if positioning_completed and not paused:
-                    adjust_robot_position("BICEP_CURLS", None)
+                    robot_status = adjust_robot_position("BICEP_CURLS", None)
                 else:
                     send_command("STOP")
 
@@ -2019,13 +2038,16 @@ def run_bicep_curls(ui=None):
                 cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
+            if hand_landmarker is not None:
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+            draw_home_button(image)
+            local_stream_server.update_frame(image)
+
             if ui is None:
                 if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Bicep Curls', image)
                         break
-                draw_home_button(image)
                 cv2.imshow('Bicep Curls', image)
                 if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
@@ -2079,6 +2101,7 @@ def run_pushups(ui=None):
                 counter += 1
                 print(f"  Push-ups Count: {counter}")
                 # Publish live rep (real data)
+                robot_status = "TRACKING"
                 try:
                     publish_rep("pushups", set_num=current_set, count=counter)
                 except Exception:
@@ -2104,6 +2127,7 @@ def run_pushups(ui=None):
         cv2.setMouseCallback('Push-ups', on_mouse_click)
     print("💪 Push-up Counter Active! Press Q to quit.")
 
+    publish_robot_state("LOADING")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -2124,6 +2148,7 @@ def run_pushups(ui=None):
     positioning_completed = False
     send_command("SIDE")
 
+    robot_status = "TRACKING"
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -2151,15 +2176,17 @@ def run_pushups(ui=None):
                 elapsed = time.time() - positioning_start_time
                 if elapsed < positioning_duration:
                     pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "SIDE", pct)
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
                     if ui is not None:
                         ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to SIDE view... ({int(pct*100)}%)", ACCENT_CYAN)
                         ui.update()
                     else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "SIDE", pct)
                         send_command("SIDE")
-                        draw_home_button(image)
                         cv2.imshow('Push-ups', image)
                         if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                             break
@@ -2170,8 +2197,10 @@ def run_pushups(ui=None):
                     positioning_completed = True
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
+                        robot_status = "TRACKING"
                         try:
                             publish_session_start("pushups")
+                            publish_robot_state("ACTIVE")
                         except Exception:
                             pass
 
@@ -2193,16 +2222,19 @@ def run_pushups(ui=None):
                                 thumbs_up_cooldown_active = True
                                 if paused:
                                     pause_start_time = time.time()
+                                    robot_status = "TRACKING"
                                     try:
                                         publish_pause()
                                     except Exception:
                                         pass
                                 else:
                                     if pause_start_time:
+                                        robot_status = "TRACKING"
                                         try:
                                             _pause_accumulator += (time.time() - pause_start_time)
                                         except Exception:
                                             pass
+                                    robot_status = "TRACKING"
                                     try:
                                         publish_resume()
                                     except Exception:
@@ -2222,19 +2254,25 @@ def run_pushups(ui=None):
             # If paused, render overlay and bypass main logic
             if paused:
                 send_command("STOP")
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+
                 if ui is not None:
                     ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
                     ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
                     if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                            break
+                else:
+                    if hand_landmarker is not None:
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Push-ups', image)
                             break
-                    draw_home_button(image)
                     cv2.imshow('Push-ups', image)
                     if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
@@ -2244,10 +2282,13 @@ def run_pushups(ui=None):
             is_body_straight = True
             elbow_angle = 180.0
 
+            robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
                     if positioning_completed and not paused:
-                        adjust_robot_position("PUSH_UPS", results)
+                        robot_status = adjust_robot_position("PUSH_UPS", results)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -2305,13 +2346,14 @@ def run_pushups(ui=None):
                             if reps_in_set > 0 and not set_ended:
                                 set_ended = True
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
+                                robot_status = "TRACKING"
                                 try:
                                     publish_set_complete("pushups", current_set, reps_in_set)
                                 except Exception:
                                     pass
                 else:
                     if positioning_completed and not paused:
-                        adjust_robot_position("PUSH_UPS", None)
+                        robot_status = adjust_robot_position("PUSH_UPS", None)
                     else:
                         send_command("STOP")
             except Exception:
@@ -2385,13 +2427,16 @@ def run_pushups(ui=None):
                 cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
+            if hand_landmarker is not None:
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+            draw_home_button(image)
+            local_stream_server.update_frame(image)
+
             if ui is None:
                 if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Push-ups', image)
                         break
-                draw_home_button(image)
                 cv2.imshow('Push-ups', image)
                 if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
@@ -2468,6 +2513,7 @@ def run_squats(ui=None):
 
     print("🦵 Squat Counter Active! Press Q to quit.")
 
+    publish_robot_state("LOADING")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -2488,6 +2534,7 @@ def run_squats(ui=None):
     positioning_completed = False
     send_command("FRONT")
 
+    robot_status = "TRACKING"
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -2514,15 +2561,17 @@ def run_squats(ui=None):
                 elapsed = time.time() - positioning_start_time
                 if elapsed < positioning_duration:
                     pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "FRONT", pct)
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
                     if ui is not None:
                         ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to FRONT view... ({int(pct*100)}%)", ACCENT_CYAN)
                         ui.update()
                     else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "FRONT", pct)
                         send_command("FRONT")
-                        draw_home_button(image)
                         cv2.imshow('Squats', image)
                         if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                             break
@@ -2533,8 +2582,10 @@ def run_squats(ui=None):
                     positioning_completed = True
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
+                        robot_status = "TRACKING"
                         try:
                             publish_session_start("squats")
+                            publish_robot_state("ACTIVE")
                         except Exception:
                             pass
 
@@ -2556,6 +2607,7 @@ def run_squats(ui=None):
                                 thumbs_up_cooldown_active = True
                                 if paused:
                                     pause_start_time = time.time()
+                                    robot_status = "TRACKING"
                                     try:
                                         publish_pause()
                                         # accumulate from previous resume if any
@@ -2564,6 +2616,7 @@ def run_squats(ui=None):
                                         pass
                                 else:
                                     pause_duration = time.time() - pause_start_time
+                                    robot_status = "TRACKING"
                                     try:
                                         _pause_accumulator += pause_duration
                                         publish_resume()
@@ -2589,19 +2642,25 @@ def run_squats(ui=None):
             # If paused, render overlay and bypass main logic
             if paused:
                 send_command("STOP")
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+
                 if ui is not None:
                     ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
                     ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
                     if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                            break
+                else:
+                    if hand_landmarker is not None:
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Squats', image)
                             break
-                    draw_home_button(image)
                     cv2.imshow('Squats', image)
                     if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                         break
@@ -2616,10 +2675,17 @@ def run_squats(ui=None):
             depth_warning = None
             knees_warning = None
 
+            robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
                     if positioning_completed and not paused:
-                        adjust_robot_position("SQUATS", results)
+                        robot_status = adjust_robot_position("SQUATS", results)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
+                    if positioning_completed and not paused:
+                        robot_status = adjust_robot_position("SQUATS", results)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
                     lm = results.pose_landmarks[0]
 
                     L_shoulder = get_pt(lm, 11, use_z=True)
@@ -2728,6 +2794,7 @@ def run_squats(ui=None):
                                 last_rep_time = time.time()
                                 set_started = True
                                 # Publish live squat rep (real data)
+                                robot_status = "TRACKING"
                                 try:
                                     publish_rep("squats", set_num=current_set, count=reps_in_set)
                                 except Exception:
@@ -2769,7 +2836,7 @@ def run_squats(ui=None):
                         draw_skeleton(image, results)
                 else:
                     if positioning_completed and not paused:
-                        adjust_robot_position("SQUATS", None)
+                        robot_status = adjust_robot_position("SQUATS", None)
                     else:
                         send_command("STOP")
             except Exception:
@@ -2784,6 +2851,7 @@ def run_squats(ui=None):
 
                 if time_elapsed > time_limit:
                     print(f"\n✅ Set {current_set} Finished! Completed {reps_in_set} reps.")
+                    robot_status = "TRACKING"
                     try:
                         publish_set_complete("squats", current_set, reps_in_set)
                     except Exception:
@@ -2902,14 +2970,16 @@ def run_squats(ui=None):
                 cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
+            if hand_landmarker is not None:
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+            draw_home_button(image)
+            local_stream_server.update_frame(image)
+
             if ui is None:
                 if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Squats', image)
                         break
-
-                draw_home_button(image)
                 cv2.imshow('Squats', image)
 
                 if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
@@ -2980,6 +3050,7 @@ def run_plank(ui=None):
         cv2.setMouseCallback('Plank', on_mouse_click)
     print("🧘 Plank Timer Active! Press Q to quit.")
 
+    publish_robot_state("LOADING")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -2999,6 +3070,7 @@ def run_plank(ui=None):
     positioning_completed = False
     send_command("SIDE")
 
+    robot_status = "TRACKING"
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -3025,15 +3097,17 @@ def run_plank(ui=None):
                 elapsed = time.time() - positioning_start_time
                 if elapsed < positioning_duration:
                     pct = elapsed / positioning_duration
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                    draw_positioning_overlay(image, "SIDE", pct)
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
                     if ui is not None:
                         ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to SIDE view... ({int(pct*100)}%)", ACCENT_CYAN)
                         ui.update()
                     else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "SIDE", pct)
                         send_command("SIDE")
-                        draw_home_button(image)
                         cv2.imshow('Plank', image)
                         if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                             break
@@ -3044,8 +3118,10 @@ def run_plank(ui=None):
                     positioning_completed = True
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
+                        robot_status = "TRACKING"
                         try:
                             publish_session_start("plank")
+                            publish_robot_state("ACTIVE")
                         except Exception:
                             pass
 
@@ -3067,6 +3143,7 @@ def run_plank(ui=None):
                                 thumbs_up_cooldown_active = True
                                 if paused:
                                     pause_start_time = time.time()
+                                    robot_status = "TRACKING"
                                     try:
                                         publish_pause()
                                     except Exception:
@@ -3074,6 +3151,7 @@ def run_plank(ui=None):
                                 else:
                                     if 'pause_start_time' in dir() and pause_start_time:
                                         _pause_accumulator += (time.time() - pause_start_time)
+                                    robot_status = "TRACKING"
                                     try:
                                         publish_resume()
                                     except Exception:
@@ -3097,19 +3175,25 @@ def run_plank(ui=None):
                 in_plank = False
                 start_time = None
                 
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                draw_paused_overlay(image, thumbs_up_frames)
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+
                 if ui is not None:
                     ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
                     ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
                     if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
+                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                            break
+                else:
+                    if hand_landmarker is not None:
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Plank', image)
                             break
-                    draw_home_button(image)
                     cv2.imshow('Plank', image)
                     if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
@@ -3118,10 +3202,13 @@ def run_plank(ui=None):
             is_horizontal = False
             is_looking_around = False
 
+            robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
                     if positioning_completed and not paused:
-                        adjust_robot_position("PLANK", results)
+                        robot_status = adjust_robot_position("PLANK", results)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -3167,6 +3254,7 @@ def run_plank(ui=None):
                                 neck, hip, ankle, in_plank, start_time
                             )
                             plank_timer += elapsed_time
+                            robot_status = "TRACKING"
                             try:
                                 publish_plank_time(plank_timer)
                             except Exception:
@@ -3181,7 +3269,7 @@ def run_plank(ui=None):
                             start_time = None
                 else:
                     if positioning_completed and not paused:
-                        adjust_robot_position("PLANK", None)
+                        robot_status = adjust_robot_position("PLANK", None)
                     else:
                         send_command("STOP")
             except Exception:
@@ -3300,14 +3388,16 @@ def run_plank(ui=None):
                 cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
 
+            if hand_landmarker is not None:
+                draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+            draw_home_button(image)
+            local_stream_server.update_frame(image)
+
             if ui is None:
                 if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Plank', image)
                         break
-
-                draw_home_button(image)
                 cv2.imshow('Plank', image)
 
                 if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
@@ -3390,6 +3480,7 @@ def main():
         time.sleep(0.2)
         cap.release()
         cv2.destroyAllWindows()
+        robot_status = "TRACKING"
         try:
             landmarker.close()
         except:
@@ -3515,6 +3606,7 @@ def main():
                     send_command(command)
 
                     # Publish high-level robot state for the web dashboard (real)
+                    robot_status = "TRACKING"
                     try:
                         if person_x is not None and command not in ("STOP", "SEARCH"):
                             publish_robot_state("FOLLOWING", command)
@@ -3557,6 +3649,8 @@ def main():
         draw_home_button(display)
 
         if SHOW_WINDOW:
+            local_stream_server.update_frame(display)
+            local_stream_server.update_frame(display)
             cv2.imshow('Person Follower', display)
 
             key = cv2.waitKey(1) & 0xFF
@@ -3652,6 +3746,7 @@ class RoundedButton(tk.Canvas):
         self.create_text(w//2, h//2, text=self.text, fill=self.fg_color, font=self.font)
         
     def _darken_color(self, hex_color):
+        robot_status = "TRACKING"
         try:
             if hex_color.startswith("#"):
                 r = int(hex_color[1:3], 16)
@@ -3771,7 +3866,10 @@ class FitnessRobotUI(tk.Tk):
         self.main_container = tk.Frame(self, bg="#1E1E24")
         self.main_container.pack(fill="both", expand=True, padx=5, pady=5)
         
+        self.exercise_active = False
+        self.next_remote_mode = None
         self.show_home_screen()
+        self.after(200, self.check_remote_commands)
         
     def show_home_screen(self):
         # Clear container
@@ -3853,12 +3951,71 @@ class FitnessRobotUI(tk.Tk):
             btn.grid(row=0, column=i, sticky="ew", padx=5)
 
     def run_exercise(self, exercise_name, func):
+        self.exercise_active = True
+        force_stop.clear()
         try:
             self.show_exercise_screen(exercise_name)
             self.update()
             func(self)
+        except tk.TclError:
+            # GUI was destroyed during execution, exit loop gracefully
+            return
         finally:
-            self.show_summary_screen()
+            self.exercise_active = False
+            try:
+                local_stream_server.update_frame(None)
+            except Exception:
+                pass
+            try:
+                exists = self.winfo_exists()
+            except tk.TclError:
+                exists = False
+            if exists:
+                if self.next_remote_mode:
+                    mode = self.next_remote_mode
+                    self.next_remote_mode = None
+                    force_stop.clear()
+                    self.launch_by_name(mode)
+                else:
+                    try:
+                        self.show_summary_screen()
+                    except tk.TclError:
+                        pass
+
+    def check_remote_commands(self):
+        try:
+            if not self.winfo_exists():
+                return
+            if not remote_mode_queue.empty():
+                cmd_type, cmd_val = remote_mode_queue.get()
+                if cmd_type == "switch":
+                    print(f"[GUI] Remote mode switch received: {cmd_val}")
+                    if self.exercise_active:
+                        self.next_remote_mode = cmd_val
+                        force_stop.set()
+                    else:
+                        self.launch_by_name(cmd_val)
+            self.after(200, self.check_remote_commands)
+        except (tk.TclError, Exception) as e:
+            pass
+
+    def launch_by_name(self, name):
+        name = str(name).upper().replace("-", "_").replace(" ", "_")
+        if name in ("BICEP_CURLS", "BICEP_CURL"):
+            self.launch_bicep_curls()
+        elif name in ("PUSHUPS", "PUSH_UPS"):
+            self.launch_pushups()
+        elif name in ("SQUATS", "SQUAT"):
+            self.launch_squats()
+        elif name == "PLANK":
+            self.launch_plank()
+        elif name in ("PERSON_FOLLOW", "PERSON_TRACKING", "FOLLOWING", "FOLLOW"):
+            self.launch_person_follow()
+        else:
+            print(f"[GUI] Unknown remote mode: {name}")
+
+    def launch_person_follow(self):
+        self.run_exercise("Person Following", lambda ui: main())
 
     def launch_bicep_curls(self):
         self.run_exercise("Bicep Curls", run_bicep_curls)
@@ -3926,38 +4083,48 @@ class FitnessRobotUI(tk.Tk):
         self.home_btn.pack(side="right", padx=10)
 
     def update_stat_card(self, label, value, color="#96D75F"):
-        color = bgr_to_hex(color)
-        if label not in self.stat_cards:
-            # Create a card frame using RoundedFrame
-            card = RoundedFrame(
-                self.stats_row_frame, 
-                bg_color="#2B2B36", 
-                border_color=color, 
-                border_width=2, 
-                radius=10,
-                width=110,
-                height=75
-            )
-            card.pack(side="left", padx=3)
-            card.pack_propagate(False)
-            
-            lbl = tk.Label(card, text=f"{label}:", font=("Helvetica", 10, "bold"), fg=color, bg="#2B2B36")
-            lbl.pack(anchor="w", padx=10, pady=(10, 2))
-            
-            val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 18, "bold"), fg="#FFFFFF", bg="#2B2B36")
-            val_lbl.pack(anchor="w", padx=10)
-            
-            self.stat_cards[label] = (card, val_lbl, lbl)
-        else:
-            card, val_lbl, lbl = self.stat_cards[label]
-            val_lbl.configure(text=str(value))
-            card.border_color = color
-            card._draw()
-            lbl.configure(fg=color)
+        try:
+            if not self.winfo_exists():
+                return
+            color = bgr_to_hex(color)
+            if label not in self.stat_cards:
+                # Create a card frame using RoundedFrame
+                card = RoundedFrame(
+                    self.stats_row_frame, 
+                    bg_color="#2B2B36", 
+                    border_color=color, 
+                    border_width=2, 
+                    radius=10,
+                    width=110,
+                    height=75
+                )
+                card.pack(side="left", padx=3)
+                card.pack_propagate(False)
+                
+                lbl = tk.Label(card, text=f"{label}:", font=("Helvetica", 10, "bold"), fg=color, bg="#2B2B36")
+                lbl.pack(anchor="w", padx=10, pady=(10, 2))
+                
+                val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 18, "bold"), fg="#FFFFFF", bg="#2B2B36")
+                val_lbl.pack(anchor="w", padx=10)
+                
+                self.stat_cards[label] = (card, val_lbl, lbl)
+            else:
+                card, val_lbl, lbl = self.stat_cards[label]
+                val_lbl.configure(text=str(value))
+                card.border_color = color
+                card._draw()
+                lbl.configure(fg=color)
+        except tk.TclError:
+            pass
 
     def update_feedback(self, text, color="#EBEBEF"):
-        color = bgr_to_hex(color)
-        self.feedback_label.configure(text=text, fg=color)
+        try:
+            if not self.winfo_exists():
+                return
+            color = bgr_to_hex(color)
+            self.feedback_label.configure(text=text, fg=color)
+        except tk.TclError:
+            pass
 
     def set_home_clicked(self):
         global home_clicked
@@ -4048,5 +4215,15 @@ class FitnessRobotUI(tk.Tk):
 
 
 if __name__ == "__main__":
+    # Start local HTTP/WS servers for streaming & remote control
+    try:
+        local_stream_server.start_servers(force_stop_event=force_stop, remote_mode_queue=remote_mode_queue)
+        print("Local HTTP/WS servers started successfully.")
+    except Exception as e:
+        print(f"Failed to start local servers: {e}")
+        
+    # Broadcast initial state
+    publish_robot_state("READY")
+
     app = FitnessRobotUI()
     app.mainloop()
