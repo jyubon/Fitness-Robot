@@ -2551,6 +2551,7 @@ def run_squats(ui=None):
                 break
 
             frame_counter += 1
+            frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             # Run Pose detection every FRAME_SKIP frames
             if frame_counter % FRAME_SKIP == 0 or last_results is None:
@@ -3087,6 +3088,7 @@ def run_plank(ui=None):
                 break
 
             frame_counter += 1
+            frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             # Run Pose detection every FRAME_SKIP frames
             if frame_counter % FRAME_SKIP == 0 or last_results is None:
@@ -3352,8 +3354,8 @@ def run_plank(ui=None):
                 else:
                     time_str = f"{secs:.1f}s"
 
-                ui.update_stat_card("Hold Time", time_str, state_color)
-                ui.update_stat_card("Status", state_text, state_color)
+                ui.update_stat_card("Hold Time", time_str)
+                ui.update_stat_card("Status", state_text)
 
                 feedback_msgs = []
                 feedback_color = ACCENT_GREEN
