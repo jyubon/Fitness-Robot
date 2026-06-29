@@ -3,7 +3,7 @@
  * Auth, telemetry, analytics, and robot control all use Firebase directly.
  */
 
-const DEFAULT_CAMERA_URL = localStorage.getItem('currentCameraUrl') || '';
+const DEFAULT_CAMERA_URL = localStorage.getItem('currentCameraUrl') || 'http://fitness.local:8081/stream';
 let currentCameraUrl = DEFAULT_CAMERA_URL;
 let currentUserId = null;
 let currentUserEmail = null;

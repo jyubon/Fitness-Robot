@@ -1341,24 +1341,168 @@ def get_pt(lm, idx, min_vis=0.5, use_z=False):
 #  SESSION ERROR LOGGER
 # ═══════════════════════════════════════════════════════
 session_errors = set()
-last_printed_errors = {}
+last_printed_errors = {}       # {err_msg: last_printed_timestamp}
+error_occurrence_count = {}    # {err_msg: number_of_times_printed_so_far}
 
 def clear_session_errors():
     """Clear session error tracking."""
-    global session_errors, last_printed_errors
+    global session_errors, last_printed_errors, error_occurrence_count
     session_errors = set()
     last_printed_errors = {}
+    error_occurrence_count = {}
+
+# ─── Voice MP3 mapping ───
+VOICE_FILE_MAP = {
+    "align horizontally":    "001_Align horizontally GET IN POSITION..mp3",
+    "too deep":              "002_Don't go too deep in squats..mp3",
+    "equalize both hands":   "003_Equalize both hands..mp3",
+    "extend arms straight":  "004_Extend arms straight and directly in front of you..mp3",
+    "straight line":         "005_Form a straight line with body!..mp3",
+    "feet at shoulder":      "006_Keep feet at shoulder distance..mp3",
+    "look in front":         "007_Look in front of you!..mp3",
+    "curling too fast":      "008_Slow down! Curling too fast..mp3",
+    "stand at shoulder width": "009_Stand at shoulder width and keep knees in front of body..mp3",
+    "tuck elbow":            "010_Tuck elbow closer to your body..mp3",
+    "swing":                 "011_o not swing arm, Keep hands in straight position without swinging..mp3",
+}
+
+def _play_mp3_windows(file_path_str):
+    """
+    Play an MP3 on Windows using PowerShell + System.Windows.Media.MediaPlayer
+    (PresentationCore assembly — present on all Windows 8+ systems, no install needed).
+
+    Open() is async, so we sleep 2 s before calling Play() to let the media
+    pipeline buffer the file.  Then we sleep the full estimated clip length
+    (≤ 8 s for any of the voice files) before closing, so the audio completes
+    before the subprocess exits.
+    """
+    uri = "file:///" + file_path_str.replace("\\", "/").replace(" ", "%20")
+    ps_cmd = (
+        "Add-Type -AssemblyName PresentationCore;"
+        "$m=New-Object System.Windows.Media.MediaPlayer;"
+        f"$m.Open([System.Uri]'{uri}');"
+        "Start-Sleep -Seconds 2;"   # wait for async open/buffer
+        "$m.Play();"
+        "Start-Sleep -Seconds 6;"   # voice clips are 2-6 s; wait the max
+        "$m.Close()"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-c", ps_cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=15
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace").strip()
+            print(f"⚠️ PowerShell audio failed (rc={result.returncode}): {err[:200]}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"⚠️ _play_mp3_windows exception: {exc}")
+        return False
+
+
+def _play_mp3_linux(file_path_str):
+    """
+    Play an MP3 on Linux / Raspberry Pi.
+    Tries mpg123 first (fastest, lightest), then mpg321, then sox's 'play'.
+    Install on RPi:  sudo apt-get install -y mpg123
+    """
+    for cmd in [
+        ["mpg123", "-q", file_path_str],
+        ["mpg321", "-q", file_path_str],
+        ["play",   "-q", file_path_str],
+    ]:
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=20
+            )
+            if result.returncode == 0:
+                return True
+            # Non-zero exit — log stderr so we can see why
+            err_text = result.stderr.decode(errors="replace").strip()
+            if err_text:
+                print(f"⚠️ {cmd[0]} returned {result.returncode}: {err_text[:120]}")
+        except FileNotFoundError:
+            continue          # this player isn't installed — try next
+        except Exception as exc:
+            print(f"⚠️ {cmd[0]} error: {exc}")
+            continue
+    print("⚠️ No working MP3 player found. On RPi run: sudo apt-get install -y mpg123")
+    return False
+
+# Semaphore: allow only one audio clip to play at a time so they don't overlap.
+_audio_lock = threading.Semaphore(1)
+
+def _play_mp3_background(file_path_str):
+    """
+    Play the file in a background thread.
+    Uses a non-daemon thread with a reasonable lifetime so the OS doesn't kill
+    it mid-playback when the exercise loop finishes.
+    A semaphore prevents two clips from playing simultaneously.
+    """
+    def run():
+        if not _audio_lock.acquire(blocking=False):
+            return   # another clip is already playing — skip this one
+        try:
+            if os.name == 'nt':
+                _play_mp3_windows(file_path_str)
+            else:
+                _play_mp3_linux(file_path_str)
+        except Exception as exc:
+            print(f"⚠️ Audio playback error: {exc}")
+        finally:
+            _audio_lock.release()
+
+    t = threading.Thread(target=run, daemon=False)
+    t.start()
+
+
+def play_voice_command(err_msg):
+    """
+    Looks up the error message in VOICE_FILE_MAP and plays the matching MP3
+    in a background thread if the file exists.
+    """
+    msg = err_msg.lower()
+    matched_file = None
+    for key, filename in VOICE_FILE_MAP.items():
+        if key in msg:
+            matched_file = filename
+            break
+
+    if not matched_file:
+        return   # No voice clip for this error — silently skip
+
+    file_path = PROJECT_DIR / "voice" / matched_file
+    if file_path.exists():
+        _play_mp3_background(str(file_path))
+    else:
+        print(f"⚠️ Voice file not found: {file_path}")
 
 def log_session_error(err_msg, cooldown=3.0):
     """Log an error to the session errors set and print it with a cooldown.
+    Audio feedback is played only from the SECOND occurrence onward so the
+    user has one silent attempt to self-correct before being prompted.
     Also publishes the form feedback to the web backend (real data only).
     """
-    global session_errors, last_printed_errors
+    global session_errors, last_printed_errors, error_occurrence_count
     session_errors.add(err_msg)
     now = time.time()
     if err_msg not in last_printed_errors or now - last_printed_errors[err_msg] > cooldown:
         print(f"  [SESSION WARNING] {err_msg}")
         last_printed_errors[err_msg] = now
+
+        # Track how many times this error has fired
+        error_occurrence_count[err_msg] = error_occurrence_count.get(err_msg, 0) + 1
+
+        # Play voice only from the 2nd occurrence onward
+        if error_occurrence_count[err_msg] >= 2:
+            play_voice_command(err_msg)
+
         # Publish to live dashboard (exact message shown on-robot / console)
         try:
             publish_form_error(err_msg)
@@ -2353,6 +2497,7 @@ def run_pushups(ui=None):
                                     publish_set_complete("pushups", current_set, reps_in_set)
                                 except Exception:
                                     pass
+                            log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     if positioning_completed and not paused:
                         robot_status = adjust_robot_position("PUSH_UPS", None)
@@ -3271,6 +3416,7 @@ def run_plank(ui=None):
                         else:
                             in_plank = False
                             start_time = None
+                            log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     if positioning_completed and not paused:
                         robot_status = adjust_robot_position("PLANK", None)
