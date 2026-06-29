@@ -1,5 +1,21 @@
-#include <DFRobotDFPlayerMini.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
 #include <HardwareSerial.h>
+#include <WiFi.h>
+
+#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
+#include "arduino_secrets.h"
+#include <ElegantOTA.h>
+
+// ============================================================
+// WiFi & ElegantOTA Configuration
+// ============================================================
+#define WIFI_SSID SECRET_SSID
+#define WIFI_PASSWORD SECRET_PASS
+#define USE_AP_MODE false // Set to false to use STA Mode (connecting to router)
+
+AsyncWebServer server(80);
 
 // ============================================================
 // UART1 - Raspberry Pi Communication (GPIO 48=RX, 47=TX)
@@ -7,14 +23,6 @@
 #define PI_UART_RX_PIN 44
 #define PI_UART_TX_PIN 43
 HardwareSerial piSerial(1);
-
-// ============================================================
-// UART2 - DFPlayer Mini Communication (GPIO 39=RX, 40=TX)
-// ============================================================
-#define DF_UART_RX_PIN 40
-#define DF_UART_TX_PIN 39
-HardwareSerial dfSerial(2);
-DFRobotDFPlayerMini dfPlayer;
 
 // ============================================================
 // Ultrasonic Sensor Pins (HC-SR04)
@@ -51,14 +59,15 @@ DFRobotDFPlayerMini dfPlayer;
 // ============================================================
 // LEDC PWM Configuration
 // ============================================================
-#define FL_PWM_CH 0
-#define FR_PWM_CH 1
-#define RL_PWM_CH 2
-#define RR_PWM_CH 3
+#define FL_PWM_CH FL_ENA
+#define FR_PWM_CH FR_ENA
+#define RL_PWM_CH RL_ENA
+#define RR_PWM_CH RR_ENA
 #define PWM_FREQ 1000
 #define PWM_RES 8
 
 // Motor Speed (0-255)
+// Set default speed to 255
 #define MOTOR_SPEED 255
 #define MOTOR_SPEED_HALF 128
 
@@ -66,27 +75,7 @@ DFRobotDFPlayerMini dfPlayer;
 #define OBSTACLE_THRESHOLD_CM 30
 
 // Command timeout - stop motors if no command received
-// Must be LONGER than ANNOUNCE_DELAY_MS to avoid failsafe killing announcements
 #define CMD_TIMEOUT_MS 2000
-
-// ============================================================
-// DFPlayer Audio Track Mapping
-// ============================================================
-// SD Card folder /01/ contains the posture correction tracks:
-// 001.mp3 = "Align horizontally GET IN POSITION"
-// 002.mp3 = "Don't go too deep in squats"
-// 003.mp3 = "Equalize both hands"
-// 004.mp3 = "Extend arms straight and directly in front of you"
-// 005.mp3 = "Form a straight line with body"
-// 006.mp3 = "Keep feet at shoulder distance"
-// 007.mp3 = "Look in front of you"
-// 008.mp3 = "Slow down! Curling too fast"
-// 009.mp3 = "Stand at shoulder width and keep knees in front of body"
-// 010.mp3 = "Tuck elbow closer to your body"
-// 011.mp3 = "Do not swing arm / Keep hands in straight position without swinging"
-
-// Audio announcement delay before movement (ms) - only used if a command has a track
-#define ANNOUNCE_DELAY_MS 200
 
 // ============================================================
 // Sensor Data
@@ -102,10 +91,6 @@ int echoPins[] = {ECHO_FRONT, ECHO_LEFT, ECHO_RIGHT, ECHO_REAR};
 String currentCommand = "";
 String lastCommand = "";
 unsigned long lastCmdTime = 0;
-bool dfPlayerReady = false;
-bool isAnnouncing = false;
-unsigned long announceStartTime = 0;
-String pendingCommand = "";
 
 // ============================================================
 // SETUP
@@ -118,8 +103,51 @@ void setup() {
   piSerial.begin(115200, SERIAL_8N1, PI_UART_RX_PIN, PI_UART_TX_PIN);
   piSerial.setTimeout(50);
 
-  // --- DFPlayer UART ---
-  dfSerial.begin(9600, SERIAL_8N1, DF_UART_RX_PIN, DF_UART_TX_PIN);
+  // --- WiFi & ElegantOTA ---
+  if (USE_AP_MODE) {
+    Serial.println("[WiFi] Starting Access Point...");
+    WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("[WiFi] AP IP Address: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.print("[WiFi] Connecting to ");
+    Serial.println(WIFI_SSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 20) {
+      delay(500);
+      Serial.print(".");
+      retries++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n[WiFi] Connected!");
+      Serial.print("[WiFi] IP Address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("\n[WiFi] Connection Failed. Falling back to AP Mode...");
+      WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
+      Serial.print("[WiFi] AP IP Address: ");
+      Serial.println(WiFi.softAPIP());
+    }
+  }
+
+  // --- mDNS responder ---
+  if (MDNS.begin("fitness-robot")) {
+    Serial.println(
+        "[mDNS] Responder started. Access via http://fitness-robot.local");
+  }
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain",
+                  "Fitness Robot ESP32 Ready. Go to "
+                  "http://fitness-robot.local/update to upload firmware OTA.");
+  });
+
+  ElegantOTA.begin(&server);
+  server.begin();
+  Serial.println("[OTA] HTTP server started, ElegantOTA ready");
 
   // --- Ultrasonic Pins ---
   for (int i = 0; i < 4; i++) {
@@ -144,12 +172,8 @@ void setup() {
   // --- Stop Motors ---
   stopAllMotors();
 
-  // --- DFPlayer Init ---
-  initDFPlayer();
-
   Serial.println("================================");
-  Serial.println("ESP32-S3 Mecanum Robot Ready");
-  Serial.println("DFPlayer Audio + Obstacle Avoid");
+  Serial.println("ESP32-S3 Mecanum Robot Ready (OTA Enabled)");
   Serial.println("================================");
 }
 
@@ -157,77 +181,10 @@ void setup() {
 // PWM INIT
 // ============================================================
 void initPWM() {
-  ledcSetup(FL_PWM_CH, PWM_FREQ, PWM_RES);
-  ledcAttachPin(FL_ENA, FL_PWM_CH);
-
-  ledcSetup(FR_PWM_CH, PWM_FREQ, PWM_RES);
-  ledcAttachPin(FR_ENA, FR_PWM_CH);
-
-  ledcSetup(RL_PWM_CH, PWM_FREQ, PWM_RES);
-  ledcAttachPin(RL_ENA, RL_PWM_CH);
-
-  ledcSetup(RR_PWM_CH, PWM_FREQ, PWM_RES);
-  ledcAttachPin(RR_ENA, RR_PWM_CH);
-}
-
-// ============================================================
-// DFPLAYER INIT
-// ============================================================
-void initDFPlayer() {
-  Serial.println("[DFPlayer] Initializing...");
-
-  // Allow DFPlayer to boot
-  delay(1500);
-
-  if (dfPlayer.begin(dfSerial, true, true)) {
-    dfPlayerReady = true;
-    dfPlayer.setTimeOut(500);
-    dfPlayer.volume(25); // Volume: 0-30
-    dfPlayer.EQ(DFPLAYER_EQ_NORMAL);
-    dfPlayer.outputDevice(DFPLAYER_DEVICE_SD);
-    Serial.println("[DFPlayer] Ready - Volume: 25/30");
-  } else {
-    dfPlayerReady = false;
-    Serial.println("[DFPlayer] FAILED - Check wiring on GPIO 39/40");
-    Serial.println("[DFPlayer] Continuing without audio...");
-  }
-}
-
-// ============================================================
-// AUDIO ANNOUNCEMENT
-// ============================================================
-
-// Map command string to track number (movement commands have no posture tracks)
-int commandToTrack(String cmd) {
-  return -1; // Movement commands do not have voice tracks on the SD card (tracks 1-11 are posture only)
-}
-
-// Play audio announcement for a direction
-void announceDirection(String cmd) {
-  if (!dfPlayerReady) {
-    Serial.println("[Audio] DFPlayer not ready - skipping announcement");
-    return;
-  }
-
-  int track = commandToTrack(cmd);
-  if (track < 0) {
-    Serial.print("[Audio] No track for command: ");
-    Serial.println(cmd);
-    return;
-  }
-
-  Serial.print("[Audio] Playing track ");
-  Serial.print(track);
-  Serial.print(" for command: ");
-  Serial.println(cmd);
-
-  // Play from folder 01 on SD card
-  dfPlayer.playFolder(1, track);
-}
-
-void announceObstacle() {
-  // No obstacle track in posture correction audio pack
-  Serial.println("[Audio] Obstacle Detected (no audio track available)");
+  ledcAttach(FL_ENA, PWM_FREQ, PWM_RES);
+  ledcAttach(FR_ENA, PWM_FREQ, PWM_RES);
+  ledcAttach(RL_ENA, PWM_FREQ, PWM_RES);
+  ledcAttach(RR_ENA, PWM_FREQ, PWM_RES);
 }
 
 // ============================================================
@@ -312,7 +269,7 @@ void veerRight() {
 }
 
 // ============================================================
-// EXECUTE MOVEMENT (called after announcement delay)
+// EXECUTE MOVEMENT
 // ============================================================
 void executeMovement(String cmd) {
   Serial.print("[MOTOR] Executing: ");
@@ -391,9 +348,8 @@ bool isSafeToMove(String cmd) {
 // ============================================================
 // COMMAND VALIDATION WHITELIST
 // ============================================================
-const char *VALID_COMMANDS[] = {"FWD",       "BACK",       "LEFT",
-                                "RIGHT",     "VEER_LEFT",  "VEER_RIGHT",
-                                "STOP"};
+const char *VALID_COMMANDS[] = {"FWD",       "BACK",       "LEFT", "RIGHT",
+                                "VEER_LEFT", "VEER_RIGHT", "STOP"};
 const int NUM_COMMANDS = 7;
 
 bool isValidCommand(const String &cmd) {
@@ -420,11 +376,10 @@ void sendDistances() {
 }
 
 // ============================================================
-// HANDLE INCOMING COMMAND WITH ANNOUNCE-THEN-MOVE LOGIC
+// HANDLE INCOMING COMMAND
 // ============================================================
 void handleNewCommand(String cmd) {
-  // Same command already running - refresh timeout but don't restart
-  // announcement
+  // Same command already running - refresh timeout
   if (cmd == currentCommand && cmd != "STOP") {
     lastCmdTime = millis(); // Keep the failsafe timer alive
     return;
@@ -434,59 +389,26 @@ void handleNewCommand(String cmd) {
   Serial.println(cmd);
 
   if (cmd == "STOP") {
-    // Stop immediately - no announcement delay needed
-    isAnnouncing = false;
-    pendingCommand = "";
     currentCommand = "STOP";
     stopAllMotors();
-    announceDirection("STOP");
     lastCmdTime = millis();
     return;
   }
 
-  // Safety check before announcing
+  // Safety check before moving
   if (!isSafeToMove(cmd)) {
     Serial.print("[OBSTACLE] Blocked direction for: ");
     Serial.println(cmd);
     stopAllMotors();
     currentCommand = "STOP";
-
-    // Only play obstacle alert if not already announcing it
-    if (lastCommand != "OBSTACLE_ALERT") {
-      announceObstacle();
-      lastCommand = "OBSTACLE_ALERT";
-    }
-
     piSerial.println("ALERT:OBSTACLE");
     return;
   }
 
-  // New valid movement command - announce first, then move if track is available
-  int track = commandToTrack(cmd);
-  if (track > 0) {
-    pendingCommand = cmd;
-    isAnnouncing = true;
-    announceStartTime = millis();
-    currentCommand = cmd;
-    lastCmdTime = millis();
-
-    // Stop motors during announcement
-    stopAllMotors();
-
-    // Play direction audio
-    announceDirection(cmd);
-
-    Serial.print("[Audio] Announcing: ");
-    Serial.print(cmd);
-    Serial.print(" - Moving in ");
-    Serial.print(ANNOUNCE_DELAY_MS);
-    Serial.println("ms");
-  } else {
-    // Execute immediately without delay if there is no audio track
-    executeMovement(cmd);
-    currentCommand = cmd;
-    lastCmdTime = millis();
-  }
+  // Execute immediately
+  executeMovement(cmd);
+  currentCommand = cmd;
+  lastCmdTime = millis();
 }
 
 // ============================================================
@@ -506,31 +428,6 @@ void loop() {
     Serial.println("[FAILSAFE] No command received - stopping motors");
     stopAllMotors();
     currentCommand = "STOP";
-    isAnnouncing = false;
-    pendingCommand = "";
-  }
-
-  // --- Announce-then-Move State Machine ---
-  if (isAnnouncing) {
-    if ((now - announceStartTime) >= ANNOUNCE_DELAY_MS) {
-      // Announcement delay elapsed - now execute movement
-      isAnnouncing = false;
-
-      // Re-check safety right before moving
-      if (isSafeToMove(pendingCommand)) {
-        executeMovement(pendingCommand);
-        lastCommand = pendingCommand;
-      } else {
-        Serial.println(
-            "[OBSTACLE] Obstacle appeared during announcement - aborting move");
-        stopAllMotors();
-        currentCommand = "STOP";
-        announceObstacle();
-        piSerial.println("ALERT:OBSTACLE");
-      }
-      pendingCommand = "";
-    }
-    // While announcing - keep motors stopped (already done in handleNewCommand)
   }
 
   // --- Read Commands from Pi ---
@@ -552,19 +449,6 @@ void loop() {
       }
 
       handleNewCommand(cmd);
-    } else if (line.startsWith("AUDIO:")) {
-      String trackStr = line.substring(6);
-      trackStr.trim();
-      int track = trackStr.toInt();
-      if (track > 0) {
-        if (dfPlayerReady) {
-          Serial.print("[Audio] Playing custom track ");
-          Serial.println(track);
-          dfPlayer.playFolder(1, track);
-        } else {
-          Serial.println("[Audio] Ignored AUDIO command (DFPlayer not ready)");
-        }
-      }
     } else if (line.equalsIgnoreCase("PING")) {
       piSerial.println("PONG");
       Serial.println("[CMD] Received PING - Responded PONG");
@@ -573,10 +457,8 @@ void loop() {
 
 skip_cmd:
 
-  // --- Update DFPlayer state ---
-  if (dfPlayerReady) {
-    dfPlayer.readType(); // Keep DFPlayer communication alive
-  }
+  // --- Handle ElegantOTA Updates ---
+  ElegantOTA.loop();
 
   delay(30);
 }
