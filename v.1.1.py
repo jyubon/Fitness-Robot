@@ -725,8 +725,8 @@ def draw_frame(frame, command, state, person_x, shoulder_width, fps, d_zone, h_z
     h, w = frame.shape[:2]
 
     # Zone overlays
-    CENTER_ZONE_LEFT  = 0.42
-    CENTER_ZONE_RIGHT = 0.58
+    CENTER_ZONE_LEFT  = 0.38
+    CENTER_ZONE_RIGHT = 0.62
     TOO_CLOSE = 0.43
     TOO_FAR   = 0.18
 
@@ -828,8 +828,8 @@ def run_person_tracking() -> str:
     FRAME_SKIP    = 1
 
     # ─── Following Thresholds ───
-    CENTER_ZONE_LEFT  = 0.42
-    CENTER_ZONE_RIGHT = 0.58
+    CENTER_ZONE_LEFT  = 0.38
+    CENTER_ZONE_RIGHT = 0.62
     TOO_CLOSE = 0.43
     TOO_FAR   = 0.18
 

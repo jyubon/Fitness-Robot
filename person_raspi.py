@@ -90,8 +90,8 @@ PALM_STOP_REQUIRED_FRAMES = 12
 PALM_STOP_MIN_HAND_SIZE = 0.12
 
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
-CENTER_ZONE_LEFT  = 0.42
-CENTER_ZONE_RIGHT = 0.58
+CENTER_ZONE_LEFT  = 0.38
+CENTER_ZONE_RIGHT = 0.62
 TOO_CLOSE = 0.43
 TOO_FAR   = 0.18
 
@@ -1424,7 +1424,11 @@ def adjust_robot_position(exercise_name, results):
                 send_command("STOP")
                 return "LOST_TIMEOUT"
             else:
-                dir1 = "VEER_LEFT" if last_person_side == "LEFT" else "VEER_RIGHT"
+                if last_person_side == "RIGHT":
+                    dir1 = "VEER_RIGHT"
+                else:
+                    # Defaults to VEER_LEFT if last_person_side is "LEFT" or None
+                    dir1 = "VEER_LEFT"
                 dir2 = "VEER_RIGHT" if dir1 == "VEER_LEFT" else "VEER_LEFT"
                 
                 if search_elapsed < 2.0:
@@ -1435,12 +1439,7 @@ def adjust_robot_position(exercise_name, results):
                     send_command(dir1)
                 return "SEARCHING"
         else:
-            if last_person_side == "LEFT":
-                send_command("VEER_LEFT")
-            elif last_person_side == "RIGHT":
-                send_command("VEER_RIGHT")
-            else:
-                send_command("STOP")
+            send_command("STOP")
             return "TRACKING"
 
     # Reset lost person timer
