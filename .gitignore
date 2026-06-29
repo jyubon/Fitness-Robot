@@ -9,3 +9,5 @@ api_keys.py
 Thumbs.db
 serviceAccountKey.json
 firebase-config.js
+.clangD
+esp_commands/arduino_secrets.h
