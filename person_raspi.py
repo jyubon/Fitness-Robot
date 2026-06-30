@@ -1468,6 +1468,10 @@ def play_voice_command(err_msg):
     Looks up the error message in VOICE_FILE_MAP and plays the matching MP3
     in a background thread if the file exists.
     """
+    global lost_person_since
+    if lost_person_since is not None and (time.time() - lost_person_since) > 2.0:
+        return   # In searching phase, voice commands should not play
+
     msg = err_msg.lower()
     matched_file = None
     for key, filename in VOICE_FILE_MAP.items():
@@ -2052,6 +2056,8 @@ def run_bicep_curls(ui=None):
             else:
                 if positioning_completed and not paused:
                     robot_status = adjust_robot_position("BICEP_CURLS", None)
+                    if robot_status != "SEARCHING":
+                        log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     send_command("STOP")
 
@@ -2502,6 +2508,8 @@ def run_pushups(ui=None):
                 else:
                     if positioning_completed and not paused:
                         robot_status = adjust_robot_position("PUSH_UPS", None)
+                        if robot_status != "SEARCHING":
+                            log_session_error("Align horizontally GET IN POSITION.")
                     else:
                         send_command("STOP")
             except Exception:
@@ -2986,6 +2994,8 @@ def run_squats(ui=None):
                 else:
                     if positioning_completed and not paused:
                         robot_status = adjust_robot_position("SQUATS", None)
+                        if robot_status != "SEARCHING":
+                            log_session_error("Align horizontally GET IN POSITION.")
                     else:
                         send_command("STOP")
             except Exception:
@@ -3421,6 +3431,8 @@ def run_plank(ui=None):
                 else:
                     if positioning_completed and not paused:
                         robot_status = adjust_robot_position("PLANK", None)
+                        if robot_status != "SEARCHING":
+                            log_session_error("Align horizontally GET IN POSITION.")
                     else:
                         send_command("STOP")
             except Exception:
