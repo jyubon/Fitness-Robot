@@ -14,63 +14,25 @@ import mediapipe as mp
 import time
 import numpy as np
 import serial
+import json
 import signal
 import sys
-import json
-import urllib.request
-import urllib.error
-import threading
-import queue
-from datetime import datetime, timezone
-import subprocess
-import tkinter as tk
-from tkinter import messagebox, ttk
-
-# ─── Firebase Initialization ───
-try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-    from datetime import datetime
-
-    # Initialize Firebase using the service account key
-    cred = credentials.Certificate("serviceAccountKey.json")
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("✅ Firebase initialized successfully.")
-except Exception as e:
-    db = None
-    print(f"⚠️ Firebase initialization failed: {e}")
-
-
-# Global session variables
-home_clicked = False
-last_session_summary = None
-last_person_side = None
-lost_person_since = None
-
-def on_mouse_click(event, x, y, flags, param):
-    global home_clicked
-    if event == cv2.EVENT_LBUTTONDOWN:
-        # Check if click is inside the HOME button area: x in [390, 470], y in [5, 45]
-        if 390 <= x <= 470 and 5 <= y <= 45:
-            home_clicked = True
-
 
 
 # ═══════════════════════════════════════════════════════
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════
 
-# ─── ESP32 (UART5 Serial Connection) ───
-SERIAL_PORT = "/dev/ttyAMA5"   # Standard Raspberry Pi UART5 Serial Port
-BAUD_RATE   = 115200
+# ─── ESP32 Serial (Default UART - GPIO 14/15) ───
+SERIAL_PORT = "/dev/serial0"
+BAUD_RATE = 115200
 
-# ─── Camera (C270) ───
+# ─── Camera / processing (low load) ───
 CAMERA_INDEX  = 0
-CAMERA_WIDTH  = 480            # Lower = faster on RPi4
-CAMERA_HEIGHT = 320
-FRAME_SKIP    = 2              # Process pose landmarks every N frames (optimized for RPi4)
-HAND_FRAME_SKIP = 6            # Process hand landmarks every N frames (optimized for RPi4)
+CAMERA_WIDTH  = 320
+CAMERA_HEIGHT = 213            # 3:2 aspect; falls back to 240 if unsupported
+FRAME_SKIP    = 1              # Person follower
+EXERCISE_FRAME_SKIP = 2        # Exercises
 
 # ─── MediaPipe ───
 MODEL_PATH = "pose_landmarker.task"
@@ -88,225 +50,80 @@ TOO_FAR   = 0.18
 COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
-# ─── Display ───
-SHOW_WINDOW  = True
-DISPLAY_WIDTH  = 480         # Fixed display width for 480x320 screen
-DISPLAY_HEIGHT = 320         # Fixed display height for 480x320 screen
+# ─── Physical display ───
+SHOW_WINDOW    = True
+DISPLAY_WIDTH  = 480
+DISPLAY_HEIGHT = 320
+
+if not SHOW_WINDOW:
+    # Headless Mode: Mock cv2 window functions to prevent Qt display errors
+    cv2.imshow = lambda *args, **kwargs: None
+    cv2.namedWindow = lambda *args, **kwargs: None
+    cv2.resizeWindow = lambda *args, **kwargs: None
+    cv2.destroyAllWindows = lambda *args, **kwargs: None
+    def mock_waitkey(delay=0):
+        if delay > 0:
+            time.sleep(delay / 1000.0)
+        return 255
+    cv2.waitKey = mock_waitkey
 
 # ─── Debug ───
 DEBUG    = True
 SHOW_FPS = True
 
-# ─── Backend publishing (real data only) ───
-BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000").rstrip("/")
-BACKEND_TOKEN = os.getenv("BACKEND_TOKEN", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTNkMmIwNjNkZmI0YWEzYzAzMmYwNDAiLCJleHAiOjE3ODIzOTcyMzB9.kQ8F-gNV-z82DWnwrWjt79ssHsPLZHkFq6P9Rsnr8AY")  # JWT from /auth/login
-
-# Session / pause tracking for accurate active vs total time
-_session_id = None
-_session_start_wall = None
-_pause_accumulator = 0.0
-
-# Remote control from web UI
-force_stop = threading.Event()
-remote_mode_queue = queue.Queue()  # ("switch", "BICEP_CURLS") etc.
-
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
 
-# ═══════════════════════════════════════════════════════
-#  REAL-TIME PUBLISHING HELPERS (HTTP to backend)
-#  All values come from the live exercise loops. No dummy data.
-# ═══════════════════════════════════════════════════════
+def open_camera():
+    """Open webcam at low processing resolution with MJPEG and minimal buffer."""
+    global CAMERA_HEIGHT
+    for height in dict.fromkeys((CAMERA_HEIGHT, 240)):
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(CAMERA_INDEX)
+        if not cap.isOpened():
+            continue
 
-def _post_json(path, payload):
-    """Fire-and-forget POST. Never raises."""
-    if not BACKEND_TOKEN:
-        return
-    url = f"{BACKEND_BASE_URL}{path}"
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {BACKEND_TOKEN}"
-            },
-            method="POST"
-        )
-        urllib.request.urlopen(req, timeout=2.5)
-    except Exception:
-        # Silent: the exercise must never be interrupted by network issues
-        pass
+        cap.set(cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+        for _ in range(5):
+            cap.read()
 
-def publish_event(event_type, payload):
-    """Publish a generic event (used for form, rep, robot_state, etc.)."""
-    p = dict(payload or {})
-    if _session_id and "session_id" not in p:
-        p["session_id"] = _session_id
-    _post_json("/api/events", {
-        "type": event_type,
-        "payload": p,
-        "ts": datetime.now(timezone.utc).isoformat()
-    })
+        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        CAMERA_HEIGHT = ah
+        print(f"✅ Camera: {aw}x{ah}")
+        return cap
+
+    raise RuntimeError("Could not open camera")
 
 
-def publish_session_start(exercise_type):
-    """Create a session on the backend and store the id locally."""
-    global _session_id, _session_start_wall, _pause_accumulator
-    if not BACKEND_TOKEN:
-        _session_id = None
-        return
-    now = datetime.now(timezone.utc)
-    payload = {
-        "exercise_type": exercise_type,
-        "started_at": now.isoformat()
-    }
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_BASE_URL}/api/sessions/start",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {BACKEND_TOKEN}"
-            },
-            method="POST"
-        )
-        resp = urllib.request.urlopen(req, timeout=3)
-        body = json.loads(resp.read().decode("utf-8"))
-        _session_id = body.get("session_id")
-        _session_start_wall = time.time()
-        _pause_accumulator = 0.0
-        publish_event("session_start", {"exercise_type": exercise_type})
-    except Exception:
-        _session_id = None
+def setup_window(window_name):
+    """Create a display window sized for the physical screen."""
+    if SHOW_WINDOW:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
 
-def publish_session_end(summary=None):
-    """End the current session with accurate active vs total time."""
-    global _session_id, _session_start_wall, _pause_accumulator
-    if not _session_id or not BACKEND_TOKEN:
-        _session_id = None
-        _session_start_wall = None
-        _pause_accumulator = 0.0
-        return
-
-    total = (time.time() - _session_start_wall) if _session_start_wall else 0.0
-    active = max(0.0, total - _pause_accumulator)
-    now = datetime.now(timezone.utc)
-
-    payload = {
-        "session_id": _session_id,
-        "ended_at": now.isoformat(),
-        "total_duration_s": round(total, 2),
-        "active_duration_s": round(active, 2),
-        "summary": summary or {}
-    }
-    try:
-        req = urllib.request.Request(
-            f"{BACKEND_BASE_URL}/api/sessions/end",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {BACKEND_TOKEN}"
-            },
-            method="POST"
-        )
-        urllib.request.urlopen(req, timeout=3)
-        publish_event("session_end", payload)
-    except Exception:
-        pass
-    finally:
-        _session_id = None
-        _session_start_wall = None
-        _pause_accumulator = 0.0
+def prepare_display(image):
+    """Scale processed frame to the physical display resolution."""
+    h, w = image.shape[:2]
+    if w == DISPLAY_WIDTH and h == DISPLAY_HEIGHT:
+        return image
+    return cv2.resize(image, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
 
 
-def publish_rep(exercise, set_num=None, count=None, left=None, right=None, **extra):
-    p = {"exercise": exercise}
-    if set_num is not None: p["set"] = set_num
-    if count is not None: p["count"] = count
-    if left is not None: p["left"] = left
-    if right is not None: p["right"] = right
-    p.update(extra)
-    publish_event("rep", p)
+def show_frame(window_name, image):
+    """Resize and show a frame on the physical display."""
+    if SHOW_WINDOW:
+        cv2.imshow(window_name, prepare_display(image))
 
-
-def publish_set_complete(exercise, set_num, reps):
-    publish_event("set_complete", {"exercise": exercise, "set": set_num, "reps": reps})
-
-
-def publish_form_error(message, side=None):
-    p = {"message": message}
-    if side: p["side"] = side
-    publish_event("form_error", p)
-
-
-def publish_robot_state(state, command=None):
-    p = {"state": state}
-    if command: p["command"] = command
-    publish_event("robot_state", p)
-
-
-def publish_plank_time(value):
-    publish_event("plank_time", {"value": round(float(value), 2)})
-
-
-def publish_pause():
-    publish_event("pause", {})
-
-
-def publish_resume():
-    publish_event("resume", {})
-
-
-# ─── Control listener (background thread) ───
-def _control_listener():
-    """Connects to backend control WS and reacts to force_stop / switch_mode."""
-    if not BACKEND_TOKEN:
-        return
-    try:
-        import websocket  # websocket-client package
-    except Exception:
-        return
-
-    ws_url = f"{'wss' if BACKEND_BASE_URL.startswith('https') else 'ws'}://{BACKEND_BASE_URL.split('://')[-1]}/ws/control?token={BACKEND_TOKEN}"
-
-    def on_message(wsapp, message):
-        try:
-            data = json.loads(message)
-            action = data.get("action") or data.get("raw")
-            if not action:
-                return
-            if isinstance(action, str):
-                action_lower = action.lower()
-                if "force_stop" in action_lower:
-                    force_stop.set()
-                elif action == "switch_mode" or "switch" in action_lower:
-                    mode = data.get("mode") or data.get("payload", {}).get("mode")
-                    if mode:
-                        remote_mode_queue.put(("switch", str(mode).upper()))
-        except Exception:
-            pass
-
-    def on_error(wsapp, error):
-        pass
-
-    def on_close(wsapp, close_status_code, close_msg):
-        pass
-
-    while True:
-        try:
-            wsapp = websocket.WebSocketApp(
-                ws_url,
-                on_message=on_message,
-                on_error=on_error,
-                on_close=on_close
-            )
-            wsapp.run_forever(ping_interval=20, ping_timeout=10)
-        except Exception:
-            time.sleep(2)
 
 # ═══════════════════════════════════════════════════════
 #  EXERCISE HELPER FUNCTIONS
@@ -356,118 +173,42 @@ def check_plank(shoulder, hip, ankle, min_angle=165.0):
     return angle >= min_angle
 
 
-def draw_positioning_overlay(image, position, elapsed_pct):
-    """Draw a premium glass overlay indicating the robot is positioning itself."""
-    h, w = image.shape[:2]
-    
-    # 1. Dark semi-transparent overlay over the entire frame
-    overlay = image.copy()
-    cv2.rectangle(overlay, (0, 0), (w, h), (10, 10, 15), -1)
-    cv2.addWeighted(overlay, 0.55, image, 0.45, 0, image)
-    
-    # 2. Central glass panel
-    panel_w = int(w * 0.75)
-    panel_h = int(h * 0.45)
-    px = (w - panel_w) // 2
-    py = (h - panel_h) // 2
-    draw_glass_panel(image, px, py, panel_w, panel_h, alpha=0.85, color=(15, 15, 20), radius=16)
-    
-    # Border
-    cv2.rectangle(image, (px, py), (px + panel_w, py + panel_h), (80, 100, 120), 1, cv2.LINE_AA)
-    cv2.rectangle(image, (px - 2, py - 2), (px + panel_w + 2, py + panel_h + 2), (40, 50, 60), 1, cv2.LINE_AA)
-
-    # 3. Rotating spinner/progress indicator
-    cx = w // 2
-    cy = py + int(panel_h * 0.28)
-    r = 20
-    cv2.circle(image, (cx, cy), r, (40, 40, 40), 2, cv2.LINE_AA)
-    sweep = int(elapsed_pct * 360)
-    cv2.ellipse(image, (cx, cy), (r, r), -90, 0, sweep, ACCENT_GREEN, 2, cv2.LINE_AA)
-
-    # 4. Text: "ROBOT POSITIONING"
-    msg1 = "ROBOT POSITIONING"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.6
-    thickness = 2
-    (tw1, th1), _ = cv2.getTextSize(msg1, font, font_scale, thickness)
-    cv2.putText(image, msg1, (w // 2 - tw1 // 2, cy + 32), font, font_scale, TEXT_WHITE, thickness, cv2.LINE_AA)
-    
-    # 5. Text: "Aligning to FRONT view..." or "Aligning to SIDE view..."
-    msg2 = f"Aligning to {position} view..."
-    font_scale2 = 0.4
-    thickness2 = 1
-    (tw2, th2), _ = cv2.getTextSize(msg2, font, font_scale2, thickness2)
-    cv2.putText(image, msg2, (w // 2 - tw2 // 2, cy + 52), font, font_scale2, TEXT_DIM, thickness2, cv2.LINE_AA)
-
-    # 6. Progress bar
-    progress_w = int(panel_w * 0.7)
-    progress_h = 6
-    bx = w // 2 - progress_w // 2
-    by = py + int(panel_h * 0.8)
-    
-    cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (40, 40, 40), -1)
-    cv2.rectangle(image, (bx, by), (bx + int(progress_w * elapsed_pct), by + progress_h), ACCENT_GREEN, -1)
-    cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (60, 60, 60), 1)
-
-
 # ═══════════════════════════════════════════════════════
-#  ESP32 SERIAL SENDER (UART5)
+#  ESP32 SERIAL SENDER
 # ═══════════════════════════════════════════════════════
 try:
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    print(f"✅ UART5 Serial Active → {SERIAL_PORT} @ {BAUD_RATE}")
+    time.sleep(2)
+    print(f"✅ Serial → {SERIAL_PORT} @ {BAUD_RATE} baud")
 except Exception as e:
+    print(f"❌ Failed to open serial port: {e}")
     ser = None
-    print(f"⚠️ Serial initialization failed: {e}")
 
 current_command  = "STOP"
 last_command_time = 0
 
-
 def send_command(command):
-    """Send command to ESP32 over serial only when changed."""
+    """Send command to ESP32 only when changed."""
     global current_command, last_command_time
     now = time.time()
 
-    # Map high-level directions to ESP32 movement commands
-    cmd_mapping = {
-        "FORWARD": "FWD",
-        "BACKWARD": "BACK",
-        "LEFT": "LEFT",
-        "RIGHT": "RIGHT",
-        "FWD_LEFT": "VEER_LEFT",
-        "FWD_RIGHT": "VEER_RIGHT",
-        "BWD_LEFT": "VEER_LEFT",
-        "BWD_RIGHT": "VEER_RIGHT",
-        "STOP": "STOP",
-        "VEER_LEFT": "VEER_LEFT",
-        "VEER_RIGHT": "VEER_RIGHT",
-    }
-    
-    mapped_command = cmd_mapping.get(command, command)
-    
-    # Prepend MOTOR: prefix for valid movement commands
-    if mapped_command in ["FWD", "BACK", "LEFT", "RIGHT", "VEER_LEFT", "VEER_RIGHT", "STOP"]:
-        send_str = f"MOTOR:{mapped_command}"
-    else:
-        send_str = mapped_command
-
     if (command != current_command or
             now - last_command_time > 1.0):
-        if ser is not None:
+        if ser and ser.is_open:
             try:
-                ser.write((send_str + "\n").encode('utf-8'))
+                message = f"MOTOR:{command}\n"
+                ser.write(message.encode('utf-8'))
                 ser.flush()
                 if DEBUG and command != current_command:
-                    print(f"  📡 → ESP32 Serial: {send_str}")
-            except Exception:
-                pass
+                    print(f"  📡 → ESP32 (Serial): {message.strip()}")
+            except Exception as e:
+                print(f"  [TX ERROR] {e}")
+        else:
+            if DEBUG and command != current_command:
+                print(f"  ⚠️ Serial not open, would send: {command}")
 
         current_command   = command
         last_command_time = now
-
-        # Publish robot command for live dashboard (real)
-        publish_event("robot_command", {"command": command})
 
 
 # ═══════════════════════════════════════════════════════
@@ -493,17 +234,17 @@ def calculate_command(person_x, shoulder_width):
     else:
         d_zone = "GOOD"
 
-    # 8-direction matrix
+    # 8-direction matrix matching esp_commands.ino
     matrix = {
-        ("FAR",   "LEFT"):   "FWD_LEFT",
-        ("FAR",   "CENTER"): "FORWARD",
-        ("FAR",   "RIGHT"):  "FWD_RIGHT",
+        ("FAR",   "LEFT"):   "VEER_LEFT",
+        ("FAR",   "CENTER"): "FWD",
+        ("FAR",   "RIGHT"):  "VEER_RIGHT",
         ("GOOD",  "LEFT"):   "LEFT",
         ("GOOD",  "CENTER"): "STOP",
         ("GOOD",  "RIGHT"):  "RIGHT",
-        ("CLOSE", "LEFT"):   "BWD_LEFT",
-        ("CLOSE", "CENTER"): "BACKWARD",
-        ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+        ("CLOSE", "LEFT"):   "VEER_LEFT",
+        ("CLOSE", "CENTER"): "BACK",
+        ("CLOSE", "RIGHT"):  "VEER_RIGHT",
     }
 
     command = matrix.get((d_zone, h_zone), "STOP")
@@ -522,10 +263,8 @@ CMD_COLORS = {
     'BACKWARD':  (100, 100, 220),
     'LEFT':      (210, 190, 80),
     'RIGHT':     (200, 120, 200),
-    'FWD_LEFT':  (180, 210, 100),
-    'FWD_RIGHT': (160, 200, 120),
-    'BWD_LEFT':  (180, 100, 200),
-    'BWD_RIGHT': (140, 100, 210),
+    'VEER_LEFT':  (180, 210, 100),
+    'VEER_RIGHT': (160, 200, 120),
     'STOP':      (140, 140, 140),
     'SEARCH':    (100, 170, 230),
 }
@@ -537,15 +276,6 @@ ACCENT_CYAN   = (200, 185, 100)
 TEXT_WHITE     = (235, 235, 240)
 TEXT_DIM       = (155, 155, 165)
 PANEL_BG      = (25, 25, 30)
-
-def bgr_to_hex(color):
-    """Convert a BGR tuple or hex string color to a Tkinter-compatible hex string."""
-    if isinstance(color, str):
-        return color
-    if isinstance(color, (tuple, list)) and len(color) >= 3:
-        b, g, r = int(color[0]), int(color[1]), int(color[2])
-        return f"#{r:02x}{g:02x}{b:02x}"
-    return "#EBEBEF"
 
 SKELETON_LANDMARK = (190, 210, 235)
 SKELETON_LINE     = (170, 170, 90)
@@ -573,15 +303,6 @@ def draw_glass_panel(frame, x, y, w, h, alpha=0.65, color=(20, 20, 20), radius=1
     blended = cv2.addWeighted(panel, alpha, sub, 1 - alpha, 0)
     np.copyto(sub, blended, where=(mask[..., None] == 255))
     frame[y:y2, x:x2] = sub
-
-
-def draw_home_button(frame):
-    """Draw a premium touch-friendly HOME button on the OpenCV frame."""
-    # Button is located at top right corner: x: [390, 470], y: [5, 45] for 480x320 display
-    draw_glass_panel(frame, 390, 5, 80, 40, alpha=0.75, color=(30, 30, 80), radius=8)
-    cv2.rectangle(frame, (390, 5), (470, 45), (100, 100, 200), 1, cv2.LINE_AA)
-    cv2.putText(frame, "HOME", (406, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 2, cv2.LINE_AA)
-
 
 
 def _draw_mini_arrow(frame, cx, cy, command, color, size=5):
@@ -695,6 +416,7 @@ def draw_frame(frame, command, state, person_x,
                shoulder_width, fps, d_zone, h_zone):
     """Draw all overlay elements."""
     h, w = frame.shape[:2]
+    compact = h <= 260
 
     # Zone overlays
     zone_l = int(CENTER_ZONE_LEFT * w)
@@ -714,41 +436,46 @@ def draw_frame(frame, command, state, person_x,
     # Person position dot
     if person_x is not None:
         px = int(person_x * w)
-        cv2.circle(frame, (px, h // 2), 14, (130, 220, 220), 1)
-        cv2.circle(frame, (px, h // 2), 8, (130, 220, 220), -1)
-        cv2.circle(frame, (px, h // 2), 8, (0, 0, 0), 1)
+        dot_r = 10 if compact else 14
+        cv2.circle(frame, (px, h // 2), dot_r, (130, 220, 220), 1)
+        cv2.circle(frame, (px, h // 2), 6 if compact else 8, (130, 220, 220), -1)
+        cv2.circle(frame, (px, h // 2), 6 if compact else 8, (0, 0, 0), 1)
 
     # Top bar
-    draw_glass_panel(frame, 0, 0, w, 50, alpha=0.7, radius=0)
+    top_h = 34 if compact else 50
+    draw_glass_panel(frame, 0, 0, w, top_h, alpha=0.7, radius=0)
     cmd_color = CMD_COLORS.get(command, TEXT_WHITE)
-    cv2.putText(frame, command, (12, 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, cmd_color, 2)
-    cv2.putText(frame, f"FPS:{fps:.0f}", (12, 43),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1)
+    cv2.putText(frame, command, (12, 18 if compact else 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52 if compact else 0.65, cmd_color,
+                1 if compact else 2)
+    cv2.putText(frame, f"FPS:{fps:.0f}", (12, 30 if compact else 43),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.28 if compact else 0.35, TEXT_DIM, 1)
 
     # Detection indicator with glow
     dot = ACCENT_GREEN if person_x is not None else ACCENT_RED
-    cv2.circle(frame, (w - 15, 15), 12, dot, 1)
-    cv2.circle(frame, (w - 15, 15), 7, dot, -1)
+    cv2.circle(frame, (w - 12, 12), 9 if compact else 12, dot, 1)
+    cv2.circle(frame, (w - 12, 12), 5 if compact else 7, dot, -1)
 
     # State text
     if person_x is not None:
-        cv2.putText(frame, state, (w // 2 - 40, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+        cv2.putText(frame, state, (w // 2 - 40, 16 if compact else 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.25 if compact else 0.3,
                     TEXT_DIM, 1)
 
     # Compass (top right)
-    draw_direction_indicator(frame, command, w - 30, 95, size=25)
+    compass_y = 68 if compact else 95
+    draw_direction_indicator(frame, command, w - 24, compass_y,
+                             size=18 if compact else 25)
 
     # Zone grid (bottom left)
-    draw_zone_grid(frame, d_zone, h_zone, 5, h - 75)
+    draw_zone_grid(frame, d_zone, h_zone, 5, h - (52 if compact else 75))
 
     # Distance bar (bottom)
     if shoulder_width is not None:
-        bar_start = 125
+        bar_start = 100 if compact else 125
         bar_end   = w - 5
-        bar_y     = h - 22
-        bar_h     = 14
+        bar_y     = h - (14 if compact else 22)
+        bar_h     = 10 if compact else 14
         bar_max   = TOO_CLOSE + 0.15
         bar_pct   = min(shoulder_width / bar_max, 1.0)
         bar_w     = int(bar_pct * (bar_end - bar_start))
@@ -760,8 +487,8 @@ def draw_frame(frame, command, state, person_x,
         else:
             bc = ACCENT_GREEN
 
-        draw_glass_panel(frame, bar_start - 3, bar_y - 14,
-                         bar_end - bar_start + 6, bar_h + 17,
+        draw_glass_panel(frame, bar_start - 3, bar_y - (10 if compact else 14),
+                         bar_end - bar_start + 6, bar_h + (12 if compact else 17),
                          alpha=0.6, radius=6)
 
         cv2.rectangle(frame, (bar_start, bar_y),
@@ -778,8 +505,83 @@ def draw_frame(frame, command, state, person_x,
 
         cv2.putText(frame, f"DIST: {shoulder_width:.3f}",
                     (bar_start, bar_y - 3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.25 if compact else 0.3,
                     TEXT_DIM, 1)
+
+def draw_exercise_dashboard(exercise_name, reps, sets, feedback, stage=None, status_msg=None, palm_stop_val=0, extra_info=None):
+    """Creates a clean, premium 480x320 dark dashboard canvas."""
+    canvas = np.zeros((320, 480, 3), dtype=np.uint8)
+    canvas[:] = (24, 20, 18) # Dark slate background (BGR)
+
+    # Header Bar
+    draw_glass_panel(canvas, 10, 10, 460, 45, alpha=0.9, color=(35, 30, 28), radius=8)
+    cv2.putText(canvas, exercise_name.upper(), (25, 38),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (235, 235, 240), 2, cv2.LINE_AA)
+
+    status_text = status_msg if status_msg else "ACTIVE"
+    if stage:
+        status_text += f" | {stage.upper()}"
+    cv2.putText(canvas, status_text, (280, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1, cv2.LINE_AA)
+
+    # Reps Card
+    draw_glass_panel(canvas, 10, 65, 220, 120, alpha=0.9, color=(35, 30, 28), radius=12)
+    cv2.putText(canvas, "REPS", (25, 95),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 155, 165), 1, cv2.LINE_AA)
+    cv2.putText(canvas, str(reps), (25, 165),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.2, (235, 235, 240), 5, cv2.LINE_AA)
+
+    # Sets Card
+    draw_glass_panel(canvas, 10, 195, 220, 115, alpha=0.9, color=(35, 30, 28), radius=12)
+    cv2.putText(canvas, "SETS", (25, 225),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 155, 165), 1, cv2.LINE_AA)
+    cv2.putText(canvas, f"SET {sets}", (25, 280),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.3, (235, 235, 240), 3, cv2.LINE_AA)
+
+    # Feedback Card
+    draw_glass_panel(canvas, 240, 65, 230, 175, alpha=0.9, color=(35, 30, 28), radius=12)
+    cv2.putText(canvas, "FEEDBACK", (255, 95),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 155, 165), 1, cv2.LINE_AA)
+
+    fb_color = ACCENT_GREEN
+    warnings_list = [
+        "TUCK ELBOW", "DONT SWING", "SLOW DOWN", "FORM STRAIGHT LINE", 
+        "GET IN POSITION", "ALIGN HORIZONTALLY", "DONT GO TOO DEEP",
+        "KEEP FEET AT SHOULDER DISTANCE", "EXTEND ARMS", "STAND AT SHOULDER WIDTH",
+        "LOOK IN FRONT", "WARNING", "FLAWED"
+    ]
+    fb_upper = feedback.upper()
+    if any(w in fb_upper for w in warnings_list) and "GOOD" not in fb_upper:
+        fb_color = ACCENT_RED
+
+    font_scale = 0.8
+    thickness = 2
+    if len(fb_upper) > 12:
+        font_scale = 0.55
+        thickness = 1
+
+    cv2.putText(canvas, fb_upper, (255, 145),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, fb_color, thickness, cv2.LINE_AA)
+
+    if extra_info:
+        cv2.putText(canvas, extra_info, (255, 195),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (155, 155, 165), 1, cv2.LINE_AA)
+
+    # Palm Stop Progress Card
+    draw_glass_panel(canvas, 240, 250, 230, 60, alpha=0.9, color=(35, 30, 28), radius=12)
+    if palm_stop_val > 0:
+        progress = min(palm_stop_val / PALM_STOP_REQUIRED_FRAMES, 1.0)
+        p_color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE
+        cv2.putText(canvas, "PALM STOP", (255, 270),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, p_color, 1, cv2.LINE_AA)
+        cv2.rectangle(canvas, (255, 280), (445, 288), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (255, 280), (255 + int(190 * progress), 288), p_color, -1)
+        cv2.rectangle(canvas, (255, 280), (445, 288), (60, 60, 60), 1)
+    else:
+        cv2.putText(canvas, "SHOW PALM TO STOP", (255, 285),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (110, 110, 120), 1, cv2.LINE_AA)
+
+    return canvas
 
 
 def draw_skeleton(frame, results):
@@ -858,38 +660,17 @@ def _hand_point(hand_landmarks, idx):
 
 
 def is_open_palm_stop(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
-    """Return True when MediaPipe Hands sees a clear open palm facing the camera with fingers spread."""
+    """Return True when MediaPipe Hands sees a clear open palm."""
     if not hand_results.hand_landmarks:
         return False
 
-    for idx, hand_landmarks in enumerate(hand_results.hand_landmarks):
-        points = [_hand_point(hand_landmarks, idx_pt) for idx_pt in range(21)]
+    for hand_landmarks in hand_results.hand_landmarks:
+        points = [_hand_point(hand_landmarks, idx) for idx in range(21)]
         xs = [pt[0] for pt in points]
         ys = [pt[1] for pt in points]
         hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
         if hand_size < min_hand_size:
             continue
-
-        # Get handedness label ("Left" or "Right")
-        hand_label = "Right"
-        try:
-            if hand_results.handedness and idx < len(hand_results.handedness):
-                hand_label = hand_results.handedness[idx][0].category_name
-        except (AttributeError, IndexError):
-            pass
-
-        # Calculate cross product to distinguish palm from back of hand
-        v1 = points[9] - points[0]   # Wrist to Middle Finger MCP
-        v2 = points[17] - points[5]  # Index MCP to Pinky MCP
-        cross_product_z = v1[0] * v2[1] - v1[1] * v2[0]
-
-        is_palm_facing = False
-        if hand_label == "Right":
-            if cross_product_z < -0.05 * (hand_size ** 2):
-                is_palm_facing = True
-        elif hand_label == "Left":
-            if cross_product_z > 0.05 * (hand_size ** 2):
-                is_palm_facing = True
 
         wrist = points[0]
         fingers = [
@@ -915,223 +696,74 @@ def is_open_palm_stop(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
             calculate_distance(thumb_tip, index_mcp) > calculate_distance(thumb_ip, index_mcp)
         )
 
-        # Spreading fingertip checks
-        dist_thumb_index = calculate_distance(points[4], points[8])
-        dist_index_middle = calculate_distance(points[8], points[12])
-        dist_middle_ring = calculate_distance(points[12], points[16])
-        dist_ring_pinky = calculate_distance(points[16], points[20])
-
-        fingers_spread = (
-            dist_index_middle > hand_size * 0.12 and
-            dist_middle_ring > hand_size * 0.12 and
-            dist_ring_pinky > hand_size * 0.12 and
-            dist_thumb_index > hand_size * 0.20
+        fingertip_spread = max(points[idx][0] for idx in (4, 8, 12, 16, 20)) - min(
+            points[idx][0] for idx in (4, 8, 12, 16, 20)
         )
-
-        if extended >= 4 and thumb_extended and is_palm_facing and fingers_spread:
+        if extended >= 4 and thumb_extended and fingertip_spread > hand_size * 0.35:
             return True
 
     return False
 
 
-def update_palm_stop_frames(hand_results, stop_frames, increment=1):
+def update_palm_stop_frames(hand_results, stop_frames):
     """Debounce palm stop so one accidental frame does not quit the exercise."""
     if is_open_palm_stop(hand_results):
-        return stop_frames + increment
+        return stop_frames + 1
     return 0
 
 
-def draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES, is_paused=False):
-    """Draw thumbs-up and palm-stop progress panels dynamically, hiding them when not in use."""
+def draw_palm_stop_status(image, stop_frames, required_frames=PALM_STOP_REQUIRED_FRAMES):
+    """Draw palm-stop progress while an exercise is active."""
+    if stop_frames <= 0:
+        return
     h, w = image.shape[:2]
-    compact = h <= 240
+    compact = h <= 260
     panel_w = 180 if compact else 205
     panel_h = 45 if compact else 53
     x = max(5, w - panel_w - 5)
-    
-    current_y = h - panel_h - 5
-    
-    # 1. Palm Stop Panel (only draw if palm_stop_frames > 0)
-    if palm_stop_frames > 0:
-        draw_glass_panel(image, x, current_y, panel_w, panel_h, alpha=0.65, radius=10)
-        progress = min(palm_stop_frames / required_frames, 1.0)
-        color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE
-        cv2.putText(image, "PALM STOP", (x + 8, current_y + 17),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
-                    color, 1, cv2.LINE_AA)
-        label = "STOPPING" if progress >= 1.0 else "HOLD PALM"
-        cv2.putText(image, label, (x + 8, current_y + 36),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
-                    TEXT_WHITE, 1, cv2.LINE_AA)
-        bar_x = x + (95 if compact else 108)
-        bar_y = current_y + (29 if compact else 34)
-        bar_w, bar_h = (70, 7) if compact else (82, 8)
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
-                      (40, 40, 40), -1)
-        cv2.rectangle(image, (bar_x, bar_y),
-                      (bar_x + int(bar_w * progress), bar_y + bar_h),
-                      color, -1)
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
-                      (60, 60, 60), 1)
-        
-        current_y -= (panel_h + 7)
+    y = h - panel_h - 5
+    draw_glass_panel(image, x, y, panel_w, panel_h, alpha=0.65, radius=10)
 
-    # 2. Thumbs Up Panel (only draw if thumbs_up_frames > 0)
-    if thumbs_up_frames > 0:
-        draw_glass_panel(image, x, current_y, panel_w, panel_h, alpha=0.65, radius=10)
-        progress = min(thumbs_up_frames / required_frames, 1.0)
-        color = ACCENT_GREEN if progress >= 1.0 else ACCENT_CYAN
-        cv2.putText(image, "THUMBS UP", (x + 8, current_y + 17),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
-                    color, 1, cv2.LINE_AA)
-        label = "PAUSING..." if not is_paused else "RESUMING..."
-        if progress < 1.0:
-            label = "HOLD THUMB"
-        cv2.putText(image, label, (x + 8, current_y + 36),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
-                    TEXT_WHITE, 1, cv2.LINE_AA)
-        bar_x = x + (95 if compact else 108)
-        bar_y = current_y + (29 if compact else 34)
-        bar_w, bar_h = (70, 7) if compact else (82, 8)
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
-                      (40, 40, 40), -1)
-        cv2.rectangle(image, (bar_x, bar_y),
-                      (bar_x + int(bar_w * progress), bar_y + bar_h),
-                      color, -1)
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
-                      (60, 60, 60), 1)
+    progress = min(stop_frames / required_frames, 1.0)
+    color = ACCENT_GREEN if progress >= 1.0 else ACCENT_ORANGE if stop_frames else TEXT_DIM
+    cv2.putText(image, "PALM STOP", (x + 8, y + 17),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                color, 1, cv2.LINE_AA)
+
+    label = "STOPPING" if progress >= 1.0 else "HOLD PALM" if stop_frames else "SHOW PALM"
+    cv2.putText(image, label, (x + 8, y + 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38 if compact else 0.45,
+                TEXT_WHITE, 1, cv2.LINE_AA)
+
+    bar_x = x + (95 if compact else 108)
+    bar_y = y + (29 if compact else 34)
+    bar_w, bar_h = (70, 7) if compact else (82, 8)
+    cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                  (40, 40, 40), -1)
+    cv2.rectangle(image, (bar_x, bar_y),
+                  (bar_x + int(bar_w * progress), bar_y + bar_h),
+                  color, -1)
+    cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                  (60, 60, 60), 1)
 
 
 def show_palm_stop_message(window_name, image):
     """Show a brief confirmation before leaving the exercise window."""
     h, w = image.shape[:2]
+    compact = h <= 260
     panel_w = min(220, w - 20)
-    panel_h = 48 if h <= 240 else 60
+    panel_h = 42 if compact else 60
     x = w // 2 - panel_w // 2
     y = h // 2 - panel_h // 2
     draw_glass_panel(image, x, y, panel_w, panel_h, alpha=0.78, radius=12)
     cv2.putText(image, "PALM STOP DETECTED", (x + 16, y + panel_h // 2 + 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.42 if h <= 240 else 0.55,
-                ACCENT_GREEN, 1 if h <= 240 else 2, cv2.LINE_AA)
-    scale_w = DISPLAY_WIDTH
-    scale_h = DISPLAY_HEIGHT
-    display = cv2.resize(image, (scale_w, scale_h))
-    cv2.imshow(window_name, display)
-    cv2.waitKey(500)
-
-
-def is_thumbs_up(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
-    """Return True when MediaPipe Hands sees a clear thumbs-up gesture from any hand."""
-    if not hand_results or not hand_results.hand_landmarks:
-        return False
-
-    for hand_landmarks in hand_results.hand_landmarks:
-        points = [_hand_point(hand_landmarks, idx_pt) for idx_pt in range(21)]
-        xs = [pt[0] for pt in points]
-        ys = [pt[1] for pt in points]
-        hand_size = max(max(xs) - min(xs), max(ys) - min(ys))
-        if hand_size < min_hand_size:
-            continue
-
-        wrist = points[0]
-        fingers = [
-            (5, 6, 8),    # index
-            (9, 10, 12),  # middle
-            (13, 14, 16), # ring
-            (17, 18, 20), # pinky
-        ]
-        extended = 0
-        for mcp_idx, pip_idx, tip_idx in fingers:
-            mcp = points[mcp_idx]
-            pip = points[pip_idx]
-            tip = points[tip_idx]
-            if (calculate_distance(tip, wrist) > calculate_distance(pip, wrist) * 1.08 and
-                    calculate_distance(tip, mcp) > calculate_distance(pip, mcp)):
-                extended += 1
-
-        # More responsive: at most 1 other finger can be misclassified as extended
-        if extended > 1:
-            continue
-
-        # Check if thumb is extended and pointing up
-        thumb_tip = points[4]
-        thumb_ip = points[3]
-        thumb_mcp = points[2]
-        index_mcp = points[5]
-
-        thumb_extended = (
-            calculate_distance(thumb_tip, wrist) > calculate_distance(thumb_mcp, wrist) * 1.05 and
-            calculate_distance(thumb_tip, index_mcp) > calculate_distance(thumb_ip, index_mcp)
-        )
-
-        thumb_pointing_up = (
-            thumb_tip[1] < thumb_ip[1] and
-            thumb_tip[1] < index_mcp[1] and
-            thumb_tip[1] < wrist[1]
-        )
-
-        if thumb_extended and thumb_pointing_up:
-            return True
-
-    return False
-
-
-def draw_paused_overlay(image, thumbs_up_frames=0, required_frames=PALM_STOP_REQUIRED_FRAMES):
-    """Draw a premium dark glass overlay when the exercise is paused."""
-    h, w = image.shape[:2]
-    
-    # 1. Dark semi-transparent overlay over the entire frame
-    overlay = image.copy()
-    cv2.rectangle(overlay, (0, 0), (w, h), (10, 10, 15), -1)
-    cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
-    
-    # 2. Large central glass panel
-    panel_w = int(w * 0.75)
-    panel_h = int(h * 0.5)
-    px = (w - panel_w) // 2
-    py = (h - panel_h) // 2
-    draw_glass_panel(image, px, py, panel_w, panel_h, alpha=0.85, color=(15, 15, 20), radius=16)
-    
-    # Border
-    cv2.rectangle(image, (px, py), (px + panel_w, py + panel_h), (80, 100, 120), 1, cv2.LINE_AA)
-    cv2.rectangle(image, (px - 2, py - 2), (px + panel_w + 2, py + panel_h + 2), (40, 50, 60), 1, cv2.LINE_AA)
-
-    # 3. Draw Pause Icon (||)
-    icon_cx = w // 2
-    icon_cy = py + int(panel_h * 0.28)
-    bar_w, bar_h = 8, 24
-    bar_gap = 8
-    cv2.rectangle(image, (icon_cx - bar_w - bar_gap//2, icon_cy - bar_h//2), 
-                  (icon_cx - bar_gap//2, icon_cy + bar_h//2), ACCENT_ORANGE, -1)
-    cv2.rectangle(image, (icon_cx + bar_gap//2, icon_cy - bar_h//2), 
-                  (icon_cx + bar_w + bar_gap//2, icon_cy + bar_h//2), ACCENT_ORANGE, -1)
-    
-    # 4. Text: "EXERCISE PAUSED"
-    msg1 = "EXERCISE PAUSED"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.65
-    thickness = 2
-    (tw1, th1), _ = cv2.getTextSize(msg1, font, font_scale, thickness)
-    cv2.putText(image, msg1, (w // 2 - tw1 // 2, icon_cy + 30), font, font_scale, TEXT_WHITE, thickness, cv2.LINE_AA)
-    
-    # 5. Text: "Show Thumbs-Up to Resume"
-    msg2 = "Show Thumbs-Up to Resume"
-    font_scale2 = 0.4
-    thickness2 = 1
-    (tw2, th2), _ = cv2.getTextSize(msg2, font, font_scale2, thickness2)
-    cv2.putText(image, msg2, (w // 2 - tw2 // 2, icon_cy + 52), font, font_scale2, TEXT_DIM, thickness2, cv2.LINE_AA)
-
-    # 6. Progress bar for thumbs-up resume
-    if thumbs_up_frames > 0:
-        progress = min(thumbs_up_frames / required_frames, 1.0)
-        progress_w = int(panel_w * 0.6)
-        progress_h = 6
-        bx = w // 2 - progress_w // 2
-        by = py + int(panel_h * 0.8)
-        
-        cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (40, 40, 40), -1)
-        cv2.rectangle(image, (bx, by), (bx + int(progress_w * progress), by + progress_h), ACCENT_GREEN, -1)
-        cv2.rectangle(image, (bx, by), (bx + progress_w, by + progress_h), (60, 60, 60), 1)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42 if compact else 0.55,
+                ACCENT_GREEN, 1 if compact else 2, cv2.LINE_AA)
+    if SHOW_WINDOW:
+        show_frame(window_name, image)
+        cv2.waitKey(500)
+    else:
+        time.sleep(0.5)
 
 
 def detect_pose_frame(landmarker, frame_bgr, timestamp_ms):
@@ -1156,51 +788,65 @@ def get_pt(lm, idx, min_vis=0.5, use_z=False):
 # ═══════════════════════════════════════════════════════
 session_errors = set()
 last_printed_errors = {}
+consecutive_errors = {}
+last_error_time = {}
 
 def clear_session_errors():
     """Clear session error tracking."""
-    global session_errors, last_printed_errors
+    global session_errors, last_printed_errors, consecutive_errors, last_error_time
     session_errors = set()
     last_printed_errors = {}
+    consecutive_errors = {}
+    last_error_time = {}
+
+def play_audio_for_error(err_msg):
+    track = 0
+    if "GET IN POSITION" in err_msg or "Align horizontally" in err_msg: track = 1
+    elif "Don't go too deep in squats" in err_msg: track = 2
+    elif "Equalize both hands" in err_msg: track = 3
+    elif "Extend arms straight and directly in front of you" in err_msg: track = 4
+    elif "Form a straight line with body" in err_msg: track = 5
+    elif "Keep feet at shoulder distance" in err_msg: track = 6
+    elif "Look in front of you" in err_msg: track = 7
+    elif "Slow down! Curling too fast" in err_msg: track = 8
+    elif "Stand at shoulder width and keep knees in front of body" in err_msg: track = 9
+    elif "Tuck elbow closer to your body" in err_msg: track = 10
+    elif "Do not swing arm" in err_msg or "Keep hands in straight position without swinging" in err_msg: track = 11
+
+    if track > 0:
+        if ser and ser.is_open:
+            try:
+                # Send AUDIO command for esp_commands.ino
+                audio_cmd = f"AUDIO:{track}\n"
+                ser.write(audio_cmd.encode('utf-8'))
+                ser.flush()
+                print(f"  🔊 Triggered Audio: Track {track}")
+            except Exception as e:
+                print(f"  [TX ERROR] Failed to send audio: {e}")
 
 def log_session_error(err_msg, cooldown=3.0):
-    """Log an error to the session errors set and print it with a cooldown.
-    Also publishes the form feedback to the web backend (real data only).
-    """
-    global session_errors, last_printed_errors
+    """Log an error to the session errors set and print it with a cooldown."""
+    global session_errors, last_printed_errors, consecutive_errors, last_error_time
     session_errors.add(err_msg)
     now = time.time()
+    
+    # Reset consecutive count if error hasn't happened in 6 seconds
+    if err_msg in last_error_time and now - last_error_time[err_msg] > 6.0:
+        consecutive_errors[err_msg] = 0
+        
+    last_error_time[err_msg] = now
+
     if err_msg not in last_printed_errors or now - last_printed_errors[err_msg] > cooldown:
         print(f"  [SESSION WARNING] {err_msg}")
         last_printed_errors[err_msg] = now
-        # Publish to live dashboard (exact message shown on-robot / console)
-        try:
-            publish_form_error(err_msg)
-        except Exception:
-            pass
-
-
-def save_session_to_firestore(summary):
-    if 'db' not in globals() or db is None:
-        print("⚠️ Cannot save to Firestore: Database not initialized.")
-        return
         
-    try:
-        # Convert metrics list of tuples to a dictionary
-        metrics_dict = {k: v for k, v in summary['metrics']}
+        # Increment consecutive error count (each print is 1 consecutive occurence)
+        consecutive_errors[err_msg] = consecutive_errors.get(err_msg, 0) + 1
         
-        doc_data = {
-            "exercise": summary['exercise'],
-            "metrics": metrics_dict,
-            "errors": summary.get('errors', []),
-            "timestamp": datetime.now()
-        }
-        
-        # Save to 'workout_sessions' collection
-        db.collection("workout_sessions").add(doc_data)
-        print(f"✅ Session saved to Firestore: {summary['exercise']}")
-    except Exception as e:
-        print(f"⚠️ Failed to save session to Firestore: {e}")
+        # Play audio if it happened 3 times consecutively
+        if consecutive_errors[err_msg] >= 3:
+            play_audio_for_error(err_msg)
+            consecutive_errors[err_msg] = 0
 
 def print_session_error_summary():
     """Print a summary of all unique errors logged in the session."""
@@ -1214,178 +860,11 @@ def print_session_error_summary():
         print("=" * 50 + "\n")
 
 
-def adjust_robot_position(exercise_name, results):
-    """
-    Adjust the robot's physical position dynamically during exercise detection.
-    Optimized for a camera height of 2.5 feet above the ground.
-    """
-    global last_person_side, lost_person_since
-
-    # 1. If person is NOT detected (goes out of bounding box / camera frame)
-    if not results or not results.pose_landmarks or len(results.pose_landmarks) == 0:
-        now = time.time()
-        if lost_person_since is None:
-            lost_person_since = now
-        
-        elapsed_lost = now - lost_person_since
-        if elapsed_lost > 2.0:
-            search_elapsed = elapsed_lost - 2.0
-            if search_elapsed > 8.0:
-                send_command("STOP")
-                return "LOST_TIMEOUT"
-            else:
-                dir1 = "VEER_LEFT" if last_person_side == "LEFT" else "VEER_RIGHT"
-                dir2 = "VEER_RIGHT" if dir1 == "VEER_LEFT" else "VEER_LEFT"
-                
-                if search_elapsed < 2.0:
-                    send_command(dir1)
-                elif search_elapsed < 6.0:
-                    send_command(dir2)
-                else:
-                    send_command(dir1)
-                return "SEARCHING"
-        else:
-            if last_person_side == "LEFT":
-                send_command("VEER_LEFT")
-            elif last_person_side == "RIGHT":
-                send_command("VEER_RIGHT")
-            else:
-                send_command("STOP")
-            return "TRACKING"
-
-    # Reset lost person timer
-    lost_person_since = None
-
-    # Reset lost person timer
-    lost_person_since = None
-    lm = results.pose_landmarks[0]
-
-    # Thresholds tailored for a camera height of 2.5 feet above the ground:
-    if exercise_name in ("BICEP_CURLS", "SQUATS"):
-        # Frontal view (standing)
-        l_shoulder = get_pt(lm, 11)
-        r_shoulder = get_pt(lm, 12)
-
-        if l_shoulder and r_shoulder:
-            shoulder_width = abs(l_shoulder[0] - r_shoulder[0])
-            shoulder_center = (l_shoulder[0] + r_shoulder[0]) / 2
-
-            # Curls need shoulders & arms/wrists in frame
-            if exercise_name == "BICEP_CURLS":
-                too_close = 0.22  # Larger means closer
-                too_far = 0.14
-            # Squats need full body from shoulders down to ankles in frame
-            else:  # SQUATS
-                too_close = 0.20
-                too_far = 0.12
-
-            # Distance zone
-            if shoulder_width > too_close:
-                d_zone = "CLOSE"
-            elif shoulder_width < too_far:
-                d_zone = "FAR"
-            else:
-                d_zone = "GOOD"
-
-            # Horizontal zone
-            if shoulder_center < CENTER_ZONE_LEFT:
-                h_zone = "LEFT"
-                last_person_side = "LEFT"
-            elif shoulder_center > CENTER_ZONE_RIGHT:
-                h_zone = "RIGHT"
-                last_person_side = "RIGHT"
-            else:
-                h_zone = "CENTER"
-                last_person_side = None
-
-            # 8-direction mapping
-            matrix = {
-                ("FAR",   "LEFT"):   "FWD_LEFT",
-                ("FAR",   "CENTER"): "FORWARD",
-                ("FAR",   "RIGHT"):  "FWD_RIGHT",
-                ("GOOD",  "LEFT"):   "LEFT",
-                ("GOOD",  "CENTER"): "STOP",
-                ("GOOD",  "RIGHT"):  "RIGHT",
-                ("CLOSE", "LEFT"):   "BWD_LEFT",
-                ("CLOSE", "CENTER"): "BACKWARD",
-                ("CLOSE", "RIGHT"):  "BWD_RIGHT",
-            }
-            command = matrix.get((d_zone, h_zone), "STOP")
-            send_command(command)
-        else:
-            send_command("STOP")
-
-    elif exercise_name in ("PUSH_UPS", "PLANK"):
-        # Side view (lying)
-        # We need to detect best side profile shoulder and ankle
-        left_shoulder = get_pt(lm, 11)
-        left_ankle = get_pt(lm, 27)
-        right_shoulder = get_pt(lm, 12)
-        right_ankle = get_pt(lm, 28)
-
-        shoulder, ankle = None, None
-        left_ok = left_shoulder and left_ankle
-        right_ok = right_shoulder and right_ankle
-
-        if left_ok and right_ok:
-            left_vis = lm[11].visibility + lm[27].visibility
-            right_vis = lm[12].visibility + lm[28].visibility
-            if left_vis > right_vis:
-                shoulder, ankle = left_shoulder, left_ankle
-            else:
-                shoulder, ankle = right_shoulder, right_ankle
-        elif left_ok:
-            shoulder, ankle = left_shoulder, left_ankle
-        elif right_ok:
-            shoulder, ankle = right_shoulder, right_ankle
-
-        if shoulder and ankle:
-            # Horizontal span of the body in normalized x coordinates
-            body_length = abs(shoulder[0] - ankle[0])
-            body_center = (shoulder[0] + ankle[0]) / 2
-
-            too_close = 0.60
-            too_far = 0.40
-
-            if body_length > too_close:
-                d_zone = "CLOSE"
-            elif body_length < too_far:
-                d_zone = "FAR"
-            else:
-                d_zone = "GOOD"
-
-            if body_center < CENTER_ZONE_LEFT:
-                h_zone = "LEFT"
-                last_person_side = "LEFT"
-            elif body_center > CENTER_ZONE_RIGHT:
-                h_zone = "RIGHT"
-                last_person_side = "RIGHT"
-            else:
-                h_zone = "CENTER"
-                last_person_side = None
-
-            matrix = {
-                ("FAR",   "LEFT"):   "FWD_LEFT",
-                ("FAR",   "CENTER"): "FORWARD",
-                ("FAR",   "RIGHT"):  "FWD_RIGHT",
-                ("GOOD",  "LEFT"):   "LEFT",
-                ("GOOD",  "CENTER"): "STOP",
-                ("GOOD",  "RIGHT"):  "RIGHT",
-                ("CLOSE", "LEFT"):   "BWD_LEFT",
-                ("CLOSE", "CENTER"): "BACKWARD",
-                ("CLOSE", "RIGHT"):  "BWD_RIGHT",
-            }
-            command = matrix.get((d_zone, h_zone), "STOP")
-            send_command(command)
-        else:
-            send_command("STOP")
-
-
 # ═══════════════════════════════════════════════════════
 #  EXERCISE MODES
 # ═══════════════════════════════════════════════════════
 
-def run_bicep_curls(ui=None):
+def run_bicep_curls():
     """Bicep curl counter with form detection for both arms."""
     clear_session_errors()
 
@@ -1396,10 +875,13 @@ def run_bicep_curls(ui=None):
         angle = calculate_angle(shoulder, elbow, wrist)
 
         swing_error = False
-        if abs(wrist[0] - elbow[0]) > 0.08:
-            swing_error = True
+        if angle < 135:
+            if abs(wrist[0] - elbow[0]) > 0.08:
+                swing_error = True
 
-        flare_error = abs(shoulder[0] - elbow[0]) > 1.5
+        # Only evaluate flare/tuck error when forearm is coming up (arm is bent)
+        forearm_up = angle < 135
+        flare_error = (abs(shoulder[0] - elbow[0]) > 0.070) and forearm_up
         color = ACCENT_GREEN
         feedback = "GOOD"
 
@@ -1457,16 +939,8 @@ def run_bicep_curls(ui=None):
     right_reps_at_set_start = 0
     last_uneven_warning_time = 0.0
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    if ui is None:
-        cv2.namedWindow('Bicep Curls', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Bicep Curls', DISPLAY_WIDTH, DISPLAY_HEIGHT)
-    global home_clicked
-    home_clicked = False
-    if ui is None:
-        cv2.setMouseCallback('Bicep Curls', on_mouse_click)
+    cap = open_camera()
+    setup_window('Bicep Curls')
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
@@ -1477,18 +951,6 @@ def run_bicep_curls(ui=None):
     palm_stop_frames = 0
     frame_counter = 0
     last_results = None
-    last_hand_results = None
-
-    paused = False
-    thumbs_up_frames = 0
-    thumbs_up_cooldown_active = False
-    pause_start_time = 0.0
-
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("FRONT")
 
     try:
         while cap.isOpened():
@@ -1496,123 +958,21 @@ def run_bicep_curls(ui=None):
             if not ret:
                 break
 
-            # Remote Force Stop from web dashboard
-            if force_stop.is_set():
-                print("  [REMOTE] Force Stop received from web UI")
-                send_command("STOP")
-                break
-
             frame_counter += 1
             frame = cv2.flip(frame, 1)
-            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-            img_h, img_w, _ = image.shape
+            img_h, img_w, _ = frame.shape
+            image = frame
 
-            # Run Pose detection every FRAME_SKIP frames
-            if frame_counter % FRAME_SKIP == 0 or last_results is None:
-                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
                 last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
                 results = last_results
-
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to FRONT view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "FRONT", pct)
-                        send_command("FRONT")
-                        draw_home_button(image)
-                        cv2.imshow('Bicep Curls', image)
-                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("FRONT")
-                    continue
-                else:
-                    send_command("STOP")
-                    positioning_completed = True
-                    # Start real session for live dashboard (no dummy data)
-                    if _session_id is None:
-                        try:
-                            publish_session_start("bicep_curls")
-                        except Exception:
-                            pass
-
-            # Run Hand detection every HAND_FRAME_SKIP frames
-            if hand_landmarker is not None:
-                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
-                    hand_results, hand_timestamp_ms = detect_hand_frame(
-                        hand_landmarker, frame, hand_timestamp_ms
-                    )
-                    last_hand_results = hand_results
-
-                    # Thumbs-up pause/resume check
-                    if is_thumbs_up(hand_results):
-                        if not thumbs_up_cooldown_active:
-                            thumbs_up_frames += HAND_FRAME_SKIP
-                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
-                                paused = not paused
-                                thumbs_up_frames = 0
-                                thumbs_up_cooldown_active = True
-                                if paused:
-                                    pause_start_time = time.time()
-                                    try:
-                                        publish_pause()
-                                    except Exception:
-                                        pass
-                                else:
-                                    pause_duration = time.time() - pause_start_time
-                                    try:
-                                        _pause_accumulator += pause_duration
-                                    except Exception:
-                                        pass
-                                    try:
-                                        publish_resume()
-                                    except Exception:
-                                        pass
-                                    # Adjust timestamps
-                                    if last_rep_time is not None:
-                                        last_rep_time += pause_duration
-                                    if last_uneven_warning_time is not None:
-                                        last_uneven_warning_time += pause_duration
-                                    warning_active_until += pause_duration
-                                    swing_warning_active_until += pause_duration
-                    else:
-                        thumbs_up_frames = 0
-                        thumbs_up_cooldown_active = False
-
-                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
-                else:
-                    hand_results = last_hand_results
-            else:
-                palm_stop_frames = 0
-                thumbs_up_frames = 0
-
-            # If paused, render overlay and bypass main logic
-            if paused:
-                send_command("STOP")
-                if ui is not None:
-                    ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
-                    ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
-                    if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                            show_palm_stop_message('Bicep Curls', image)
-                            break
-                    draw_home_button(image)
-                    cv2.imshow('Bicep Curls', image)
-                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                        break
-                continue
 
             # Calculate set stats
             now = time.time()
@@ -1633,13 +993,12 @@ def run_bicep_curls(ui=None):
                     log_session_error(f"Equalize both hands (Left: {current_set_left_reps} | Right: {current_set_right_reps})")
                     last_uneven_warning_time = now
 
-            robot_status = "TRACKING"
-            if positioning_completed and not paused:
-                robot_status = adjust_robot_position("BICEP_CURLS", results)
-                if robot_status == "LOST_TIMEOUT":
-                    break
+            panel_w = min(280, img_w - 10)
+            l_clr = r_clr = TEXT_DIM
+            l_fb = r_fb = ""
+            l_stg = r_stg = "DOWN"
 
-            if results.pose_landmarks and len(results.pose_landmarks) > 0:
+            if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                 lm = results.pose_landmarks[0]
 
                 # Swapped to account for camera mirroring: MediaPipe Right (12, 14, 16) -> Left arm on display, MediaPipe Left (11, 13, 15) -> Right arm on display
@@ -1653,7 +1012,7 @@ def run_bicep_curls(ui=None):
                 r_fb, r_clr, r_stg, r_swing = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
 
                 if l_swing or r_swing:
-                    swing_warning_active_until = now + 0.5
+                    swing_warning_active_until = now + 1.5
                     if now - last_swing_warning_time > 3.0:
                         log_session_error("Keep hands in straight position without swinging")
                         last_swing_warning_time = now
@@ -1661,25 +1020,11 @@ def run_bicep_curls(ui=None):
                 if (arms['left']['counter'] > prev_l_cnt) or (arms['right']['counter'] > prev_r_cnt):
                     curl_timestamps.append(now)
                     if set_finished:
-                        try:
-                            publish_set_complete("bicep_curls", current_set, current_set_reps)
-                        except Exception:
-                            pass
                         current_set += 1
                         left_reps_at_set_start = prev_l_cnt
                         right_reps_at_set_start = prev_r_cnt
                         set_finished = False
                     last_rep_time = now
-                    # Publish live rep update (real data from MediaPipe)
-                    try:
-                        publish_rep(
-                            "bicep_curls",
-                            set_num=current_set,
-                            left=arms['left']['counter'],
-                            right=arms['right']['counter']
-                        )
-                    except Exception:
-                        pass
 
                 curl_timestamps = [t for t in curl_timestamps if now - t <= 2.0]
                 if len(curl_timestamps) >= 4:
@@ -1688,201 +1033,66 @@ def run_bicep_curls(ui=None):
                         log_session_error("Slow down! Curling too fast")
                         last_console_warning_time = now
 
-                draw_skeleton(image, results)
-
-                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
-                cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-                cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
-                cv2.putText(image, l_fb, (120, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
-                cv2.putText(image, r_fb, (120, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
-                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
-            else:
-                if positioning_completed and not paused:
-                    adjust_robot_position("BICEP_CURLS", None)
-                else:
-                    send_command("STOP")
-
-            # Show slow down warning banner on screen
+            # Determine combined feedback
+            feedback_val = "GOOD"
             if time.time() < warning_active_until:
-                flash = int(time.time() * 5) % 2 == 0
-                bg_color = (20, 20, 100) if flash else (10, 10, 40)
-                border_color = (0, 0, 255) if flash else (50, 50, 200)
+                feedback_val = "SLOW DOWN!"
+            elif time.time() < swing_warning_active_until:
+                feedback_val = "DON'T SWING!"
+            elif is_uneven:
+                feedback_val = "EQUALIZE HANDS!"
+            elif l_fb != "GOOD" or r_fb != "GOOD":
+                parts = []
+                if l_fb != "GOOD" and l_fb != "":
+                    parts.append(f"L: {l_fb}")
+                if r_fb != "GOOD" and r_fb != "":
+                    parts.append(f"R: {r_fb}")
+                feedback_val = " | ".join(parts) if parts else "GOOD"
+            elif l_fb == "" and r_fb == "":
+                feedback_val = "GET IN POSITION"
 
-                p_w = int(img_w * 0.7)
-                p_h = 65
-                p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.4)
-
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
-
-                warn_msg = "WARNING: SLOW DOWN!"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.7
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
-
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
-
-            # Show swing warning banner on screen
-            if time.time() < swing_warning_active_until:
-                bg_color = (15, 45, 95)
-                border_color = (80, 175, 225)
-
-                p_w = int(img_w * 0.8)
-                p_h = 55
-                p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.75)
-
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
-
-                warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.55
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
-
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255), thickness, cv2.LINE_AA)
-
-            # Draw set stats panel (Set X, Reps Y)
-            draw_glass_panel(image, 5, 130, 280, 110, alpha=0.65, radius=10)
-            cv2.putText(image, "CURRENT SET STATS", (15, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-            cv2.putText(image, f"SET: {current_set}", (15, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
-            cv2.putText(image, f"REPS: {current_set_reps}", (140, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
-
-            # Show individual arm counts in the current set
-            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
-
+            extra_info_val = f"Total L: {arms['left']['counter']} | R: {arms['right']['counter']}"
             if set_finished:
-                cv2.putText(image, "SET FINISHED (REST)", (15, 230),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
+                status_msg_val = "RESTING"
             else:
-                status_parts = []
-                status_color = TEXT_DIM
-                if is_uneven:
-                    status_parts.append("EQUALIZE BOTH HANDS!")
-                    status_color = ACCENT_ORANGE
+                status_msg_val = "ACTIVE"
                 if current_set_reps >= 8 and last_rep_time is not None:
                     time_left = max(0.0, 10.0 - (time.time() - last_rep_time))
-                    status_parts.append(f"Rest in: {time_left:.1f}s")
-                    status_color = ACCENT_ORANGE
+                    status_msg_val = f"REST IN {time_left:.1f}S"
 
-                if status_parts:
-                    status_text = " | ".join(status_parts)
-                    cv2.putText(image, status_text, (15, 230),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1, cv2.LINE_AA)
+            # Render the dashboard instead of raw frame
+            image = draw_exercise_dashboard(
+                exercise_name="BICEP CURLS",
+                reps=current_set_reps,
+                sets=current_set,
+                feedback=feedback_val,
+                stage=f"L:{l_stg} R:{r_stg}",
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=extra_info_val
+            )
 
-            # Update stats & feedback on the Tkinter UI
-            if ui is not None:
-                ui.update_stat_card("Set", current_set)
-                ui.update_stat_card("Reps", current_set_reps)
-                ui.update_stat_card("L Reps", arms['left']['counter'])
-                ui.update_stat_card("R Reps", arms['right']['counter'])
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Bicep Curls', image)
+                break
 
-                feedback_msgs = []
-                feedback_color = ACCENT_GREEN
-
-                if time.time() < warning_active_until:
-                    feedback_msgs.append("⚠️ WARNING: SLOW DOWN! Curling too fast.")
-                    feedback_color = ACCENT_RED
-                if time.time() < swing_warning_active_until:
-                    feedback_msgs.append("⚠️ WARNING: DON'T SWING! Keep hands straight.")
-                    feedback_color = ACCENT_ORANGE
-                if is_uneven and not set_finished:
-                    feedback_msgs.append(f"⚠️ Equalize both hands (Left: {current_set_left_reps} | Right: {current_set_right_reps})")
-                    feedback_color = ACCENT_ORANGE
-
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if l_fb != "GOOD" and l_fb != "---":
-                        feedback_msgs.append(f"⚠️ Left Arm: {l_fb}")
-                        feedback_color = ACCENT_ORANGE
-                    if r_fb != "GOOD" and r_fb != "---":
-                        feedback_msgs.append(f"⚠️ Right Arm: {r_fb}")
-                        feedback_color = ACCENT_ORANGE
-                else:
-                    feedback_msgs.append("⚠️ Positioning... Stand in front of camera.")
-                    feedback_color = ACCENT_ORANGE
-
-                if not feedback_msgs:
-                    if set_finished:
-                        feedback_msgs.append("✅ Set finished! Please rest.")
-                        feedback_color = ACCENT_GREEN
-                    else:
-                        feedback_msgs.append("✅ Form is Good. Keep it up!")
-                        feedback_color = ACCENT_GREEN
-
-                if robot_status == "SEARCHING":
-                    ui.update_feedback("Searching...", ACCENT_ORANGE)
-                else:
-                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
-                ui.update()
-
-            if robot_status == "SEARCHING":
-                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
-
-            if ui is None:
-                if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        show_palm_stop_message('Bicep Curls', image)
-                        break
-                draw_home_button(image)
-                cv2.imshow('Bicep Curls', image)
-                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                    break
-            else:
-                if hand_landmarker is not None:
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        break
-                if home_clicked:
-                    break
+            show_frame('Bicep Curls', image)
+            if cv2.waitKey(10) & 0xFF == ord('q'):
+                break
     finally:
-        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
-        
-        # Populate session summary
-        global last_session_summary
-        last_session_summary = {
-            'exercise': 'Bicep Curls',
-            'metrics': [
-                ('Left Reps', arms['left']['counter']),
-                ('Right Reps', arms['right']['counter']),
-                ('Total Sets', current_set)
-            ],
-            'errors': list(session_errors)
-        }
         print_session_error_summary()
-        save_session_to_firestore(last_session_summary)
 
     cap.release()
-    if ui is None:
+    if SHOW_WINDOW:
         cv2.destroyAllWindows()
     print(f"\n✅ Bicep Curls Done! Left: {arms['left']['counter']} | Right: {arms['right']['counter']}")
 
 
-def run_pushups(ui=None):
+def run_pushups():
     """Push-up counter using elbow angles and body straightness check."""
     clear_session_errors()
 
@@ -1898,11 +1108,6 @@ def run_pushups(ui=None):
                 stage = 'up'
                 counter += 1
                 print(f"  Push-ups Count: {counter}")
-                # Publish live rep (real data)
-                try:
-                    publish_rep("pushups", set_num=current_set, count=counter)
-                except Exception:
-                    pass
 
         return stage, counter, is_body_straight, elbow_angle
 
@@ -1912,16 +1117,8 @@ def run_pushups(ui=None):
     reps_in_set = 0
     set_ended = False
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    if ui is None:
-        cv2.namedWindow('Push-ups', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Push-ups', DISPLAY_WIDTH, DISPLAY_HEIGHT)
-    global home_clicked
-    home_clicked = False
-    if ui is None:
-        cv2.setMouseCallback('Push-ups', on_mouse_click)
+    cap = open_camera()
+    setup_window('Push-ups')
     print("💪 Push-up Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -1931,18 +1128,6 @@ def run_pushups(ui=None):
     palm_stop_frames = 0
     frame_counter = 0
     last_results = None
-    last_hand_results = None
-
-    paused = False
-    thumbs_up_frames = 0
-    thumbs_up_cooldown_active = False
-    pause_start_time = 0.0
-
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("SIDE")
 
     try:
         while cap.isOpened():
@@ -1950,124 +1135,27 @@ def run_pushups(ui=None):
             if not ret:
                 break
 
-            # Remote Force Stop from web dashboard
-            if force_stop.is_set():
-                print("  [REMOTE] Force Stop received from web UI")
-                send_command("STOP")
-                break
-
             frame_counter += 1
             frame = cv2.flip(frame, 1)
-            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-            # Run Pose detection every FRAME_SKIP frames
-            if frame_counter % FRAME_SKIP == 0 or last_results is None:
-                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+            image = frame
+
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
                 last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
                 results = last_results
-
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to SIDE view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "SIDE", pct)
-                        send_command("SIDE")
-                        draw_home_button(image)
-                        cv2.imshow('Push-ups', image)
-                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("SIDE")
-                    continue
-                else:
-                    send_command("STOP")
-                    positioning_completed = True
-                    # Start real session for live dashboard (no dummy data)
-                    if _session_id is None:
-                        try:
-                            publish_session_start("pushups")
-                        except Exception:
-                            pass
-
-            # Run Hand detection every HAND_FRAME_SKIP frames
-            if hand_landmarker is not None:
-                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
-                    hand_results, hand_timestamp_ms = detect_hand_frame(
-                        hand_landmarker, frame, hand_timestamp_ms
-                    )
-                    last_hand_results = hand_results
-
-                    # Thumbs-up check
-                    if is_thumbs_up(hand_results):
-                        if not thumbs_up_cooldown_active:
-                            thumbs_up_frames += HAND_FRAME_SKIP
-                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
-                                paused = not paused
-                                thumbs_up_frames = 0
-                                thumbs_up_cooldown_active = True
-                                if paused:
-                                    pause_start_time = time.time()
-                                    try:
-                                        publish_pause()
-                                    except Exception:
-                                        pass
-                                else:
-                                    if pause_start_time:
-                                        try:
-                                            _pause_accumulator += (time.time() - pause_start_time)
-                                        except Exception:
-                                            pass
-                                    try:
-                                        publish_resume()
-                                    except Exception:
-                                        pass
-                                print(f"⏸️ Push-ups: {'PAUSED' if paused else 'RESUMED'}")
-                    else:
-                        thumbs_up_frames = 0
-                        thumbs_up_cooldown_active = False
-
-                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
-                else:
-                    hand_results = last_hand_results
-            else:
-                palm_stop_frames = 0
-                thumbs_up_frames = 0
-
-            # If paused, render overlay and bypass main logic
-            if paused:
-                send_command("STOP")
-                if ui is not None:
-                    ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
-                    ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
-                    if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                            show_palm_stop_message('Push-ups', image)
-                            break
-                    draw_home_button(image)
-                    cv2.imshow('Push-ups', image)
-                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                        break
-                continue
 
             is_horizontal = False
             is_body_straight = True
             elbow_angle = 180.0
 
             try:
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if positioning_completed and not paused:
-                        adjust_robot_position("PUSH_UPS", results)
+                if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -2122,130 +1210,58 @@ def run_pushups(ui=None):
                             if not is_body_straight:
                                 log_session_error("Form a straight line with body")
                         else:
+                            log_session_error("Align horizontally GET IN POSITION")
                             if reps_in_set > 0 and not set_ended:
                                 set_ended = True
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
-                                try:
-                                    publish_set_complete("pushups", current_set, reps_in_set)
-                                except Exception:
-                                    pass
-                else:
-                    if positioning_completed and not paused:
-                        adjust_robot_position("PUSH_UPS", None)
-                    else:
-                        send_command("STOP")
             except Exception:
                 pass
 
-            draw_skeleton(image, results)
+            # Determine combined feedback
+            feedback_val = "GOOD"
+            if not is_horizontal:
+                feedback_val = "ALIGN HORIZONTALLY"
+            elif not is_body_straight:
+                feedback_val = "FORM STRAIGHT LINE"
 
-            draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
-            cv2.rectangle(image, (5, 5), (9, 120), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
-            cv2.putText(image, "PUSH-UPS", (18, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
+            status_msg_val = "ACTIVE"
+            if not is_horizontal:
+                status_msg_val = "GET IN POSITION"
 
-            if is_horizontal:
-                stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, pushup_stage.upper(), (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, stage_clr, 2, cv2.LINE_AA)
-                cv2.putText(image, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 108),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
-            else:
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, "GET IN POSITION", (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACCENT_ORANGE, 2, cv2.LINE_AA)
-                cv2.putText(image, "Align horizontally", (18, 108),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+            extra_info_val = f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg"
 
-            if is_horizontal and not is_body_straight:
-                warn_msg = "Form a straight line with body!"
-                img_h, img_w = image.shape[:2]
-                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
-                cv2.putText(image, warn_msg, (15, img_h - 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
+            # Render the dashboard instead of raw frame
+            image = draw_exercise_dashboard(
+                exercise_name="PUSH-UPS",
+                reps=reps_in_set,
+                sets=current_set,
+                feedback=feedback_val,
+                stage=pushup_stage,
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=extra_info_val
+            )
 
-            # Update stats & feedback on the Tkinter UI
-            if ui is not None:
-                ui.update_stat_card("Set", current_set)
-                ui.update_stat_card("Reps", reps_in_set)
-                ui.update_stat_card("Total Reps", pushup_counter)
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Push-ups', image)
+                break
 
-                feedback_msgs = []
-                feedback_color = ACCENT_GREEN
-
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if is_horizontal:
-                        if not is_body_straight:
-                            feedback_msgs.append("⚠️ Form a straight line with body!")
-                            feedback_color = ACCENT_RED
-                    else:
-                        feedback_msgs.append("⚠️ Align horizontally! Lie down in profile view.")
-                        feedback_color = ACCENT_ORANGE
-                else:
-                    feedback_msgs.append("⚠️ Positioning... Lie down in front of camera.")
-                    feedback_color = ACCENT_ORANGE
-
-                if not feedback_msgs:
-                    feedback_msgs.append("✅ Form is Good. Keep it up!")
-
-                if robot_status == "SEARCHING":
-                    ui.update_feedback("Searching...", ACCENT_ORANGE)
-                else:
-                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
-                ui.update()
-
-            if robot_status == "SEARCHING":
-                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
-
-            if ui is None:
-                if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        show_palm_stop_message('Push-ups', image)
-                        break
-                draw_home_button(image)
-                cv2.imshow('Push-ups', image)
-                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                    break
-            else:
-                if hand_landmarker is not None:
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        break
-                if home_clicked:
-                    break
+            show_frame('Push-ups', image)
+            if cv2.waitKey(10) & 0xFF == ord('q'):
+                break
     finally:
-        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
-        
-        # Populate session summary
-        global last_session_summary
-        last_session_summary = {
-            'exercise': 'Push-ups',
-            'metrics': [
-                ('Total Reps', pushup_counter),
-                ('Total Sets', current_set)
-            ],
-            'errors': list(session_errors)
-        }
 
     cap.release()
-    if ui is None:
+    if SHOW_WINDOW:
         cv2.destroyAllWindows()
     print(f"\n✅ Push-ups Done! Total: {pushup_counter}")
 
 
-def run_squats(ui=None):
+def run_squats():
     """Squat counter using 3D hip angle."""
     clear_session_errors()
     counter = 0
@@ -2275,17 +1291,8 @@ def run_squats(ui=None):
     lowered_wrists = False
     lowered_knees = False
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    if ui is None:
-        cv2.namedWindow('Squats', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Squats', DISPLAY_WIDTH, DISPLAY_HEIGHT)
-    global home_clicked
-    home_clicked = False
-    if ui is None:
-        cv2.setMouseCallback('Squats', on_mouse_click)
-
+    cap = open_camera()
+    setup_window('Squats')
     print("🦵 Squat Counter Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -2295,18 +1302,6 @@ def run_squats(ui=None):
     palm_stop_frames = 0
     frame_counter = 0
     last_results = None
-    last_hand_results = None
-
-    paused = False
-    thumbs_up_frames = 0
-    thumbs_up_cooldown_active = False
-    pause_start_time = 0.0
-
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("FRONT")
 
     try:
         while cap.isOpened():
@@ -2314,118 +1309,19 @@ def run_squats(ui=None):
             if not ret:
                 break
 
-            # Remote Force Stop from web dashboard
-            if force_stop.is_set():
-                print("  [REMOTE] Force Stop received from web UI")
-                send_command("STOP")
-                break
-
             frame_counter += 1
-            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-            # Run Pose detection every FRAME_SKIP frames
-            if frame_counter % FRAME_SKIP == 0 or last_results is None:
-                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+            image = frame
+
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
                 last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
                 results = last_results
-
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to FRONT view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "FRONT", pct)
-                        send_command("FRONT")
-                        draw_home_button(image)
-                        cv2.imshow('Squats', image)
-                        if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("FRONT")
-                    continue
-                else:
-                    send_command("STOP")
-                    positioning_completed = True
-                    # Start real session for live dashboard (no dummy data)
-                    if _session_id is None:
-                        try:
-                            publish_session_start("squats")
-                        except Exception:
-                            pass
-
-            # Run Hand detection every HAND_FRAME_SKIP frames
-            if hand_landmarker is not None:
-                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
-                    hand_results, hand_timestamp_ms = detect_hand_frame(
-                        hand_landmarker, frame, hand_timestamp_ms
-                    )
-                    last_hand_results = hand_results
-
-                    # Thumbs-up check
-                    if is_thumbs_up(hand_results):
-                        if not thumbs_up_cooldown_active:
-                            thumbs_up_frames += HAND_FRAME_SKIP
-                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
-                                paused = not paused
-                                thumbs_up_frames = 0
-                                thumbs_up_cooldown_active = True
-                                if paused:
-                                    pause_start_time = time.time()
-                                    try:
-                                        publish_pause()
-                                        # accumulate from previous resume if any
-                                        # (we will add on resume)
-                                    except Exception:
-                                        pass
-                                else:
-                                    pause_duration = time.time() - pause_start_time
-                                    try:
-                                        _pause_accumulator += pause_duration
-                                        publish_resume()
-                                    except Exception:
-                                        pass
-                                    # Adjust timestamps
-                                    if last_rep_time is not None:
-                                        last_rep_time += pause_duration
-                                    if arms_incorrect_start_time is not None:
-                                        arms_incorrect_start_time += pause_duration
-                                print(f"⏸️ Squats: {'PAUSED' if paused else 'RESUMED'}")
-                    else:
-                        thumbs_up_frames = 0
-                        thumbs_up_cooldown_active = False
-
-                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
-                else:
-                    hand_results = last_hand_results
-            else:
-                palm_stop_frames = 0
-                thumbs_up_frames = 0
-
-            # If paused, render overlay and bypass main logic
-            if paused:
-                send_command("STOP")
-                if ui is not None:
-                    ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
-                    ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
-                    if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                            show_palm_stop_message('Squats', image)
-                            break
-                    draw_home_button(image)
-                    cv2.imshow('Squats', image)
-                    if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
-                        break
-                continue
 
             current_hip_angle = 180
             posture_correct = True
@@ -2437,9 +1333,7 @@ def run_squats(ui=None):
             knees_warning = None
 
             try:
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if positioning_completed and not paused:
-                        adjust_robot_position("SQUATS", results)
+                if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
 
                     L_shoulder = get_pt(lm, 11, use_z=True)
@@ -2547,11 +1441,6 @@ def run_squats(ui=None):
                                 print(f"  Rep {reps_in_set} completed! Angle: {int(down_angle)}")
                                 last_rep_time = time.time()
                                 set_started = True
-                                # Publish live squat rep (real data)
-                                try:
-                                    publish_rep("squats", set_num=current_set, count=reps_in_set)
-                                except Exception:
-                                    pass
                             else:
                                 print(f"  Rep ignored: Whole body did not lower. Shoulders: {lowered_shoulders}, Hips: {lowered_hips}, Wrists: {lowered_wrists}, Knees: {lowered_knees}")
 
@@ -2585,80 +1474,29 @@ def run_squats(ui=None):
                     posture_correct = (feet_warning is None) and (arms_warning is None) and \
                                       (depth_warning is None) and (knees_warning is None)
 
-                    if ui is None:
-                        draw_skeleton(image, results)
-                else:
-                    if positioning_completed and not paused:
-                        adjust_robot_position("SQUATS", None)
-                    else:
-                        send_command("STOP")
+                    draw_skeleton(image, results)
             except Exception:
                 pass
 
             # --- Set transition / Countdown timer logic ---
             now_time = time.time()
-            set_finished = False
             if set_started and last_rep_time is not None:
                 time_elapsed = now_time - last_rep_time
                 time_limit = 15.0 if reps_in_set >= 6 else 20.0
 
                 if time_elapsed > time_limit:
                     print(f"\n✅ Set {current_set} Finished! Completed {reps_in_set} reps.")
-                    try:
-                        publish_set_complete("squats", current_set, reps_in_set)
-                    except Exception:
-                        pass
                     current_set += 1
                     reps_in_set = 0
                     set_started = False
                     last_rep_time = None
-                    set_finished = True
 
             img_h, img_w = image.shape[:2]
+            panel_w = min(280, img_w - 10)
 
-            # Main stats panel
-            accent = ACCENT_GREEN if posture_correct else ACCENT_RED
-            if ui is None:
-                draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
-                cv2.rectangle(image, (5, 5), (9, 120), accent, -1)
-                cv2.putText(image, "SQUATS", (18, 24),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, stage.upper(), (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, accent, 2, cv2.LINE_AA)
-
-                if set_started and last_rep_time is not None:
-                    time_limit = 15.0 if reps_in_set >= 6 else 20.0
-                    time_elapsed = now_time - last_rep_time
-                    countdown = max(0.0, time_limit - time_elapsed)
-                    cv2.putText(image, f"Rest in: {countdown:.1f}s", (140, 88),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, ACCENT_ORANGE, 1, cv2.LINE_AA)
-
-                # Arc gauge for hip angle
-                gauge_cx, gauge_cy = img_w - 60, 60
-                gauge_r = 40
-                draw_glass_panel(image, gauge_cx - gauge_r - 8, 5,
-                                 gauge_r * 2 + 16, gauge_r * 2 + 25,
-                                 alpha=0.6, radius=10)
-                cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
-                            0, 180, 360, (40, 40, 40), 3)
-                angle_pct = np.clip((current_hip_angle - 60) / 120.0, 0, 1)
-                sweep = int(angle_pct * 180)
-                cv2.ellipse(image, (gauge_cx, gauge_cy), (gauge_r, gauge_r),
-                            0, 360 - sweep, 360, accent, 3)
-                cv2.putText(image, f"{int(current_hip_angle)}",
-                            (gauge_cx - 15, gauge_cy + 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_WHITE, 1, cv2.LINE_AA)
-                cv2.putText(image, "angle",
-                            (gauge_cx - 18, gauge_cy + gauge_r + 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
-
-            # Compile and draw posture warnings panel
+            # Compile warnings
             warnings = []
-            if results.pose_landmarks and len(results.pose_landmarks) > 0:
+            if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                 if arms_warning:
                     warnings.append(arms_warning)
                 if stage == "up" and feet_warning:
@@ -2669,103 +1507,54 @@ def run_squats(ui=None):
                     if knees_warning:
                         warnings.append(knees_warning)
 
-            if ui is None:
-                if warnings:
-                    panel_h = 24 + len(warnings) * 20
-                    panel_y = img_h - panel_h - 15
-                    draw_glass_panel(image, 10, panel_y, img_w - 20, panel_h, alpha=0.75, color=(20, 20, 40), radius=8)
-                    cv2.rectangle(image, (10, panel_y), (img_w - 10, panel_y + panel_h), ACCENT_RED, 1)
-                    for idx, warn in enumerate(warnings):
-                        cv2.putText(image, warn, (20, panel_y + 18 + idx * 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 240), 1, cv2.LINE_AA)
+            # Determine combined feedback
+            feedback_val = "GOOD"
+            if warnings:
+                feedback_val = warnings[0]
 
-            # Update stats & feedback on the Tkinter UI
-            if ui is not None:
-                ui.update_stat_card("Set", current_set)
-                ui.update_stat_card("Reps", reps_in_set)
-                ui.update_stat_card("Total Reps", counter)
-                ui.update_stat_card("Hip Angle", f"{int(current_hip_angle)}°")
+            status_msg_val = "ACTIVE"
+            if set_started and last_rep_time is not None:
+                time_limit = 15.0 if reps_in_set >= 6 else 20.0
+                time_elapsed = now_time - last_rep_time
+                countdown = max(0.0, time_limit - time_elapsed)
+                if time_elapsed > time_limit - 5.0: # last 5 seconds of countdown
+                    status_msg_val = f"REST IN {countdown:.1f}S"
 
-                feedback_msgs = []
-                feedback_color = ACCENT_GREEN
+            extra_info_val = f"Total: {counter} | Hip Angle: {int(current_hip_angle)} deg"
 
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    for w in warnings:
-                        feedback_msgs.append(f"⚠️ {w}")
-                    if warnings:
-                        feedback_color = ACCENT_RED
-                else:
-                    feedback_msgs.append("⚠️ Positioning... Stand in front of camera.")
-                    feedback_color = ACCENT_ORANGE
+            # Render the dashboard instead of raw frame
+            image = draw_exercise_dashboard(
+                exercise_name="SQUATS",
+                reps=reps_in_set,
+                sets=current_set,
+                feedback=feedback_val,
+                stage=stage,
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=extra_info_val
+            )
 
-                if not feedback_msgs:
-                    if set_finished:
-                        feedback_msgs.append("✅ Set finished! Please rest.")
-                        feedback_color = ACCENT_GREEN
-                    elif set_started and last_rep_time is not None:
-                        time_limit = 15.0 if reps_in_set >= 6 else 20.0
-                        time_elapsed = now_time - last_rep_time
-                        countdown = max(0.0, time_limit - time_elapsed)
-                        feedback_msgs.append(f"✅ Form is Good. Rest in: {countdown:.1f}s")
-                        feedback_color = ACCENT_GREEN
-                    else:
-                        feedback_msgs.append("✅ Form is Good. Keep it up!")
-                        feedback_color = ACCENT_GREEN
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Squats', image)
+                break
 
-                if robot_status == "SEARCHING":
-                    ui.update_feedback("Searching...", ACCENT_ORANGE)
-                else:
-                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
-                ui.update()
-
-            if robot_status == "SEARCHING":
-                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
-
-            if ui is None:
-                if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        show_palm_stop_message('Squats', image)
-                        break
-
-                draw_home_button(image)
-                cv2.imshow('Squats', image)
-
-                if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
-                    break
-            else:
-                if hand_landmarker is not None:
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        break
-                if home_clicked:
-                    break
+            show_frame('Squats', image)
+            if cv2.waitKey(5) & 0xFF == ord('q'):
+                break
     finally:
-        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
-        
-        # Populate session summary
-        global last_session_summary
-        last_session_summary = {
-            'exercise': 'Squats',
-            'metrics': [
-                ('Total Reps', counter),
-                ('Total Sets', current_set)
-            ],
-            'errors': list(session_errors)
-        }
         print_session_error_summary()
-        save_session_to_firestore(last_session_summary)
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     print(f"\n✅ Squats Done! Total Reps: {counter}")
 
 
-def run_plank(ui=None):
+def run_plank():
     """Plank timer measuring hold duration."""
     clear_session_errors()
     plank_timer = 0
@@ -2788,16 +1577,8 @@ def run_plank(ui=None):
             plank_start = None
         return in_plank_state, plank_start, 0
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    if ui is None:
-        cv2.namedWindow('Plank', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Plank', DISPLAY_WIDTH, DISPLAY_HEIGHT)
-    global home_clicked
-    home_clicked = False
-    if ui is None:
-        cv2.setMouseCallback('Plank', on_mouse_click)
+    cap = open_camera()
+    setup_window('Plank')
     print("🧘 Plank Timer Active! Press Q to quit.")
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
@@ -2807,17 +1588,6 @@ def run_plank(ui=None):
     palm_stop_frames = 0
     frame_counter = 0
     last_results = None
-    last_hand_results = None
-
-    paused = False
-    thumbs_up_frames = 0
-    thumbs_up_cooldown_active = False
-
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("SIDE")
 
     try:
         while cap.isOpened():
@@ -2825,123 +1595,25 @@ def run_plank(ui=None):
             if not ret:
                 break
 
-            # Remote Force Stop from web dashboard
-            if force_stop.is_set():
-                print("  [REMOTE] Force Stop received from web UI")
-                send_command("STOP")
-                break
-
             frame_counter += 1
-            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-            # Run Pose detection every FRAME_SKIP frames
-            if frame_counter % FRAME_SKIP == 0 or last_results is None:
-                results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
+            image = frame
+
+            if frame_counter % EXERCISE_FRAME_SKIP == 0:
+                results, timestamp_ms = detect_pose_frame(landmarker, image, timestamp_ms)
                 last_results = results
+                if hand_landmarker is not None:
+                    hand_results, hand_timestamp_ms = detect_hand_frame(
+                        hand_landmarker, image, hand_timestamp_ms
+                    )
+                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames)
             else:
                 results = last_results
-
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to SIDE view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        if results and results.pose_landmarks:
-                            draw_skeleton(image, results)
-                        draw_positioning_overlay(image, "SIDE", pct)
-                        send_command("SIDE")
-                        draw_home_button(image)
-                        cv2.imshow('Plank', image)
-                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("SIDE")
-                    continue
-                else:
-                    send_command("STOP")
-                    positioning_completed = True
-                    # Start real session for live dashboard (no dummy data)
-                    if _session_id is None:
-                        try:
-                            publish_session_start("plank")
-                        except Exception:
-                            pass
-
-            # Run Hand detection every HAND_FRAME_SKIP frames
-            if hand_landmarker is not None:
-                if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
-                    hand_results, hand_timestamp_ms = detect_hand_frame(
-                        hand_landmarker, frame, hand_timestamp_ms
-                    )
-                    last_hand_results = hand_results
-
-                    # Thumbs-up check
-                    if is_thumbs_up(hand_results):
-                        if not thumbs_up_cooldown_active:
-                            thumbs_up_frames += HAND_FRAME_SKIP
-                            if thumbs_up_frames >= PALM_STOP_REQUIRED_FRAMES:
-                                paused = not paused
-                                thumbs_up_frames = 0
-                                thumbs_up_cooldown_active = True
-                                if paused:
-                                    pause_start_time = time.time()
-                                    try:
-                                        publish_pause()
-                                    except Exception:
-                                        pass
-                                else:
-                                    if 'pause_start_time' in dir() and pause_start_time:
-                                        _pause_accumulator += (time.time() - pause_start_time)
-                                    try:
-                                        publish_resume()
-                                    except Exception:
-                                        pass
-                                print(f"⏸️ Plank: {'PAUSED' if paused else 'RESUMED'}")
-                    else:
-                        thumbs_up_frames = 0
-                        thumbs_up_cooldown_active = False
-
-                    palm_stop_frames = update_palm_stop_frames(hand_results, palm_stop_frames, increment=HAND_FRAME_SKIP)
-                else:
-                    hand_results = last_hand_results
-            else:
-                palm_stop_frames = 0
-                thumbs_up_frames = 0
-
-            # If paused, render overlay and bypass main logic
-            if paused:
-                send_command("STOP")
-                # Reset plank timer tracking variables so elapsed time is not added on resume
-                in_plank = False
-                start_time = None
-                
-                if ui is not None:
-                    ui.update_feedback("⏸️ EXERCISE PAUSED\nShow Thumbs-Up to Resume", ACCENT_ORANGE)
-                    ui.update()
-                else:
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_paused_overlay(image, thumbs_up_frames)
-                    if hand_landmarker is not None:
-                        draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                        if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                            show_palm_stop_message('Plank', image)
-                            break
-                    draw_home_button(image)
-                    cv2.imshow('Plank', image)
-                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                        break
-                continue
 
             is_horizontal = False
             is_looking_around = False
 
             try:
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if positioning_completed and not paused:
-                        adjust_robot_position("PLANK", results)
+                if results and results.pose_landmarks and len(results.pose_landmarks) > 0:
                     lm = results.pose_landmarks[0]
                     left_shoulder = get_pt(lm, 11)
                     left_hip = get_pt(lm, 23)
@@ -2987,178 +1659,64 @@ def run_plank(ui=None):
                                 neck, hip, ankle, in_plank, start_time
                             )
                             plank_timer += elapsed_time
-                            try:
-                                publish_plank_time(plank_timer)
-                            except Exception:
-                                pass
 
                             if not in_plank:
                                 log_session_error("Form a straight line with body")
                             if is_looking_around:
                                 log_session_error("Look in front of you")
                         else:
+                            log_session_error("Align horizontally GET IN POSITION")
                             in_plank = False
                             start_time = None
-                else:
-                    if positioning_completed and not paused:
-                        adjust_robot_position("PLANK", None)
-                    else:
-                        send_command("STOP")
             except Exception:
                 pass
 
-            if ui is None:
-                draw_skeleton(image, results)
+            # Determine combined feedback
+            feedback_val = "HOLDING"
+            if not is_horizontal:
+                feedback_val = "ALIGN HORIZONTALLY"
+            elif not in_plank:
+                feedback_val = "FORM STRAIGHT LINE"
+            elif is_looking_around:
+                feedback_val = "LOOK FORWARD"
 
-            ring_cx, ring_cy, ring_r = 55, 88, 38
+            status_msg_val = "ACTIVE"
+            if not is_horizontal:
+                status_msg_val = "GET IN POSITION"
 
-            if is_horizontal:
-                if in_plank:
-                    if is_looking_around:
-                        state_color = ACCENT_ORANGE
-                        state_text = "LOOK FORWARD"
-                    else:
-                        state_color = ACCENT_GREEN
-                        state_text = "HOLD"
-                else:
-                    state_color = ACCENT_RED
-                    state_text = "ALIGN BODY"
-            else:
-                state_color = ACCENT_ORANGE
-                state_text = "GET IN POSITION"
+            # Define state text based on plank status
+            state_text = "HOLD" if in_plank else "GET IN POSITION"
 
-            if ui is None:
-                draw_glass_panel(image, 5, 5, 230, ring_r * 2 + 50,
-                                 alpha=0.65, radius=10)
+            # Render the dashboard instead of raw frame
+            # Pass plank timer formatted string as reps
+            image = draw_exercise_dashboard(
+                exercise_name="PLANK",
+                reps=f"{plank_timer:.1f}s",
+                sets="-",
+                feedback=feedback_val,
+                stage=state_text,
+                status_msg=status_msg_val,
+                palm_stop_val=palm_stop_frames,
+                extra_info=f"Keep body straight"
+            )
 
-                cv2.putText(image, "PLANK", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
+            if hand_landmarker is not None and palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
+                show_palm_stop_message('Plank', image)
+                break
 
-                cv2.ellipse(image, (ring_cx, ring_cy), (ring_r, ring_r),
-                            0, 0, 360, (40, 40, 40), 3)
-                sweep = int((plank_timer % 60) / 60.0 * 360)
-                cv2.ellipse(image, (ring_cx, ring_cy), (ring_r, ring_r),
-                            -90, 0, sweep, state_color, 3)
+            show_frame('Plank', image)
 
-                mins = int(plank_timer) // 60
-                secs = plank_timer % 60
-                if mins > 0:
-                    time_str = f"{mins}:{secs:05.2f}"
-                else:
-                    time_str = f"{secs:.1f}s"
-                (tw, _), _ = cv2.getTextSize(time_str, cv2.FONT_HERSHEY_SIMPLEX,
-                                             0.5, 1)
-                cv2.putText(image, time_str,
-                            (ring_cx - tw // 2, ring_cy + 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1, cv2.LINE_AA)
-
-                cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, state_color, 1, cv2.LINE_AA)
-                cv2.putText(image, f"Total: {plank_timer:.1f}s",
-                            (ring_cx + ring_r + 12, ring_cy + 16),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
-
-                if is_horizontal:
-                    if not in_plank:
-                        warn_msg = "Form a straight line with body!"
-                        img_h, img_w = image.shape[:2]
-                        draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
-                        cv2.putText(image, warn_msg, (15, img_h - 25),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
-                    elif is_looking_around:
-                        warn_msg = "Look in front of you!"
-                        img_h, img_w = image.shape[:2]
-                        draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(15, 45, 95), radius=10)
-                        cv2.putText(image, warn_msg, (15, img_h - 25),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_ORANGE, 2, cv2.LINE_AA)
-
-            # Update stats & feedback on the Tkinter UI
-            if ui is not None:
-                mins = int(plank_timer) // 60
-                secs = plank_timer % 60
-                if mins > 0:
-                    time_str = f"{mins}:{secs:05.2f}"
-                else:
-                    time_str = f"{secs:.1f}s"
-
-                ui.update_stat_card("Hold Time", time_str, state_color)
-                ui.update_stat_card("Status", state_text, state_color)
-
-                feedback_msgs = []
-                feedback_color = ACCENT_GREEN
-
-                if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if is_horizontal:
-                        if not in_plank:
-                            feedback_msgs.append("⚠️ Form a straight line with body!")
-                            feedback_color = ACCENT_RED
-                        elif is_looking_around:
-                            feedback_msgs.append("⚠️ Look in front of you!")
-                            feedback_color = ACCENT_ORANGE
-                    else:
-                        feedback_msgs.append("⚠️ Align horizontally! Lie down in profile view.")
-                        feedback_color = ACCENT_ORANGE
-                else:
-                    feedback_msgs.append("⚠️ Positioning... Lie down in front of camera.")
-                    feedback_color = ACCENT_ORANGE
-
-                if not feedback_msgs:
-                    if in_plank:
-                        feedback_msgs.append("✅ Form is Good. HOLD!")
-                        feedback_color = ACCENT_GREEN
-                    else:
-                        feedback_msgs.append("✅ Aligning body...")
-                        feedback_color = ACCENT_ORANGE
-
-                if robot_status == "SEARCHING":
-                    ui.update_feedback("Searching...", ACCENT_ORANGE)
-                else:
-                    ui.update_feedback("\n".join(feedback_msgs), feedback_color)
-                ui.update()
-
-            if robot_status == "SEARCHING":
-                cv2.putText(image, "Searching...", (image.shape[1]//2 - 120, image.shape[0]//2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, ACCENT_ORANGE, 3, cv2.LINE_AA)
-
-            if ui is None:
-                if hand_landmarker is not None:
-                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        show_palm_stop_message('Plank', image)
-                        break
-
-                draw_home_button(image)
-                cv2.imshow('Plank', image)
-
-                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                    break
-            else:
-                if hand_landmarker is not None:
-                    if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
-                        break
-                if home_clicked:
-                    break
+            if cv2.waitKey(10) & 0xFF == ord('q'):
+                break
     finally:
-        send_command("STOP")
         if 'landmarker' in locals() and landmarker is not None:
             landmarker.close()
         if 'hand_landmarker' in locals() and hand_landmarker is not None:
             hand_landmarker.close()
-        
-        # Populate session summary
-        global last_session_summary
-        last_session_summary = {
-            'exercise': 'Plank',
-            'metrics': [
-                ('Total Hold Time', f"{plank_timer:.1f}s")
-            ],
-            'errors': list(session_errors)
-        }
         print_session_error_summary()
-        save_session_to_firestore(last_session_summary)
 
     cap.release()
-    if ui is None:
+    if SHOW_WINDOW:
         cv2.destroyAllWindows()
     print(f"\n✅ Plank Done! Total Time: {plank_timer:.2f}s")
 
@@ -3174,10 +1732,10 @@ def main():
             model_asset_path=MODEL_PATH
         ),
         running_mode=vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5
+        num_poses=3,
+        min_pose_detection_confidence=0.65,
+        min_pose_presence_confidence=0.65,
+        min_tracking_confidence=0.6
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
     timestamp_ms = 0
@@ -3185,23 +1743,29 @@ def main():
 
     # ─── Camera ───
     print("\nOpening camera...")
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = open_camera()
 
-    cap.set(cv2.CAP_PROP_FOURCC,
-            cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-    for _ in range(5):
-        cap.read()
-
-    aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"✅ Camera: {aw}x{ah}")
+    # Verify serial connection status
+    if ser and ser.is_open:
+        print("⏳ Verifying connection to ESP32...")
+        try:
+            ser.write(b"PING\n")
+            ser.flush()
+            
+            ping_start = time.time()
+            verified = False
+            while time.time() - ping_start < 2.0:
+                if ser.in_waiting:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if "PONG" in line:
+                        verified = True
+                        break
+            if verified:
+                print("✅ Connection verified! ESP32 is responding.")
+            else:
+                print("⚠️  Connection timeout: No PONG response from ESP32.")
+        except Exception as e:
+            print(f"⚠️  Connection verification failed: {e}")
 
     # Signal handler
     def shutdown(sig, frame):
@@ -3209,13 +1773,10 @@ def main():
         send_command("STOP")
         time.sleep(0.2)
         cap.release()
-        cv2.destroyAllWindows()
-        try:
-            landmarker.close()
-        except:
-            pass
-        if ser is not None:
-            ser.close()
+        if SHOW_WINDOW:
+            cv2.destroyAllWindows()
+        landmarker.close()
+        if ser: ser.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -3230,18 +1791,12 @@ def main():
     print("  Press Q to quit")
     print()
 
-    if SHOW_WINDOW:
-        cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Person Follower', DISPLAY_WIDTH, DISPLAY_HEIGHT)
-        global home_clicked
-        home_clicked = False
-        cv2.setMouseCallback('Person Follower', on_mouse_click)
+    setup_window('Person Follower')
 
     fps          = 0
     fps_counter  = 0
     fps_time     = time.time()
     frame_counter = 0
-    start_time   = time.time()
 
     command        = "STOP"
     state          = "STARTING"
@@ -3251,17 +1806,18 @@ def main():
     h_zone         = "CENTER"
     last_results   = None
     lost_since     = None
+    tracked_center = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            # Prevent CPU hogging and keep window responsive on frame read failure
+            time.sleep(0.03)
+            if SHOW_WINDOW:
+                key = cv2.waitKey(30) & 0xFF
+                if key == ord('q'):
+                    break
             continue
-
-        # Remote Force Stop from web dashboard
-        if force_stop.is_set():
-            print("  [REMOTE] Force Stop received from web UI")
-            send_command("STOP")
-            break
 
         frame_counter += 1
 
@@ -3281,6 +1837,36 @@ def main():
 
             if (results.pose_landmarks and
                     len(results.pose_landmarks) > 0):
+                # --- Target Locking Selection ---
+                best_idx = 0
+                if len(results.pose_landmarks) > 1:
+                    now = time.time()
+                    candidates = []
+                    for idx, lm in enumerate(results.pose_landmarks):
+                        l_sh = lm[11]
+                        r_sh = lm[12]
+                        nose = lm[0]
+                        # Filter out non-human detections by checking that shoulders and nose are clearly visible
+                        if l_sh.visibility > 0.55 and r_sh.visibility > 0.55 and nose.visibility > 0.5:
+                            sc_x = (l_sh.x + r_sh.x) / 2
+                            sc_y = (l_sh.y + r_sh.y) / 2
+                            sw = abs(l_sh.x - r_sh.x)
+                            candidates.append((idx, sc_x, sc_y, sw))
+                    
+                    if candidates:
+                        # If previously tracked and not timed out
+                        if tracked_center is not None and (lost_since is None or now - lost_since < LOST_PERSON_TIMEOUT):
+                            tx, ty = tracked_center
+                            best_idx = min(candidates, key=lambda c: (c[1] - tx)**2 + (c[2] - ty)**2)[0]
+                        else:
+                            # Default to largest shoulder width (closest person)
+                            best_idx = max(candidates, key=lambda c: c[3])[0]
+                
+                # Swap the best pose to index 0 so it gets drawn and tracked
+                if best_idx > 0:
+                    results.pose_landmarks[0], results.pose_landmarks[best_idx] = \
+                        results.pose_landmarks[best_idx], results.pose_landmarks[0]
+
                 lm        = results.pose_landmarks[0]
                 nose      = lm[0]
                 l_shoulder = lm[11]
@@ -3289,13 +1875,14 @@ def main():
                 r_hip      = lm[24]
 
                 shoulder_ok = (
-                    l_shoulder.visibility > 0.2 and
-                    r_shoulder.visibility > 0.2
+                    l_shoulder.visibility > 0.55 and
+                    r_shoulder.visibility > 0.55 and
+                    nose.visibility > 0.5
                 )
 
                 hip_ok = (
-                    l_hip.visibility > 0.2 and
-                    r_hip.visibility > 0.2
+                    l_hip.visibility > 0.5 and
+                    r_hip.visibility > 0.5
                 )
 
                 if shoulder_ok:
@@ -3307,6 +1894,9 @@ def main():
                     shoulder_width = abs(
                         l_shoulder.x - r_shoulder.x
                     )
+
+                    # Update tracked center
+                    tracked_center = (shoulder_center, (l_shoulder.y + r_shoulder.y) / 2)
 
                     # Full body available
                     if hip_ok:
@@ -3333,17 +1923,22 @@ def main():
                     )
 
                     send_command(command)
+                else:
+                    # Treat as lost if shoulder landmarks are not visible enough
+                    now = time.time()
+                    if lost_since is None:
+                        lost_since = now
+                        send_command("STOP")
+                        command = "STOP"
+                        state   = "LOST"
+                    elif now - lost_since > LOST_PERSON_TIMEOUT:
+                        send_command("SEARCH")
+                        command = "SEARCH"
+                        state   = "SEARCHING..."
+                        tracked_center = None
 
-                    # Publish high-level robot state for the web dashboard (real)
-                    try:
-                        if person_x is not None and command not in ("STOP", "SEARCH"):
-                            publish_robot_state("FOLLOWING", command)
-                        elif command == "SEARCH":
-                            publish_robot_state("SEARCHING", command)
-                        else:
-                            publish_robot_state("STOPPED", command)
-                    except Exception:
-                        pass
+                    d_zone = "GOOD"
+                    h_zone = "CENTER"
             else:
                 # No person
                 now = time.time()
@@ -3356,6 +1951,7 @@ def main():
                     send_command("SEARCH")
                     command = "SEARCH"
                     state   = "SEARCHING..."
+                    tracked_center = None
 
                 d_zone = "GOOD"
                 h_zone = "CENTER"
@@ -3367,20 +1963,18 @@ def main():
                 print(f"  {det} FPS:{fps:.0f} | "
                       f"CMD:{command:10s} | {state}")
 
-        # Draw on display frame resized to target dimensions
-        display = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+        # Draw
         if last_results:
-            draw_skeleton(display, last_results)
+            draw_skeleton(frame, last_results)
 
-        draw_frame(display, command, state, person_x,
+        draw_frame(frame, command, state, person_x,
                    shoulder_width, fps, d_zone, h_zone)
-        draw_home_button(display)
+
+        show_frame('Person Follower', frame)
 
         if SHOW_WINDOW:
-            cv2.imshow('Person Follower', display)
-
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or home_clicked:
+            if key == ord('q'):
                 break
 
         # FPS
@@ -3390,483 +1984,47 @@ def main():
             fps_counter = 0
             fps_time    = time.time()
 
+    # Cleanup
     send_command("STOP")
     time.sleep(0.2)
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW:
+        cv2.destroyAllWindows()
     landmarker.close()
-    if ser is not None:
-        ser.close()
-    
-    # Populate session summary
-    global last_session_summary
-    duration = time.time() - start_time
-    last_session_summary = {
-        'exercise': 'Person Follower',
-        'metrics': [
-            ('Duration', f"{duration:.1f}s")
-        ],
-        'errors': []
-    }
+    if ser: ser.close()
+    print("\n✅ Done!")
 
 
-class RoundedButton(tk.Canvas):
-    def __init__(self, parent, text, command, bg_color, fg_color="#1E1E24", radius=15, font=("Helvetica", 12, "bold"), height=50, width=None, outline_color=None, outline_width=3, **kwargs):
-        super().__init__(parent, borderwidth=0, highlightthickness=0, bg=parent["bg"], height=height, **kwargs)
-        if width:
-            self.configure(width=width)
-        self.command = command
-        self.bg_color = bg_color
-        self.fg_color = fg_color
-        self.radius = radius
-        self.text = text
-        self.font = font
-        self.pressed = False
-        self.outline_color = outline_color
-        self.outline_width = outline_width
-        
-        self.bind("<Configure>", self._draw)
-        self.bind("<ButtonPress-1>", self._on_press)
-        self.bind("<ButtonRelease-1>", self._on_release)
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-        
-    def _draw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        r = min(self.radius, w//2, h//2)
-        bw = self.outline_width if self.outline_color else 0
-        
-        if w <= 0 or h <= 0:
-            return
-            
-        color = self.bg_color
-        if self.pressed:
-            color = self._darken_color(self.bg_color)
-            
-        # Draw rounded rectangle parts
-        # Circles for corners
-        self.create_oval(bw, bw, r*2+bw, r*2+bw, fill=color, outline=color)
-        self.create_oval(w - r*2 - bw, bw, w - bw, r*2+bw, fill=color, outline=color)
-        self.create_oval(bw, h - r*2 - bw, r*2+bw, h - bw, fill=color, outline=color)
-        self.create_oval(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, fill=color, outline=color)
-        
-        # Rectangles to fill the center
-        self.create_rectangle(r+bw, bw, w - r - bw, h - bw, fill=color, outline=color)
-        self.create_rectangle(bw, r+bw, w - bw, h - r - bw, fill=color, outline=color)
-        
-        # Draw outline if color is specified
-        if self.outline_color and bw > 0:
-            self.create_arc(bw, bw, r*2+bw, r*2+bw, start=90, extent=90, style="arc", outline=self.outline_color, width=bw)
-            self.create_arc(w - r*2 - bw, bw, w - bw, r*2+bw, start=0, extent=90, style="arc", outline=self.outline_color, width=bw)
-            self.create_arc(bw, h - r*2 - bw, r*2+bw, h - bw, start=180, extent=90, style="arc", outline=self.outline_color, width=bw)
-            self.create_arc(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, start=270, extent=90, style="arc", outline=self.outline_color, width=bw)
-            
-            self.create_line(r+bw, bw, w - r - bw, bw, fill=self.outline_color, width=bw)
-            self.create_line(r+bw, h - bw, w - r - bw, h - bw, fill=self.outline_color, width=bw)
-            self.create_line(bw, r+bw, bw, h - r - bw, fill=self.outline_color, width=bw)
-            self.create_line(w - bw, r+bw, w - bw, h - r - bw, fill=self.outline_color, width=bw)
-
-        # Text in the center
-        self.create_text(w//2, h//2, text=self.text, fill=self.fg_color, font=self.font)
-        
-    def _darken_color(self, hex_color):
-        try:
-            if hex_color.startswith("#"):
-                r = int(hex_color[1:3], 16)
-                g = int(hex_color[3:5], 16)
-                b = int(hex_color[5:7], 16)
-                return f"#{max(0, r-30):02x}{max(0, g-30):02x}{max(0, b-30):02x}"
-        except Exception:
-            pass
-        return hex_color
-
-    def _on_press(self, event):
-        self.pressed = True
-        self._draw()
-        
-    def _on_release(self, event):
-        self.pressed = False
-        self._draw()
-        if 0 <= event.x <= self.winfo_width() and 0 <= event.y <= self.winfo_height():
-            if self.command:
-                self.command()
-            
-    def _on_enter(self, event):
-        self.configure(cursor="hand2")
-        
-    def _on_leave(self, event):
-        self.configure(cursor="")
-        if self.pressed:
-            self.pressed = False
-            self._draw()
-
-
-class OutlinedLabel(tk.Canvas):
-    def __init__(self, parent, text, font, fg, outline_color, bg_color="#1E1E24", **kwargs):
-        super().__init__(parent, borderwidth=0, highlightthickness=0, bg=bg_color, **kwargs)
-        self.text = text
-        self.font = font
-        self.fg = fg
-        self.outline_color = outline_color
-        self.bind("<Configure>", self._draw)
-        
-    def _draw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 0 or h <= 0:
-            return
-        
-        x = w // 2
-        y = h // 2
-        
-        # Draw outline border around text
-        offsets = [(-2, -2), (-2, 0), (-2, 2), (0, -2), (0, 2), (2, -2), (2, 0), (2, 2)]
-        for dx, dy in offsets:
-            self.create_text(x + dx, y + dy, text=self.text, font=self.font, fill=self.outline_color, anchor="center")
-            
-        # Center main text
-        self.create_text(x, y, text=self.text, font=self.font, fill=self.fg, anchor="center")
-
-
-class RoundedFrame(tk.Canvas):
-    def __init__(self, parent, bg_color, border_color, border_width=3, radius=20, **kwargs):
-        super().__init__(parent, borderwidth=0, highlightthickness=0, bg=parent["bg"], **kwargs)
-        self.bg_color = bg_color
-        self.border_color = border_color
-        self.border_width = border_width
-        self.radius = radius
-        self.bind("<Configure>", self._draw)
-        
-    def _draw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        r = self.radius
-        bw = self.border_width
-        
-        if w <= 0 or h <= 0:
-            return
-            
-        # Draw background rounded rect
-        self.create_oval(bw, bw, r*2+bw, r*2+bw, fill=self.bg_color, outline=self.bg_color)
-        self.create_oval(w - r*2 - bw, bw, w - bw, r*2+bw, fill=self.bg_color, outline=self.bg_color)
-        self.create_oval(bw, h - r*2 - bw, r*2+bw, h - bw, fill=self.bg_color, outline=self.bg_color)
-        self.create_oval(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, fill=self.bg_color, outline=self.bg_color)
-        self.create_rectangle(r+bw, bw, w - r - bw, h - bw, fill=self.bg_color, outline=self.bg_color)
-        self.create_rectangle(bw, r+bw, w - bw, h - r - bw, fill=self.bg_color, outline=self.bg_color)
-        
-        # Draw outline border
-        if self.border_color and bw > 0:
-            self.create_arc(bw, bw, r*2+bw, r*2+bw, start=90, extent=90, style="arc", outline=self.border_color, width=bw)
-            self.create_arc(w - r*2 - bw, bw, w - bw, r*2+bw, start=0, extent=90, style="arc", outline=self.border_color, width=bw)
-            self.create_arc(bw, h - r*2 - bw, r*2+bw, h - bw, start=180, extent=90, style="arc", outline=self.border_color, width=bw)
-            self.create_arc(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, start=270, extent=90, style="arc", outline=self.border_color, width=bw)
-            
-            self.create_line(r+bw, bw, w - r - bw, bw, fill=self.border_color, width=bw)
-            self.create_line(r+bw, h - bw, w - r - bw, h - bw, fill=self.border_color, width=bw)
-            self.create_line(bw, r+bw, bw, h - r - bw, fill=self.border_color, width=bw)
-            self.create_line(w - bw, r+bw, w - bw, h - r - bw, fill=self.border_color, width=bw)
-
-
-class FitnessRobotUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Fitness Robot UI")
-        
-        # Open in fullscreen
-        self.attributes("-fullscreen", True)
-        self.bind("<Escape>", lambda e: self.quit_app())
-        
-        # Screen dimensions configuration
-        self.configure(bg="#1E1E24")
-        
-        # Custom styles
-        self.style = ttk.Style(self)
-        self.style.theme_use('clam')
-        self.style.configure('.', background='#1E1E24', foreground='#EBEBEF')
-        
-        self.main_container = tk.Frame(self, bg="#1E1E24")
-        self.main_container.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        self.show_home_screen()
-        
-    def show_home_screen(self):
-        # Clear container
-        for widget in self.main_container.winfo_children():
-            widget.destroy()
-            
-        # Title banner with Outlined Label
-        title_canvas = OutlinedLabel(
-            self.main_container,
-            text="FITNESS ROBOT",
-            font=("Helvetica", 24, "bold"),
-            fg="#96D75F",
-            outline_color="#000000",
-            height=40
-        )
-        title_canvas.pack(pady=(5, 10))
-        
-        # Grid frame for exercises
-        grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        grid_frame.pack(fill="both", expand=True)
-        
-        exercises = [
-            ("Bicep Curls", self.launch_bicep_curls, "#96D75F"),
-            ("Push-ups", self.launch_pushups, "#96D75F"),
-            ("Squats", self.launch_squats, "#96D75F"),
-            ("Plank", self.launch_plank, "#96D75F"),
-        ]
-        
-        # Layout in grid
-        for i, (name, callback, color) in enumerate(exercises):
-            # Create a premium rounded button card
-            btn = RoundedButton(
-                grid_frame,
-                text=name,
-                command=callback,
-                bg_color="#2B2B36",
-                fg_color=color,
-                outline_color=color,
-                outline_width=2,
-                radius=10,
-                font=("Helvetica", 12, "bold"),
-                height=45
-            )
-            # 2 columns layout
-            row = i // 2
-            col = i % 2
-            btn.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
-            
-        grid_frame.columnconfigure(0, weight=1)
-        grid_frame.columnconfigure(1, weight=1)
-        grid_frame.rowconfigure(0, weight=1)
-        grid_frame.rowconfigure(1, weight=1)
-        
-        # Bottom system buttons
-        sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        sys_frame.pack(fill="x", pady=(10, 5))
-        for i in range(3):
-            sys_frame.columnconfigure(i, weight=1)
-        
-        sys_buttons = [
-            ("REBOOT", self.confirm_reboot, "#E5B05E"),
-            ("SHUTDOWN", self.confirm_shutdown, "#5F5FDF"),
-            ("EXIT APP", self.quit_app, "#5F5FDF"),
-        ]
-        
-        for i, (name, callback, color) in enumerate(sys_buttons):
-            btn = RoundedButton(
-                sys_frame,
-                text=name,
-                command=callback,
-                bg_color="#2B2B36",
-                fg_color=color,
-                outline_color=color,
-                outline_width=2,
-                radius=8,
-                font=("Helvetica", 10, "bold"),
-                height=35
-            )
-            btn.grid(row=0, column=i, sticky="ew", padx=5)
-
-    def run_exercise(self, exercise_name, func):
-        try:
-            self.show_exercise_screen(exercise_name)
-            self.update()
-            func(self)
-        finally:
-            self.show_summary_screen()
-
-    def launch_bicep_curls(self):
-        self.run_exercise("Bicep Curls", run_bicep_curls)
-        
-    def launch_pushups(self):
-        self.run_exercise("Push-ups", run_pushups)
-        
-    def launch_squats(self):
-        self.run_exercise("Squats", run_squats)
-        
-    def launch_plank(self):
-        self.run_exercise("Plank", run_plank)
-
-    def show_exercise_screen(self, exercise_name):
-        # Clear container
-        for widget in self.main_container.winfo_children():
-            widget.destroy()
-            
-        # Title Banner (Exercise Type)
-        self.ex_title_label = tk.Label(
-            self.main_container, 
-            text=exercise_name, 
-            font=("Helvetica", 20, "bold"), 
-            fg="#96D75F", 
-            bg="#1E1E24"
-        )
-        self.ex_title_label.pack(anchor="w", pady=(5, 10), padx=5)
-        
-        # Row Frame for Count Boxes/Stats
-        self.stats_row_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        self.stats_row_frame.pack(anchor="w", fill="x", pady=5, padx=5)
-        
-        # Dictionary to hold the dynamically updated count/stat cards
-        self.stat_cards = {}
-        
-        # Direct Label for comments/feedback (no framing/no border to match screenshot)
-        self.feedback_label = tk.Label(
-            self.main_container, 
-            text="Aligning and tracking...", 
-            font=("Helvetica", 14, "bold"), 
-            fg="#EBEBEF", 
-            bg="#1E1E24",
-            wraplength=450,
-            justify="left",
-            anchor="w"
-        )
-        self.feedback_label.pack(anchor="w", fill="x", pady=10, padx=5)
-        
-        # Bottom bar for Home Button
-        self.bottom_bar = tk.Frame(self.main_container, bg="#1E1E24")
-        self.bottom_bar.pack(fill="x", side="bottom", pady=10)
-        
-        # Home button on bottom right corner (orange background, white text)
-        self.home_btn = RoundedButton(
-            self.bottom_bar,
-            text="Home",
-            command=self.set_home_clicked,
-            bg_color="#FF9500",
-            fg_color="#FFFFFF",
-            radius=10,
-            width=100,
-            height=35,
-            font=("Helvetica", 12, "bold")
-        )
-        self.home_btn.pack(side="right", padx=10)
-
-    def update_stat_card(self, label, value, color="#96D75F"):
-        color = bgr_to_hex(color)
-        if label not in self.stat_cards:
-            # Create a card frame using RoundedFrame
-            card = RoundedFrame(
-                self.stats_row_frame, 
-                bg_color="#2B2B36", 
-                border_color=color, 
-                border_width=2, 
-                radius=10,
-                width=110,
-                height=75
-            )
-            card.pack(side="left", padx=3)
-            card.pack_propagate(False)
-            
-            lbl = tk.Label(card, text=f"{label}:", font=("Helvetica", 10, "bold"), fg=color, bg="#2B2B36")
-            lbl.pack(anchor="w", padx=10, pady=(10, 2))
-            
-            val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 18, "bold"), fg="#FFFFFF", bg="#2B2B36")
-            val_lbl.pack(anchor="w", padx=10)
-            
-            self.stat_cards[label] = (card, val_lbl, lbl)
-        else:
-            card, val_lbl, lbl = self.stat_cards[label]
-            val_lbl.configure(text=str(value))
-            card.border_color = color
-            card._draw()
-            lbl.configure(fg=color)
-
-    def update_feedback(self, text, color="#EBEBEF"):
-        color = bgr_to_hex(color)
-        self.feedback_label.configure(text=text, fg=color)
-
-    def set_home_clicked(self):
-        global home_clicked
-        home_clicked = True
-
-    def show_summary_screen(self):
-        global last_session_summary
-        if not last_session_summary:
-            self.show_home_screen()
-            return
-            
-        summary = last_session_summary
-        last_session_summary = None  # Reset
-        
-        # Clear container
-        for widget in self.main_container.winfo_children():
-            widget.destroy()
-            
-        title_label = tk.Label(self.main_container, text=f"SESSION SUMMARY: {summary['exercise'].upper()}", font=("Helvetica", 14, "bold"), fg="#96D75F", bg="#1E1E24")
-        title_label.pack(pady=(5, 10))
-        
-        # Card style display for metrics
-        card_container = tk.Frame(self.main_container, bg="#2B2B36", height=150)
-        card_container.pack(fill="x", padx=10, pady=5)
-        card_container.pack_propagate(False)
-        
-        canvas = tk.Canvas(card_container, bg="#2B2B36", highlightthickness=0)
-        scrollbar = tk.Scrollbar(card_container, orient="vertical", command=canvas.yview)
-        card_frame = tk.Frame(canvas, bg="#2B2B36", padx=10, pady=10)
-        
-        card_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=card_frame, anchor="nw", width=420)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 12, "bold"), fg="#50AFDF", bg="#2B2B36").pack(anchor="w", pady=(0, 5))
-        
-        for metric, val in summary['metrics']:
-            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 10), fg="#EBEBEF", bg="#2B2B36")
-            lbl.pack(anchor="w", pady=1)
-            
-        # Warnings summary
-        if summary.get('errors'):
-            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 12, "bold"), fg="#E5B05E", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
-            # Unique errors
-            for err in set(summary['errors']):
-                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 10), fg="#E5B05E", bg="#2B2B36", wraplength=380, justify="left")
-                lbl.pack(anchor="w", pady=1)
-        else:
-            tk.Label(card_frame, text="✅ Perfect posture! No mistakes detected.", font=("Helvetica", 10, "italic"), fg="#96D75F", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
-            
-        # Back home button
-        btn = RoundedButton(
-            self.main_container,
-            text="BACK TO MENU",
-            command=self.show_home_screen,
-            bg_color="#2B2B36",
-            fg_color="#96D75F",
-            outline_color="#96D75F",
-            outline_width=2,
-            radius=10,
-            font=("Helvetica", 12, "bold"),
-            width=180,
-            height=35
-        )
-        btn.pack(pady=10)
-
-    def confirm_shutdown(self):
-        if messagebox.askyesno("Shutdown", "Are you sure you want to shutdown the Raspberry Pi?"):
-            self.destroy()
-            if os.name == 'posix':
-                subprocess.run(["sudo", "shutdown", "-h", "now"])
-            else:
-                subprocess.run(["shutdown", "/s", "/t", "0"])
-
-    def confirm_reboot(self):
-        if messagebox.askyesno("Reboot", "Are you sure you want to reboot the Raspberry Pi?"):
-            self.destroy()
-            if os.name == 'posix':
-                subprocess.run(["sudo", "reboot"])
-            else:
-                subprocess.run(["shutdown", "/r", "/t", "0"])
-
-    def quit_app(self):
-        self.destroy()
+def show_mode_menu():
+    print("\n═══════════════════════════════════════════")
+    print("  FITNESS PROJECT - Mode Selection")
+    print("═══════════════════════════════════════════")
+    print("  1. Person Following (Robot)")
+    print("  2. Bicep Curls")
+    print("  3. Push-ups")
+    print("  4. Squats")
+    print("  5. Plank")
+    print("  6. Exit / Q to Quit the session")
+    print("═══════════════════════════════════════════")
+    return input("  Enter choice (1-6, Q): ").strip().lower()
 
 
 if __name__ == "__main__":
-    app = FitnessRobotUI()
-    app.mainloop()
+    while True:
+        choice = show_mode_menu()
+
+        if choice == "1":
+            main()
+        elif choice == "2":
+            run_bicep_curls()
+        elif choice == "3":
+            run_pushups()
+        elif choice == "4":
+            run_squats()
+        elif choice == "5":
+            run_plank()
+        elif choice in ("6", "q"):
+            print("  Exiting.")
+            break
+        else:
+            print("  Invalid choice. Please try again.")
