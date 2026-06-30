@@ -11,6 +11,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 
 try:
+    # pyrefly: ignore [missing-import]
     from dotenv import load_dotenv
     load_dotenv(PROJECT_DIR / ".env")
 except ImportError:

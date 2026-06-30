@@ -8,6 +8,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io.wavfile import write
 from google import genai
+# pyrefly: ignore [missing-import]
 from google.genai import types
 import serial
 import json
@@ -17,6 +18,7 @@ import queue
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+# pyrefly: ignore [missing-import]
 import api_keys
 
 # 1. Initialize the new client with the API key from api_keys.py
