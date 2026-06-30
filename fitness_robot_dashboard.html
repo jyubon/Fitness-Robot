@@ -1,0 +1,1600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FitBot — Fitness Robot Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0b0e;
+    --bg2: #111318;
+    --bg3: #181c24;
+    --bg4: #1e2330;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.12);
+    --text: #eef0f5;
+    --text2: #8b91a8;
+    --text3: #555c73;
+    --accent: #00e5a0;
+    --accent2: #00b87a;
+    --accent-dim: rgba(0,229,160,0.12);
+    --accent-dim2: rgba(0,229,160,0.06);
+    --red: #ff4560;
+    --red-dim: rgba(255,69,96,0.12);
+    --amber: #ffb547;
+    --amber-dim: rgba(255,181,71,0.12);
+    --blue: #4da6ff;
+    --blue-dim: rgba(77,166,255,0.12);
+    --purple: #a78bfa;
+    --purple-dim: rgba(167,139,250,0.12);
+    --font: 'Space Grotesk', sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+    --radius: 12px;
+    --radius-lg: 18px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* ── AUTH SCREEN ── */
+  #auth-screen {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    position: relative;
+    overflow: hidden;
+  }
+
+  #auth-screen::before {
+    content: '';
+    position: absolute;
+    top: -200px; left: 50%; transform: translateX(-50%);
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(0,229,160,0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .auth-card {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-lg);
+    padding: 40px 44px;
+    width: 420px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .auth-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 32px;
+  }
+
+  .auth-logo-icon {
+    width: 36px; height: 36px;
+    background: var(--accent);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+
+  .auth-logo span {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.5px;
+  }
+
+  .auth-logo span em {
+    color: var(--accent);
+    font-style: normal;
+  }
+
+  .auth-tabs {
+    display: flex;
+    background: var(--bg3);
+    border-radius: 10px;
+    padding: 4px;
+    margin-bottom: 28px;
+    gap: 4px;
+  }
+
+  .auth-tab {
+    flex: 1;
+    padding: 8px;
+    text-align: center;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text2);
+    transition: all 0.2s;
+    background: none;
+    border: none;
+    font-family: var(--font);
+  }
+
+  .auth-tab.active {
+    background: var(--bg4);
+    color: var(--text);
+  }
+
+  .auth-form { display: flex; flex-direction: column; gap: 14px; }
+
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-label { font-size: 12px; font-weight: 500; color: var(--text2); letter-spacing: 0.5px; text-transform: uppercase; }
+
+  .form-input {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 11px 14px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .form-input:focus { border-color: var(--accent); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 9px;
+    padding: 12px;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: all 0.2s;
+    letter-spacing: 0.2px;
+  }
+
+  .btn-primary:hover { background: var(--accent2); transform: translateY(-1px); }
+  .btn-primary:active { transform: translateY(0); }
+
+  .auth-demo {
+    margin-top: 18px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text3);
+  }
+
+  .auth-demo a { color: var(--accent); cursor: pointer; text-decoration: none; }
+
+  /* ── MAIN APP ── */
+  #app-screen { display: none; }
+
+  /* Sidebar */
+  .layout { display: flex; min-height: 100vh; }
+
+  .sidebar {
+    width: 220px;
+    min-width: 220px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 20px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+
+  .sidebar-logo {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 20px 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+
+  .sidebar-logo-icon {
+    width: 28px; height: 28px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-logo span {
+    font-size: 16px; font-weight: 700; letter-spacing: -0.3px;
+  }
+
+  .sidebar-logo span em { color: var(--accent); font-style: normal; }
+
+  .nav-section {
+    padding: 0 10px;
+    margin-bottom: 4px;
+  }
+
+  .nav-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 8px 10px 4px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+    color: var(--text2);
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: all 0.15s;
+    border: none;
+    background: none;
+    width: 100%;
+    font-family: var(--font);
+  }
+
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: var(--accent-dim); color: var(--accent); }
+
+  .nav-icon {
+    width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-footer {
+    margin-top: auto;
+    padding: 0 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  .user-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 9px;
+    background: var(--bg3);
+  }
+
+  .user-avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  .user-info { flex: 1; min-width: 0; }
+  .user-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .user-role { font-size: 11px; color: var(--text3); }
+
+  .logout-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text3); padding: 4px; border-radius: 6px;
+    transition: color 0.2s;
+  }
+  .logout-btn:hover { color: var(--red); }
+
+  /* Main content */
+  .main { flex: 1; overflow-x: hidden; }
+
+  /* Page header */
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 24px 28px 0;
+    margin-bottom: 24px;
+  }
+
+  .page-title { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  .page-subtitle { font-size: 13px; color: var(--text2); margin-top: 2px; }
+
+  .robot-status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 40px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.85); }
+  }
+
+  /* Pages */
+  .page { display: none; padding: 0 28px 32px; }
+  .page.active { display: block; }
+
+  /* ── TELEMETRY PAGE ── */
+  .telemetry-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .card-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text2);
+  }
+
+  .live-badge {
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .live-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.5s infinite;
+  }
+
+  /* Robot state display */
+  .robot-mode-display {
+    background: var(--bg3);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+    margin-bottom: 16px;
+  }
+
+  .robot-mode-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+
+  .robot-mode-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--accent);
+    font-family: var(--mono);
+    letter-spacing: 2px;
+  }
+
+  /* Metrics row */
+  .metrics-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .metric-mini {
+    background: var(--bg3);
+    border-radius: var(--radius);
+    padding: 14px;
+    text-align: center;
+  }
+
+  .metric-mini-val {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    font-family: var(--mono);
+    line-height: 1.2;
+  }
+
+  .metric-mini-label {
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 2px;
+  }
+
+  /* Wristband */
+  .wristband-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .wristband-card {
+    background: var(--bg3);
+    border-radius: var(--radius);
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .wristband-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+
+  .wristband-icon.heart { background: var(--red-dim); }
+  .wristband-icon.steps { background: var(--blue-dim); }
+
+  .wristband-val { font-size: 20px; font-weight: 700; color: var(--text); font-family: var(--mono); }
+  .wristband-unit { font-size: 11px; color: var(--text3); }
+  .wristband-refresh { font-size: 10px; color: var(--text3); margin-top: 2px; }
+
+  /* Encouragement feed */
+  .feed-container {
+    height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .feed-container::-webkit-scrollbar { width: 4px; }
+  .feed-container::-webkit-scrollbar-track { background: transparent; }
+  .feed-container::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  .feed-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--bg3);
+    border-radius: 9px;
+    border-left: 3px solid transparent;
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .feed-item.good { border-left-color: var(--accent); }
+  .feed-item.warn { border-left-color: var(--amber); }
+  .feed-item.info { border-left-color: var(--blue); }
+
+  .feed-time { font-size: 10px; color: var(--text3); font-family: var(--mono); white-space: nowrap; padding-top: 1px; }
+  .feed-msg { font-size: 12.5px; color: var(--text2); flex: 1; }
+  .feed-msg strong { color: var(--text); font-weight: 500; }
+
+  /* ── CONTROLS PAGE ── */
+  .controls-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .mode-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .mode-btn {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 14px;
+    cursor: pointer;
+    color: var(--text2);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    text-align: center;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .mode-btn:hover { background: var(--bg4); border-color: var(--border2); color: var(--text); transform: translateY(-1px); }
+
+  .mode-btn.active-mode {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .mode-btn-icon { font-size: 22px; }
+
+  .mode-btn-desc {
+    font-size: 10px;
+    color: var(--text3);
+    line-height: 1.4;
+  }
+
+  .mode-btn.active-mode .mode-btn-desc { color: var(--accent2); }
+
+  /* Force stop */
+  .force-stop-zone {
+    background: var(--red-dim);
+    border: 1px solid rgba(255,69,96,0.3);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    text-align: center;
+    grid-column: 1 / -1;
+  }
+
+  .force-stop-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--red);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 8px;
+  }
+
+  .force-stop-desc {
+    font-size: 12px;
+    color: var(--text2);
+    margin-bottom: 16px;
+  }
+
+  .btn-danger {
+    background: var(--red);
+    color: #fff;
+    border: none;
+    border-radius: 9px;
+    padding: 13px 32px;
+    font-family: var(--font);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-danger:hover { background: #e03050; transform: scale(1.02); }
+  .btn-danger:active { transform: scale(0.98); }
+
+  /* Terminate button */
+  .terminate-row {
+    margin-top: 16px;
+  }
+
+  .btn-warn {
+    width: 100%;
+    background: var(--amber-dim);
+    border: 1px solid rgba(255,181,71,0.3);
+    color: var(--amber);
+    border-radius: 9px;
+    padding: 11px;
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-warn:hover { background: rgba(255,181,71,0.2); }
+
+  /* ── ANALYTICS PAGE ── */
+  .analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .stat-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 8px;
+  }
+
+  .stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    font-family: var(--mono);
+    line-height: 1.1;
+  }
+
+  .stat-unit {
+    font-size: 13px;
+    color: var(--text3);
+    font-weight: 400;
+    margin-left: 2px;
+  }
+
+  .stat-delta {
+    font-size: 11px;
+    margin-top: 4px;
+    color: var(--accent);
+  }
+
+  .charts-row {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .chart-wrap { position: relative; height: 200px; }
+
+  .sessions-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .sessions-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 0 12px 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sessions-table td {
+    padding: 10px 12px 10px 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--text2);
+    vertical-align: middle;
+  }
+
+  .sessions-table tr:last-child td { border-bottom: none; }
+  .sessions-table td:first-child { color: var(--text); font-weight: 500; }
+
+  .exercise-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .pill-curls { background: var(--purple-dim); color: var(--purple); }
+  .pill-pushups { background: var(--blue-dim); color: var(--blue); }
+  .pill-squats { background: var(--amber-dim); color: var(--amber); }
+  .pill-plank { background: var(--accent-dim); color: var(--accent); }
+  .pill-follow { background: var(--red-dim); color: var(--red); }
+
+  /* Form accuracy chart */
+  .form-bars { display: flex; flex-direction: column; gap: 12px; }
+
+  /* row container for individual form accuracy bars */
+  .form-bar-row { display: flex; align-items: center; gap: 12px; }
+  .form-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text2);
+    margin-bottom: 5px;
+  }
+
+  .form-bar-track {
+    height: 8px;
+    background: var(--bg3);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .form-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--accent);
+    transition: width 1s ease;
+  }
+
+  .form-bar-fill.bad { background: var(--amber); }
+
+  /* Session history */
+  .session-day-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    height: 60px;
+  }
+
+  .session-bar-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .session-bar-fill {
+    width: 100%;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 4px 4px 0 0;
+    transition: height 0.5s ease;
+    min-height: 4px;
+  }
+
+  .session-bar-label {
+    font-size: 9px;
+    color: var(--text3);
+    font-family: var(--mono);
+  }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    padding: 12px 18px;
+    font-size: 13px;
+    color: var(--text);
+    z-index: 9999;
+    transform: translateY(100px);
+    opacity: 0;
+    transition: all 0.3s ease;
+    max-width: 300px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  #toast.show { transform: translateY(0); opacity: 1; }
+  #toast .toast-icon { font-size: 16px; }
+
+  /* Scrollbar global */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+  /* Override for dark charts */
+  canvas { max-width: 100% !important; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ AUTH SCREEN ═══════════════ -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">🤖</div>
+      <span>Fit<em>Bot</em></span>
+    </div>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchAuthTab('login')">Sign In</button>
+      <button class="auth-tab" onclick="switchAuthTab('register')">Create Account</button>
+    </div>
+
+    <div id="login-form" class="auth-form">
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input class="form-input" type="email" id="login-email" placeholder="you@university.edu" value="alex@university.edu">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" type="password" id="login-password" placeholder="••••••••" value="password">
+      </div>
+      <button class="btn-primary" onclick="handleLogin()">Sign In</button>
+    </div>
+
+    <div id="register-form" class="auth-form" style="display:none;">
+      <div class="form-group">
+        <label class="form-label">Full Name</label>
+        <input class="form-input" type="text" id="reg-name" placeholder="Alex Johnson">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input class="form-input" type="email" id="reg-email" placeholder="you@university.edu">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" type="password" id="reg-password" placeholder="••••••••">
+      </div>
+      <button class="btn-primary" onclick="handleRegister()">Create Account</button>
+    </div>
+
+    <p class="auth-demo">Demo: use any email / password — <a onclick="handleLogin()">quick login →</a></p>
+  </div>
+</div>
+
+<!-- ═══════════════ MAIN APP ═══════════════ -->
+<div id="app-screen">
+  <div class="layout">
+
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="sidebar-logo">
+        <div class="sidebar-logo-icon">🤖</div>
+        <span>Fit<em>Bot</em></span>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-label">Monitor</div>
+        <button class="nav-item active" onclick="showPage('telemetry', this)">
+          <span class="nav-icon">📡</span> Live Telemetry
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-label">Operate</div>
+        <button class="nav-item" onclick="showPage('controls', this)">
+          <span class="nav-icon">🎮</span> Remote Control
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-label">Progress</div>
+        <button class="nav-item" onclick="showPage('analytics', this)">
+          <span class="nav-icon">📊</span> Analytics
+        </button>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="user-badge">
+          <div class="user-avatar" id="sidebar-avatar">AJ</div>
+          <div class="user-info">
+            <div class="user-name" id="sidebar-name">Alex Johnson</div>
+            <div class="user-role">Athlete</div>
+          </div>
+          <button class="logout-btn" onclick="handleLogout()" title="Sign out">✕</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main">
+
+      <!-- ── TELEMETRY PAGE ── -->
+      <div id="page-telemetry" class="page active">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Live Telemetry</div>
+            <div class="page-subtitle">Real-time robot and session data</div>
+          </div>
+          <div class="robot-status-badge">
+            <div class="status-dot"></div>
+            <span id="header-state">ROBOT ONLINE</span>
+          </div>
+        </div>
+
+        <div class="telemetry-grid">
+          <!-- Robot State Card -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Robot State</span>
+              <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+            </div>
+            <div class="robot-mode-display">
+              <div class="robot-mode-label">Current Mode</div>
+              <div class="robot-mode-value" id="robot-mode">BICEP_CURLS</div>
+            </div>
+            <div class="metrics-row">
+              <div class="metric-mini">
+                <div class="metric-mini-val" id="rep-count">12</div>
+                <div class="metric-mini-label">Reps</div>
+              </div>
+              <div class="metric-mini">
+                <div class="metric-mini-val" id="plank-time">--</div>
+                <div class="metric-mini-label">Plank (s)</div>
+              </div>
+              <div class="metric-mini">
+                <div class="metric-mini-val" id="session-clock">08:32</div>
+                <div class="metric-mini-label">Session</div>
+              </div>
+            </div>
+            <div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">
+              ESP32 Motor: <span id="esp-cmd" style="color:var(--accent);font-family:var(--mono);">STOP</span>
+              &nbsp;|&nbsp; Speed: <span id="esp-spd" style="color:var(--accent);font-family:var(--mono);">0</span>
+            </div>
+          </div>
+
+          <!-- Wristband Card -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Wristband Sensors</span>
+              <span style="font-size:10px;color:var(--text3);">Syncs every 24h</span>
+            </div>
+            <div class="wristband-row" style="margin-bottom:12px;">
+              <div class="wristband-card">
+                <div class="wristband-icon heart">❤️</div>
+                <div>
+                  <div class="wristband-val" id="heart-rate">82</div>
+                  <div class="wristband-unit">BPM</div>
+                  <div class="wristband-refresh" id="hr-sync">Last sync: just now</div>
+                </div>
+              </div>
+              <div class="wristband-card">
+                <div class="wristband-icon steps">👟</div>
+                <div>
+                  <div class="wristband-val" id="step-count">4,218</div>
+                  <div class="wristband-unit">Steps</div>
+                  <div class="wristband-refresh" id="step-sync">Last sync: just now</div>
+                </div>
+              </div>
+            </div>
+            <div style="background:var(--bg3);border-radius:var(--radius);padding:12px;">
+              <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">HEART RATE TREND (session)</div>
+              <div style="position:relative;height:60px;"><canvas id="hr-sparkline"></canvas></div>
+            </div>
+          </div>
+        </div>
+
+        <video width="640" height="480" autoplay muted playsinline >
+          <source src="http://192.168.1.100/video.mp4" type="video/mp4">
+        </video>
+
+        <!-- Encouragement Feed -->
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Encouragement Feed</span>
+            <span class="live-badge"><span class="live-dot"></span>SCREEN LOG</span>
+          </div>
+          <div class="feed-container" id="feed"></div>
+        </div>
+      </div>
+
+      <!-- ── CONTROLS PAGE ── -->
+      <div id="page-controls" class="page">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Remote Control</div>
+            <div class="page-subtitle">Switch modes and manage the robot</div>
+          </div>
+          <div class="robot-status-badge">
+            <div class="status-dot"></div>
+            <span>CONNECTED</span>
+          </div>
+        </div>
+
+        <div class="controls-grid">
+          <!-- Mode Switcher -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Mode Switcher</span>
+            </div>
+            <div style="font-size:12px;color:var(--text2);margin-bottom:14px;">
+              Active: <strong id="ctrl-active-mode" style="color:var(--accent);">BICEP_CURLS</strong>
+            </div>
+            <div class="mode-grid" id="mode-grid">
+              <button class="mode-btn active-mode" onclick="switchMode('BICEP_CURLS', this)" data-mode="BICEP_CURLS">
+                <span class="mode-btn-icon">💪</span>
+                <span>Bicep Curls</span>
+                <span class="mode-btn-desc">Arm curl counter</span>
+              </button>
+              <button class="mode-btn" onclick="switchMode('PUSHUPS', this)" data-mode="PUSHUPS">
+                <span class="mode-btn-icon">🤸</span>
+                <span>Push-ups</span>
+                <span class="mode-btn-desc">Push-up counter</span>
+              </button>
+              <button class="mode-btn" onclick="switchMode('SQUATS', this)" data-mode="SQUATS">
+                <span class="mode-btn-icon">🦵</span>
+                <span>Squats</span>
+                <span class="mode-btn-desc">Depth tracking</span>
+              </button>
+              <button class="mode-btn" onclick="switchMode('PLANK', this)" data-mode="PLANK">
+                <span class="mode-btn-icon">🧘</span>
+                <span>Plank</span>
+                <span class="mode-btn-desc">Hold timer</span>
+              </button>
+            </div>
+            <div class="terminate-row">
+              <button class="btn-warn" onclick="terminateExercise()">⏹ Terminate Current Exercise</button>
+            </div>
+          </div>
+
+          <!-- Status Panel -->
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Robot Status</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;">
+                <span style="font-size:12px;color:var(--text2);">Pi Connection</span>
+                <span style="font-size:12px;color:var(--accent);font-weight:600;">● ONLINE</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;">
+                <span style="font-size:12px;color:var(--text2);">ESP32 Motor</span>
+                <span id="ctrl-esp-status" style="font-size:12px;color:var(--accent);font-weight:600;">● READY</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;">
+                <span style="font-size:12px;color:var(--text2);">Camera</span>
+                <span style="font-size:12px;color:var(--accent);font-weight:600;">● ACTIVE</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg3);border-radius:9px;">
+                <span style="font-size:12px;color:var(--text2);">Pose Model</span>
+                <span style="font-size:12px;color:var(--accent);font-weight:600;">● LITE LOADED</span>
+              </div>
+            </div>
+            <div style="font-size:11px;color:var(--text3);line-height:1.6;">
+              Commands are sent to the Raspberry Pi via HTTP POST.<br>
+              The Pi relays motor commands to ESP32 over Serial/UDP.
+            </div>
+          </div>
+
+          <!-- Force Stop -->
+          <div class="force-stop-zone">
+            <div class="force-stop-title">⚠ Emergency Override</div>
+            <div class="force-stop-desc">Immediately halts all robot movement and terminates the active exercise. ESP32 receives a STOP command with speed 0.</div>
+            <button class="btn-danger" onclick="forceStop()">
+              🛑 FORCE STOP
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ANALYTICS PAGE ── -->
+      <div id="page-analytics" class="page">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Weekly Analytics</div>
+            <div class="page-subtitle">Last 7 days performance overview</div>
+          </div>
+          <div style="font-size:12px;color:var(--text3);background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:6px 14px;">
+            Past 7 Days
+          </div>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="analytics-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total Reps</div>
+            <div class="stat-value">247<span class="stat-unit">reps</span></div>
+            <div class="stat-delta">↑ 18% vs last week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Plank Time</div>
+            <div class="stat-value">14<span class="stat-unit">min</span></div>
+            <div class="stat-delta">↑ 6% vs last week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Sessions</div>
+            <div class="stat-value">6<span class="stat-unit">sessions</span></div>
+            <div class="stat-delta">↑ 1 more this week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Gym Time</div>
+            <div class="stat-value">3h<span class="stat-unit">42m</span></div>
+            <div class="stat-delta">↑ 22min vs last week</div>
+          </div>
+        </div>
+
+        <!-- Charts Row 1 -->
+        <div class="charts-row">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Daily Reps by Exercise</span>
+            </div>
+            <div class="chart-wrap"><canvas id="reps-chart"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Form Accuracy</span>
+            </div>
+            <div class="form-bars" id="form-bars" style="margin-top:8px;"></div>
+          </div>
+        </div>
+
+        <!-- Charts Row 2 -->
+        <div class="charts-row">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Daily Gym Session Time (total incl. rest)</span>
+            </div>
+            <div class="chart-wrap"><canvas id="session-time-chart"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Session History</span>
+            </div>
+            <table class="sessions-table" id="sessions-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Exercise</th>
+                  <th>Work Time</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody id="sessions-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"><span class="toast-icon" id="toast-icon">✅</span><span id="toast-msg">Done</span></div>
+
+<script>
+// ════════════════════════════════════════════════
+//  MOCK DATA
+// ════════════════════════════════════════════════
+const mockUsers = [
+  { email: 'alex@university.edu', password: 'password', name: 'Alex Johnson', initials: 'AJ' }
+];
+
+const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const analyticsData = {
+  reps: {
+    curls:   [18, 24, 0,  22, 20, 28, 15],
+    pushups: [10, 15, 0,  12, 18, 20, 8 ],
+    squats:  [15, 20, 0,  18, 25, 22, 12],
+  },
+  plankSeconds: [60, 90, 0, 75, 105, 120, 65],
+  sessionTotalMins: [32, 45, 0, 38, 52, 60, 40],
+  formAccuracy: {
+    curls:   { good: 87, bad: 13, label: 'Bicep Curls — good form' },
+    pushups: { good: 72, bad: 28, label: 'Push-ups — good form' },
+    squats:  { good: 91, bad: 9,  label: 'Squats — good form' },
+  },
+  sessions: [
+    { date: 'Mon Jun 02', exercise: 'BICEP_CURLS', workTime: '11:24', total: '32:00' },
+    { date: 'Tue Jun 03', exercise: 'SQUATS',      workTime: '18:45', total: '45:00' },
+    { date: 'Thu Jun 05', exercise: 'PUSHUPS',     workTime: '14:10', total: '38:00' },
+    { date: 'Fri Jun 06', exercise: 'PLANK',       workTime: '08:30', total: '52:00' },
+    { date: 'Sat Jun 07', exercise: 'PERSON_TRACKING', workTime: '22:00', total: '60:00' },
+    { date: 'Sun Jun 08', exercise: 'BICEP_CURLS', workTime: '13:55', total: '40:00' },
+  ]
+};
+
+const feedMessages = [
+  { type: 'info',  msg: '<strong>Session started</strong> — Bicep Curls mode active' },
+  { type: 'good',  msg: '<strong>Great rep!</strong> Perfect form on both arms' },
+  { type: 'good',  msg: 'Left arm rep 5 ✓ Keep the pace!' },
+  { type: 'warn',  msg: '<strong>Drop your weight</strong> and focus on your form' },
+  { type: 'good',  msg: 'Back on track — good form detected' },
+  { type: 'info',  msg: 'Milestone: 10 reps completed' },
+  { type: 'good',  msg: 'Right arm rep 8 ✓ Looking strong!' },
+  { type: 'warn',  msg: '<strong>Tuck your elbow</strong> — flare detected on right arm' },
+  { type: 'good',  msg: 'Form corrected — nice adjustment!' },
+  { type: 'info',  msg: 'Heart rate at 82 BPM — in target zone' },
+];
+
+// ════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════
+let currentUser = null;
+let robotState = {
+  mode: 'BICEP_CURLS',
+  reps: 12,
+  plankTime: null,
+  espCmd: 'STOP',
+  espSpd: 0,
+  heartRate: 82,
+  steps: 4218,
+};
+let sessionSeconds = 512;
+let chartInstances = {};
+
+// ════════════════════════════════════════════════
+//  AUTH
+// ════════════════════════════════════════════════
+function switchAuthTab(tab) {
+  document.querySelectorAll('.auth-tab').forEach((t, i) => {
+    t.classList.toggle('active', (i === 0 && tab === 'login') || (i === 1 && tab === 'register'));
+  });
+  document.getElementById('login-form').style.display = tab === 'login' ? 'flex' : 'none';
+  document.getElementById('register-form').style.display = tab === 'register' ? 'flex' : 'none';
+}
+
+function handleLogin() {
+  const email = document.getElementById('login-email').value || 'alex@university.edu';
+  const name = email.includes('@') ? email.split('@')[0].replace(/[^a-zA-Z ]/g, ' ') : 'Athlete';
+  const initials = name.split(' ').map(w => w[0]?.toUpperCase()).join('').slice(0, 2) || 'AT';
+  currentUser = { email, name: toTitleCase(name), initials };
+  enterApp();
+}
+
+function handleRegister() {
+  const name = document.getElementById('reg-name').value || 'New User';
+  const email = document.getElementById('reg-email').value || 'user@university.edu';
+  const initials = name.split(' ').map(w => w[0]?.toUpperCase()).join('').slice(0, 2);
+  currentUser = { email, name, initials };
+  showToast('Account created!', '✅');
+  setTimeout(enterApp, 600);
+}
+
+function toTitleCase(str) {
+  return str.replace(/\w\S*/g, t => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase());
+}
+
+function enterApp() {
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('app-screen').style.display = 'block';
+  document.getElementById('sidebar-name').textContent = currentUser.name;
+  document.getElementById('sidebar-avatar').textContent = currentUser.initials;
+  initApp();
+}
+
+function handleLogout() {
+  document.getElementById('app-screen').style.display = 'none';
+  document.getElementById('auth-screen').style.display = 'flex';
+  currentUser = null;
+}
+
+// ════════════════════════════════════════════════
+//  NAVIGATION
+// ════════════════════════════════════════════════
+function showPage(page, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  if (btn) btn.classList.add('active');
+  if (page === 'analytics') initAnalyticsCharts();
+}
+
+// ════════════════════════════════════════════════
+//  APP INIT
+// ════════════════════════════════════════════════
+function initApp() {
+  renderFeed();
+  startLiveSim();
+  initSparkline();
+}
+
+// ════════════════════════════════════════════════
+//  FEED
+// ════════════════════════════════════════════════
+function renderFeed() {
+  const feed = document.getElementById('feed');
+  feed.innerHTML = '';
+  const now = new Date();
+  feedMessages.forEach((item, i) => {
+    const t = new Date(now - (feedMessages.length - i) * 47000);
+    const timeStr = t.toTimeString().slice(0, 5);
+    const div = document.createElement('div');
+    div.className = 'feed-item ' + item.type;
+    div.innerHTML = `<span class="feed-time">${timeStr}</span><span class="feed-msg">${item.msg}</span>`;
+    feed.appendChild(div);
+  });
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function addFeedItem(msg, type) {
+  const feed = document.getElementById('feed');
+  const now = new Date().toTimeString().slice(0, 5);
+  const div = document.createElement('div');
+  div.className = 'feed-item ' + type;
+  div.innerHTML = `<span class="feed-time">${now}</span><span class="feed-msg">${msg}</span>`;
+  feed.insertBefore(div, feed.firstChild);
+}
+
+// ════════════════════════════════════════════════
+//  LIVE SIMULATION
+// ════════════════════════════════════════════════
+function startLiveSim() {
+  // Session clock
+  setInterval(() => {
+    sessionSeconds++;
+    const m = Math.floor(sessionSeconds / 60).toString().padStart(2, '0');
+    const s = (sessionSeconds % 60).toString().padStart(2, '0');
+    document.getElementById('session-clock').textContent = m + ':' + s;
+  }, 1000);
+
+  // Rep counter sim
+  setInterval(() => {
+    if (['BICEP_CURLS','PUSHUPS','SQUATS'].includes(robotState.mode)) {
+      robotState.reps += Math.random() < 0.2 ? 1 : 0;
+      document.getElementById('rep-count').textContent = robotState.reps;
+    }
+  }, 2000);
+
+  // HR fluctuation
+  setInterval(() => {
+    robotState.heartRate = Math.max(65, Math.min(155, robotState.heartRate + Math.round((Math.random() - 0.5) * 4)));
+    document.getElementById('heart-rate').textContent = robotState.heartRate;
+    hrData.push(robotState.heartRate);
+    if (hrData.length > 20) hrData.shift();
+    if (chartInstances['hr-spark']) {
+      chartInstances['hr-spark'].data.labels = hrData.map(() => '');
+      chartInstances['hr-spark'].data.datasets[0].data = hrData;
+      chartInstances['hr-spark'].update('none');
+    }
+  }, 3000);
+
+  // Random encouragement
+  const bonusMsgs = [
+    { msg: 'Keep going — you\'re on fire! 🔥', type: 'good' },
+    { msg: '<strong>Pace yourself</strong> — great consistent rhythm', type: 'info' },
+    { msg: 'Rep form looks excellent!', type: 'good' },
+    { msg: '<strong>Breathe out</strong> on the push', type: 'warn' },
+  ];
+  setInterval(() => {
+    const m = bonusMsgs[Math.floor(Math.random() * bonusMsgs.length)];
+    addFeedItem(m.msg, m.type);
+  }, 8000);
+
+  // Plank timer sim when in plank mode
+  let plankSecs = 0;
+  setInterval(() => {
+    if (robotState.mode === 'PLANK') {
+      plankSecs++;
+      document.getElementById('plank-time').textContent = plankSecs;
+    } else {
+      plankSecs = 0;
+      document.getElementById('plank-time').textContent = '--';
+    }
+  }, 1000);
+}
+
+// ════════════════════════════════════════════════
+//  SPARKLINE
+// ════════════════════════════════════════════════
+let hrData = [78,80,81,82,80,84,85,83,82,84,85,82,80,82,84,85,83,82,84,82];
+
+function initSparkline() {
+  const ctx = document.getElementById('hr-sparkline').getContext('2d');
+  chartInstances['hr-spark'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: hrData.map(() => ''),
+      datasets: [{
+        data: hrData,
+        borderColor: '#ff4560',
+        borderWidth: 1.5,
+        fill: true,
+        backgroundColor: 'rgba(255,69,96,0.08)',
+        pointRadius: 0,
+        tension: 0.4,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: { display: false },
+        y: { display: false, min: 60, max: 160 }
+      },
+      animation: false,
+    }
+  });
+}
+
+// ════════════════════════════════════════════════
+//  CONTROLS
+// ════════════════════════════════════════════════
+function switchMode(mode, btn) {
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active-mode'));
+  btn.classList.add('active-mode');
+  robotState.mode = mode;
+  robotState.reps = 0;
+  document.getElementById('ctrl-active-mode').textContent = mode;
+  document.getElementById('robot-mode').textContent = mode;
+  document.getElementById('rep-count').textContent = '0';
+  addFeedItem(`<strong>Mode switched</strong> → ${mode}`, 'info');
+  showToast(`Switched to ${mode.replace('_', ' ')}`, '🔄');
+}
+
+function terminateExercise() {
+  robotState.espCmd = 'STOP';
+  robotState.espSpd = 0;
+  document.getElementById('esp-cmd').textContent = 'STOP';
+  document.getElementById('esp-spd').textContent = '0';
+  document.getElementById('ctrl-esp-status').textContent = '● STOPPED';
+  document.getElementById('ctrl-esp-status').style.color = 'var(--amber)';
+  addFeedItem('<strong>Exercise terminated</strong> — robot idling', 'warn');
+  showToast('Exercise terminated', '⏹');
+  setTimeout(() => {
+    document.getElementById('ctrl-esp-status').textContent = '● READY';
+    document.getElementById('ctrl-esp-status').style.color = 'var(--accent)';
+  }, 3000);
+}
+
+function forceStop() {
+  robotState.mode = 'STOPPED';
+  robotState.espCmd = 'STOP';
+  robotState.espSpd = 0;
+  document.getElementById('robot-mode').textContent = 'STOPPED';
+  document.getElementById('esp-cmd').textContent = 'STOP';
+  document.getElementById('esp-spd').textContent = '0';
+  document.getElementById('header-state').textContent = 'FORCE STOPPED';
+  document.getElementById('ctrl-esp-status').textContent = '● FORCE STOP';
+  document.getElementById('ctrl-esp-status').style.color = 'var(--red)';
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active-mode'));
+  addFeedItem('<strong>⚠ FORCE STOP</strong> — all movement halted immediately', 'warn');
+  showToast('Force stop executed!', '🛑');
+  setTimeout(() => {
+    document.getElementById('header-state').textContent = 'ROBOT ONLINE';
+    document.getElementById('ctrl-esp-status').textContent = '● READY';
+    document.getElementById('ctrl-esp-status').style.color = 'var(--accent)';
+  }, 5000);
+}
+
+// ════════════════════════════════════════════════
+//  ANALYTICS CHARTS
+// ════════════════════════════════════════════════
+function initAnalyticsCharts() {
+  if (chartInstances['reps']) return; // already initialized
+
+  const chartDefaults = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: { color: '#8b91a8', font: { family: 'Space Grotesk', size: 11 }, boxWidth: 10 }
+      },
+      tooltip: {
+        backgroundColor: '#181c24',
+        borderColor: 'rgba(255,255,255,0.1)',
+        borderWidth: 1,
+        titleColor: '#eef0f5',
+        bodyColor: '#8b91a8',
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: '#555c73', font: { family: 'JetBrains Mono', size: 10 } },
+        grid: { color: 'rgba(255,255,255,0.04)' }
+      },
+      y: {
+        ticks: { color: '#555c73', font: { family: 'JetBrains Mono', size: 10 } },
+        grid: { color: 'rgba(255,255,255,0.04)' }
+      }
+    }
+  };
+
+  // Reps chart
+  const rCtx = document.getElementById('reps-chart').getContext('2d');
+  chartInstances['reps'] = new Chart(rCtx, {
+    type: 'bar',
+    data: {
+      labels: DAYS,
+      datasets: [
+        { label: 'Bicep Curls', data: analyticsData.reps.curls,   backgroundColor: 'rgba(167,139,250,0.7)', borderRadius: 4 },
+        { label: 'Push-ups',    data: analyticsData.reps.pushups, backgroundColor: 'rgba(77,166,255,0.7)',  borderRadius: 4 },
+        { label: 'Squats',      data: analyticsData.reps.squats,  backgroundColor: 'rgba(255,181,71,0.7)',  borderRadius: 4 },
+      ]
+    },
+    options: { ...chartDefaults, scales: { ...chartDefaults.scales, x: { ...chartDefaults.scales.x, stacked: false }, y: { ...chartDefaults.scales.y, stacked: false } } }
+  });
+
+  // Session time chart
+  const sCtx = document.getElementById('session-time-chart').getContext('2d');
+  chartInstances['session-time'] = new Chart(sCtx, {
+    type: 'line',
+    data: {
+      labels: DAYS,
+      datasets: [{
+        label: 'Total Session (min)',
+        data: analyticsData.sessionTotalMins,
+        borderColor: '#00e5a0',
+        backgroundColor: 'rgba(0,229,160,0.08)',
+        fill: true,
+        tension: 0.4,
+        pointBackgroundColor: '#00e5a0',
+        pointRadius: 4,
+      }]
+    },
+    options: chartDefaults
+  });
+
+  // Form accuracy bars
+  const barsEl = document.getElementById('form-bars');
+  barsEl.innerHTML = '';
+  Object.values(analyticsData.formAccuracy).forEach(f => {
+    barsEl.innerHTML += `
+      <div class="form-bar-row">
+        <div class="form-bar-label">
+          <span>${f.label}</span>
+          <span style="color:var(--accent)">${f.good}%</span>
+        </div>
+        <div class="form-bar-track">
+          <div class="form-bar-fill" style="width:${f.good}%"></div>
+        </div>
+      </div>
+      <div class="form-bar-row">
+        <div class="form-bar-label">
+          <span style="color:var(--text3)">  ↳ flawed form</span>
+          <span style="color:var(--amber)">${f.bad}%</span>
+        </div>
+        <div class="form-bar-track">
+          <div class="form-bar-fill bad" style="width:${f.bad}%"></div>
+        </div>
+      </div>
+    `;
+  });
+
+  // Sessions table
+  const tbody = document.getElementById('sessions-tbody');
+  const pillMap = { BICEP_CURLS: 'pill-curls', PUSHUPS: 'pill-pushups', SQUATS: 'pill-squats', PLANK: 'pill-plank', PERSON_TRACKING: 'pill-follow' };
+  const labelMap = { BICEP_CURLS: 'Bicep Curls', PUSHUPS: 'Push-ups', SQUATS: 'Squats', PLANK: 'Plank', PERSON_TRACKING: 'Following' };
+  tbody.innerHTML = analyticsData.sessions.map(s => `
+    <tr>
+      <td>${s.date}</td>
+      <td><span class="exercise-pill ${pillMap[s.exercise]}">${labelMap[s.exercise]}</span></td>
+      <td style="font-family:var(--mono)">${s.workTime}</td>
+      <td style="font-family:var(--mono);color:var(--text3)">${s.total}</td>
+    </tr>
+  `).join('');
+}
+
+// ════════════════════════════════════════════════
+//  TOAST
+// ════════════════════════════════════════════════
+let toastTimer;
+function showToast(msg, icon) {
+  clearTimeout(toastTimer);
+  document.getElementById('toast-msg').textContent = msg;
+  document.getElementById('toast-icon').textContent = icon || '✅';
+  document.getElementById('toast').classList.add('show');
+  toastTimer = setTimeout(() => document.getElementById('toast').classList.remove('show'), 2800);
+}
+</script>
+</body>
+</html>

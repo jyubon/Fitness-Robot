@@ -7,3 +7,8 @@ __pycache__/
 api_keys.py
 .DS_Store
 Thumbs.db
+serviceAccountKey.json
+firebase-config.js
+.clangD
+esp_commands/arduino_secrets.h
+esp_commands/build

@@ -8,6 +8,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io.wavfile import write
 from google import genai
+# pyrefly: ignore [missing-import]
 from google.genai import types
 import serial
 import json
@@ -17,13 +18,14 @@ import queue
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+# pyrefly: ignore [missing-import]
 import api_keys
 
 # 1. Initialize the new client with the API key from api_keys.py
 client = genai.Client(api_key=api_keys.GEMINI_API_KEY)
 
 # Initialize serial connection
-SERIAL_PORT = '/dev/ttyS0'
+SERIAL_PORT = '/dev/serial0'  # GPIO 14 (TX) / GPIO 15 (RX)
 BAUD_RATE = 115200
 
 try:
@@ -160,39 +162,6 @@ def get_pt(lm, idx, min_vis=0.5, use_z=False):
 
 # Tools Definitions
 
-# The Hardware Command Function
-def send_motor_command(keyword: str, speed: int):
-    """
-    Sends a command keyword and a speed value (0-255) to the ESP32-S3.
-    """
-    if not ser or not ser.is_open:
-        print("[ERROR] Serial port is not open.")
-        return
-
-    # 1. Enforce the 0-255 limit
-    # This prevents errors if the API accidentally passes a speed of 300 or -50
-    safe_speed = max(0, min(255, int(speed)))
-    
-    # 2. Format the keyword to ensure it's always uppercase (FWD, BWD, etc.)
-    safe_keyword = keyword.strip().upper()
-
-    # 3. Create a JSON payload
-    payload = {
-        "cmd": safe_keyword,
-        "spd": safe_speed
-    }
-
-    # 4. Convert to string and add the CRITICAL newline character (\n)
-    # The \n tells the ESP32 that the message is complete
-    message = json.dumps(payload) + '\n'
-
-    # 5. Send it over the RX/TX wires
-    try:
-        ser.write(message.encode('utf-8'))
-        ser.flush() # Ensure all data is pushed out of the buffer
-        print(f"[TX] Sent command: {message.strip()}")
-    except Exception as e:
-        print(f"[TX ERROR] Failed to send data: {e}")
 
 def trigger_robot_movement(animation_name: str):
     print(f"\n[HARDWARE COMMAND] Sending '{animation_name}' to ESP32-S3...")
@@ -208,11 +177,13 @@ def run_bicep_curls() -> str:
     """
     def process_arm(shoulder, elbow, wrist, side_name, state_dict, image, img_w, img_h):
         if shoulder is None or elbow is None or wrist is None:
-            return "N/A", ACCENT_RED, "---", False
+            return "N/A", ACCENT_RED, "---", False, False
 
         angle = calculate_angle(shoulder, elbow, wrist)
 
-        flare_error = abs(shoulder[0] - elbow[0]) > 0.1
+        # Only evaluate flare/tuck error when forearm is coming up (arm is bent)
+        forearm_up = angle < 135
+        flare_error = (abs(shoulder[0] - elbow[0]) > 0.1) and forearm_up
         color = ACCENT_GREEN
         feedback = "GOOD"
 
@@ -222,13 +193,13 @@ def run_bicep_curls() -> str:
 
         if angle > 150:
             state_dict['stage'] = "down"
-        if angle < 30 and state_dict['stage'] == "down":
+        if angle < 20 and state_dict['stage'] == "down":
             state_dict['stage'] = "up"
+            state_dict['counter'] += 1
             if not flare_error:
-                state_dict['counter'] += 1
-                return feedback, color, state_dict['stage'].upper(), False
+                return feedback, color, state_dict['stage'].upper(), False, True
             else:
-                return feedback, color, state_dict['stage'].upper(), True
+                return feedback, color, state_dict['stage'].upper(), True, False
 
         bar_val = np.interp(angle, (30, 150), (100, 0))
         bar_x = img_w - 35 if side_name == "Left" else img_w - 18
@@ -247,7 +218,7 @@ def run_bicep_curls() -> str:
         cv2.rectangle(image, (bar_x, bar_y_top),
                       (bar_x + 14, bar_y_top + bar_h), (60, 60, 60), 1)
 
-        return feedback, color, state_dict['stage'].upper(), False
+        return feedback, color, state_dict['stage'].upper(), False, False
 
     arms = {
         'left': {'counter': 0, 'stage': 'down'},
@@ -283,13 +254,16 @@ def run_bicep_curls() -> str:
                 l_s, l_e, l_w = get_pt(lm, 11), get_pt(lm, 13), get_pt(lm, 15)
                 r_s, r_e, r_w = get_pt(lm, 12), get_pt(lm, 14), get_pt(lm, 16)
 
-                l_fb, l_clr, l_stg, l_bad = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg, r_bad = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+                l_fb, l_clr, l_stg, l_bad, l_good = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
+                r_fb, r_clr, r_stg, r_bad, r_good = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
 
-                # Increment shared tuck counter if EITHER arm had a bad-form rep
-                if l_bad or r_bad:
+                # Increment shared tuck counter per arm if bad form rep completed
+                if l_bad:
                     tuck_count += 1
-                elif l_fb == "GOOD" and r_fb == "GOOD":
+                if r_bad:
+                    tuck_count += 1
+
+                if l_good or r_good:
                     tuck_count = 0   # reset on a clean frame
 
                 draw_skeleton(image, results)
@@ -308,8 +282,8 @@ def run_bicep_curls() -> str:
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
 
-                # After 3 bad-form reps from either arm, show warning
-                if tuck_count >= 3:
+                # After 3 bad-form reps from either arm (warning on the 4th), show warning
+                if tuck_count >= 4:
                     form_warning_until = time.time() + 4
                     tuck_count = 0
                     print("\n⚠️  Gemini: Drop your weight and focus on your form!")
@@ -753,8 +727,8 @@ def draw_frame(frame, command, state, person_x, shoulder_width, fps, d_zone, h_z
     h, w = frame.shape[:2]
 
     # Zone overlays
-    CENTER_ZONE_LEFT  = 0.42
-    CENTER_ZONE_RIGHT = 0.58
+    CENTER_ZONE_LEFT  = 0.38
+    CENTER_ZONE_RIGHT = 0.62
     TOO_CLOSE = 0.43
     TOO_FAR   = 0.18
 
@@ -846,23 +820,18 @@ def run_person_tracking() -> str:
     """
     Start the person tracking and following session using the camera.
     The robot will detect the user and send movement commands (FORWARD, BACKWARD, LEFT, RIGHT, etc.)
-    to follow the user, keeping them at a calibrated distance.
+    to the ESP32-S3 via serial communication (GPIO 14 TX / GPIO 15 RX) to follow the user,
+    keeping them at a calibrated distance.
     Returns a summary when the tracking session ends.
     """
-    import socket
-    
-    # ─── ESP32 ───
-    ESP32_IP   = "10.249.231.70"
-    ESP32_PORT = 8888
-
     # ─── Camera ───
     CAMERA_WIDTH  = 320
     CAMERA_HEIGHT = 240
     FRAME_SKIP    = 1
 
     # ─── Following Thresholds ───
-    CENTER_ZONE_LEFT  = 0.42
-    CENTER_ZONE_RIGHT = 0.58
+    CENTER_ZONE_LEFT  = 0.38
+    CENTER_ZONE_RIGHT = 0.62
     TOO_CLOSE = 0.43
     TOO_FAR   = 0.18
 
@@ -875,28 +844,30 @@ def run_person_tracking() -> str:
     DEBUG    = True
     SHOW_FPS = True
 
-    # Initialize UDP socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setblocking(False)
-    
+    # ─── Serial Communication (uses global ser on /dev/serial0, GPIO 14 TX / GPIO 15 RX) ───
     state_dict = {
         'current_command': "STOP",
         'last_command_time': 0.0
     }
 
     def send_command(command):
+        """Send a tracking command to ESP32-S3 via serial (GPIO 14 TX / GPIO 15 RX)."""
         now = time.time()
         if (command != state_dict['current_command'] or
                 now - state_dict['last_command_time'] > 1.0):
-            try:
-                sock.sendto(
-                    command.encode('utf-8'),
-                    (ESP32_IP, ESP32_PORT)
-                )
+            if ser and ser.is_open:
+                try:
+                    payload = {"cmd": command, "spd": 0}
+                    message = json.dumps(payload) + '\n'
+                    ser.write(message.encode('utf-8'))
+                    ser.flush()
+                    if DEBUG and command != state_dict['current_command']:
+                        print(f"  📡 → ESP32 (Serial): {message.strip()}")
+                except Exception as e:
+                    print(f"  [TX ERROR] {e}")
+            else:
                 if DEBUG and command != state_dict['current_command']:
-                    print(f"  📡 → ESP32: {command}")
-            except Exception:
-                pass
+                    print(f"  ⚠️  Serial not open, would send: {command}")
             state_dict['current_command'] = command
             state_dict['last_command_time'] = now
 
@@ -955,8 +926,36 @@ def run_person_tracking() -> str:
     ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"✅ Camera: {aw}x{ah}")
 
+    # Verify serial connection status
+    if ser and ser.is_open:
+        print(f"✅ Serial: {ser.port} @ {ser.baudrate} baud (GPIO 14 TX / GPIO 15 RX)")
+        
+        # Connection Verification (PING)
+        print("⏳ Verifying connection to ESP32...")
+        try:
+            ser.write(json.dumps({"cmd": "PING", "spd": 0}).encode('utf-8') + b'\n')
+            ser.flush()
+            
+            ping_start = time.time()
+            verified = False
+            while time.time() - ping_start < 2.0:
+                if ser.in_waiting:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if "PONG" in line:
+                        verified = True
+                        break
+            if verified:
+                print("✅ Connection verified! ESP32 is responding.")
+            else:
+                print("⚠️  Connection timeout: No PONG response from ESP32.")
+        except Exception as e:
+            print(f"⚠️  Connection verification failed: {e}")
+            
+    else:
+        print("⚠️  Serial port not connected — commands will be logged only")
+
     print()
-    print("🚀 8-Direction Person Following Active!")
+    print("🚀 8-Direction Person Following Active! (Serial Communication)")
     print("  Press Q to quit")
     print()
 
@@ -1075,7 +1074,6 @@ def run_person_tracking() -> str:
         cap.release()
         cv2.destroyAllWindows()
         landmarker.close()
-        sock.close()
 
     print("\n✅ Done!")
     return "Person tracking session completed."
@@ -1186,12 +1184,11 @@ config = types.GenerateContentConfig(
     tools=[
         trigger_robot_movement,
         send_watch_alert,
-        send_motor_command,
     ],
 )
 
 chat = client.chats.create(
-    model="gemini-2.5-flash-lite",
+    model="gemini-3.1-flash-lite",
     config=config
 )
 
@@ -1309,4 +1306,4 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         stop_exercise.set()
-        print("\n\n🛑 Shutting down. Goodbye!")
+        print("\n\n🛑 Shutting down. Goodbye!")

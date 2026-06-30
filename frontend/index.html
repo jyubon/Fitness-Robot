@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fitness Robot • Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="min-h-screen bg-[#0a0a12] text-white">
+  <!-- Header -->
+  <header class="border-b border-white/10 bg-black/40 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-400 flex items-center justify-center">
+          <span class="text-black font-bold text-xl">FR</span>
+        </div>
+        <div>
+          <div class="font-semibold tracking-tight">Fitness Robot</div>
+          <div class="text-[10px] text-white/50 -mt-1">Real-time Training Dashboard</div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <!-- User info -->
+        <div id="userInfo" class="hidden items-center gap-2 text-sm">
+          <div class="px-3 py-1 rounded-full bg-white/5 border border-white/10" id="userEmail"></div>
+          <button onclick="logout()"
+                  class="px-3 py-1 text-xs rounded-full border border-white/20 hover:bg-white/5">Logout</button>
+        </div>
+
+        <!-- Global Force Stop - always prominent when logged in -->
+        <button id="forceStopBtn"
+                onclick="sendForceStop()"
+                class="hidden px-5 py-2 rounded-2xl bg-red-600 hover:bg-red-500 active:scale-[0.985] font-semibold text-sm flex items-center gap-2 shadow-lg shadow-red-900/50">
+          <span>⛔</span>
+          <span>FORCE STOP</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-6">
+    <!-- Auth View -->
+    <div id="authView" class="max-w-md mx-auto">
+      <div class="glass p-8 rounded-3xl">
+        <div class="text-center mb-6">
+          <div class="text-2xl font-semibold">Welcome back</div>
+          <div class="text-white/50 text-sm">Sign in to view your robot in real time</div>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-white/60">Email</label>
+            <input id="loginEmail" type="email" placeholder="you@domain.com"
+                   class="w-full mt-1 bg-black/40 border border-white/15 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white/40">
+          </div>
+          <div>
+            <label class="text-xs text-white/60">Password</label>
+            <input id="loginPassword" type="password" placeholder="••••••••"
+                   class="w-full mt-1 bg-black/40 border border-white/15 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white/40">
+          </div>
+          <button onclick="login()"
+                  class="w-full mt-2 py-3 rounded-2xl bg-white text-black font-semibold active:opacity-90">
+            Sign In
+          </button>
+        </div>
+
+        <div class="my-4 text-center text-xs text-white/40">or</div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs text-white/60">Register Email</label>
+            <input id="regEmail" type="email" placeholder="you@domain.com"
+                   class="w-full mt-1 bg-black/40 border border-white/15 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white/40">
+          </div>
+          <div>
+            <label class="text-xs text-white/60">Password (min 6 chars)</label>
+            <input id="regPassword" type="password" placeholder="••••••••"
+                   class="w-full mt-1 bg-black/40 border border-white/15 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white/40">
+          </div>
+          <button onclick="register()"
+                  class="w-full py-3 rounded-2xl border border-white/30 hover:bg-white/5 text-sm">
+            Create Account
+          </button>
+        </div>
+
+        <div id="authError" class="mt-3 text-red-400 text-xs hidden"></div>
+      </div>
+      <div class="text-center text-[10px] text-white/40 mt-4">
+        All data comes from your Raspberry Pi + ESP32 + watch. No dummy data.
+      </div>
+    </div>
+
+    <!-- Main App (hidden until logged in) -->
+    <div id="appView" class="hidden">
+      <!-- Tabs -->
+      <div class="flex items-center gap-2 mb-4">
+        <button onclick="showTab('live')" id="tab-live"
+                class="tab-btn active px-5 py-2 rounded-2xl bg-white/10 text-sm font-medium">Live Telemetry</button>
+        <button onclick="showTab('steps')" id="tab-steps"
+                class="tab-btn px-5 py-2 rounded-2xl hover:bg-white/5 text-sm font-medium">Step Tracker</button>
+        <button onclick="showTab('analytics')" id="tab-analytics"
+                class="tab-btn px-5 py-2 rounded-2xl hover:bg-white/5 text-sm font-medium">Analytics (Past 7 Days)</button>
+      </div>
+
+      <!-- LIVE VIEW -->
+      <div id="liveView">
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
+          <!-- Camera -->
+          <div class="xl:col-span-7 glass rounded-3xl p-4">
+            <div class="flex items-center justify-between mb-3 px-1">
+              <div class="font-medium flex items-center gap-2">
+                <span>📷</span>
+                <span>Live Camera</span>
+              </div>
+              <div class="flex items-center gap-2 text-xs">
+                <input id="cameraUrl" type="text" placeholder="http://fitness.local:8081/stream"
+                       class="bg-black/40 border border-white/15 rounded-xl px-3 py-1 text-xs w-64">
+                <button onclick="setCameraStream()"
+                        class="px-3 py-1 rounded-xl bg-white/10 hover:bg-white/20 text-xs">Set Stream</button>
+              </div>
+            </div>
+            <div class="relative rounded-2xl overflow-hidden bg-black/60 aspect-video flex items-center justify-center">
+              <img id="cameraFeed" class="max-h-[420px] w-full object-contain hidden" alt="Robot camera feed">
+              <div id="cameraPlaceholder" class="text-center text-white/50">
+                <div class="text-4xl mb-2">📹</div>
+                <div class="text-sm">Enter your Pi's MJPEG stream URL above</div>
+                <div class="text-[10px] mt-1">(e.g. http://fitness.local:8081/stream)</div>
+              </div>
+            </div>
+            <div class="mt-2 text-[10px] text-white/40 px-1">
+              Real-time feed from the robot’s camera. Starts when the Pi is running an exercise.
+            </div>
+          </div>
+
+          <!-- Telemetry Sidebar -->
+          <div class="xl:col-span-5 space-y-4">
+            <!-- Robot State + Current Workout -->
+            <div class="glass rounded-3xl p-4">
+              <div class="flex items-center justify-between">
+                <div class="text-xs uppercase tracking-[1px] text-white/50">Robot State</div>
+                <div id="robotState"
+                     class="px-3 py-0.5 text-xs rounded-full border bg-white/5 border-white/20">STOPPED</div>
+              </div>
+
+              <div class="mt-3">
+                <div class="text-xs text-white/50">CURRENT WORKOUT</div>
+                <div id="currentWorkout" class="text-2xl font-semibold mt-0.5 text-emerald-400">—</div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-3 mt-3">
+                <div>
+                  <div class="text-xs text-white/50">SET</div>
+                  <div id="currentSet" class="text-4xl font-semibold tabular-nums">—</div>
+                </div>
+                <div>
+                  <div class="text-xs text-white/50">REPS</div>
+                  <div id="currentReps" class="text-4xl font-semibold tabular-nums">—</div>
+                  <div id="repsDetail" class="text-xs text-white/50 mt-0.5"></div>
+                </div>
+              </div>
+
+              <div class="mt-3">
+                <div class="text-xs text-white/50 mb-1">PLANK HOLD</div>
+                <div id="plankTime" class="font-mono text-3xl tabular-nums">—</div>
+              </div>
+            </div>
+
+            <!-- Watch Strip -->
+            <div class="glass rounded-3xl p-4">
+              <div class="flex items-center justify-between text-xs text-white/50">
+                <div>TODAY’S STEPS (WATCH)</div>
+                <div id="watchLastSync" class="text-[10px]"></div>
+              </div>
+              <div class="flex items-baseline gap-2 mt-1">
+                <div id="watchSteps" class="text-4xl font-semibold tabular-nums">—</div>
+                <div class="text-xs text-white/50">steps</div>
+              </div>
+              <div id="watchExtra" class="text-xs text-white/50 mt-1"></div>
+            </div>
+          </div>
+
+          <!-- Mode Switcher -->
+          <div class="xl:col-span-12 glass rounded-3xl p-4">
+            <div class="text-xs uppercase tracking-widest text-white/50 mb-2 px-1">REMOTE CONTROL — SWITCH MODE</div>
+            <div class="flex flex-wrap gap-2">
+              <button onclick="switchMode('bicep_curls')" class="mode-btn">Bicep Curls</button>
+              <button onclick="switchMode('pushups')" class="mode-btn">Push-ups</button>
+              <button onclick="switchMode('squats')" class="mode-btn">Squats</button>
+              <button onclick="switchMode('plank')" class="mode-btn">Plank</button>
+            </div>
+            <div class="text-[10px] text-white/40 mt-2 px-1">
+              Clicking a button sends a command to the Pi. The Pi must be running and listening.
+            </div>
+          </div>
+
+          <!-- Encouragement / Form Log -->
+          <div class="xl:col-span-12 glass rounded-3xl p-4">
+            <div class="flex items-center justify-between mb-2 px-1">
+              <div class="font-medium">Encouragement &amp; Form Feedback <span class="text-white/40 text-xs">(real-time from robot)</span></div>
+              <button onclick="clearLog()" class="text-xs px-3 py-1 rounded-full border border-white/15 hover:bg-white/5">Clear</button>
+            </div>
+            <div id="formLog"
+                 class="h-40 overflow-y-auto bg-black/30 rounded-2xl p-3 text-sm font-mono space-y-1 border border-white/10">
+              <div class="text-white/30">Waiting for live data from the Pi...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STEP TRACKER VIEW -->
+      <div id="stepsView" class="hidden">
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
+          <section class="xl:col-span-5 glass rounded-3xl p-5">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs uppercase tracking-widest text-white/50">Watch Connection</div>
+                <div class="text-2xl font-semibold mt-1">Step Tracker</div>
+              </div>
+              <span id="stepStatusBadge" class="step-status disconnected">Disconnected</span>
+            </div>
+
+            <button id="stepConnectBtn" onclick="toggleStepConnection()"
+                    class="w-full mt-5 py-4 rounded-2xl bg-cyan-400 text-black font-semibold active:scale-[0.985] disabled:opacity-50">
+              Connect to Tracker
+            </button>
+
+            <div class="mt-5 rounded-3xl bg-black/30 border border-white/10 p-6 text-center">
+              <div id="stepCount" class="text-7xl font-semibold leading-none tabular-nums">0</div>
+              <div class="text-sm text-white/50 mt-2">steps today</div>
+              <div class="h-2 rounded-full bg-white/10 overflow-hidden mt-5">
+                <div id="stepProgressBar" class="h-full rounded-full bg-emerald-400 transition-all duration-500" style="width: 0%"></div>
+              </div>
+              <div id="stepGoalText" class="text-xs text-white/45 mt-2">0% of 10,000 goal</div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-3 mt-4">
+              <div class="step-metric">
+                <div id="stepCalories" class="step-metric-value">0</div>
+                <div class="step-metric-label">calories</div>
+              </div>
+              <div class="step-metric">
+                <div id="stepDistance" class="step-metric-value">0.00</div>
+                <div class="step-metric-label">km</div>
+              </div>
+              <div class="step-metric">
+                <div id="stepActiveMin" class="step-metric-value">0</div>
+                <div class="step-metric-label">active min</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="xl:col-span-7 space-y-4">
+            <div class="glass rounded-3xl p-5">
+              <div class="text-xs uppercase tracking-widest text-white/50 mb-3">Tracker Actions</div>
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <button class="step-action-btn" onclick="syncStepTime()">Sync Time</button>
+                <button class="step-action-btn" onclick="requestStepData()">Get Data</button>
+                <button class="step-action-btn" onclick="resetStepCount()">Reset Steps</button>
+                <button class="step-action-btn" onclick="exportStepData()">Export CSV</button>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div class="glass rounded-3xl p-5">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="font-medium">Step History</div>
+                  <div class="text-xs text-white/40">Last 30 saved days</div>
+                </div>
+                <div id="stepHistoryList" class="space-y-2 text-sm max-h-[260px] overflow-auto">
+                  <div class="text-white/40 text-xs">No data yet.</div>
+                </div>
+              </div>
+
+              <div class="glass rounded-3xl p-5">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="font-medium">Tracker Log</div>
+                  <button onclick="clearStepLog()" class="text-xs px-3 py-1 rounded-full border border-white/15 hover:bg-white/5">Clear</button>
+                </div>
+                <div id="stepLogContainer"
+                     class="h-[260px] overflow-y-auto bg-black/30 rounded-2xl p-3 text-xs font-mono space-y-1 border border-white/10">
+                  <div class="text-white/30">Ready to connect...</div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ANALYTICS VIEW -->
+      <div id="analyticsView" class="hidden">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+          <div class="glass rounded-3xl p-4">
+            <div class="text-xs text-white/50">Total Reps (7d)</div>
+            <div id="kpiTotalReps" class="text-3xl font-semibold mt-1 tabular-nums">—</div>
+          </div>
+          <div class="glass rounded-3xl p-4">
+            <div class="text-xs text-white/50">Total Plank Time</div>
+            <div id="kpiPlankTime" class="text-3xl font-semibold mt-1 tabular-nums">—</div>
+          </div>
+          <div class="glass rounded-3xl p-4">
+            <div class="text-xs text-white/50">Total Steps</div>
+            <div id="kpiSteps" class="text-3xl font-semibold mt-1 tabular-nums">—</div>
+          </div>
+          <div class="glass rounded-3xl p-4">
+            <div class="text-xs text-white/50">Form Accuracy</div>
+            <div id="kpiForm" class="text-3xl font-semibold mt-1 tabular-nums">—</div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="glass rounded-3xl p-4">
+            <div class="text-sm font-medium mb-2">Reps per Exercise (Daily)</div>
+            <canvas id="repsChart" height="110"></canvas>
+          </div>
+          <div class="glass rounded-3xl p-4">
+            <div class="text-sm font-medium mb-2">Active vs Total Session Time</div>
+            <canvas id="timeChart" height="110"></canvas>
+          </div>
+          <div class="glass rounded-3xl p-4">
+            <div class="text-sm font-medium mb-2">Form Breakdown (7 days)</div>
+            <canvas id="formChart" height="110"></canvas>
+          </div>
+          <div class="glass rounded-3xl p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-medium">Session History</div>
+              <button onclick="generateDemoData()" class="text-xs px-3 py-1 rounded-full bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/30 transition-all">Generate Demo Data</button>
+            </div>
+            <div id="sessionHistory" class="text-sm max-h-[220px] overflow-auto space-y-1"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
