@@ -71,6 +71,14 @@ class StreamingHandler(BaseHTTPRequestHandler):
         # Suppress request logging to avoid cluttering the console at 30fps
         pass
 
+    def do_OPTIONS(self):
+        """Handle CORS preflight requests from browsers."""
+        self.send_response(204)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
     def do_GET(self):
         global _latest_frame
         if self.path == '/stream':
@@ -79,6 +87,10 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-cache, private')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+            # Allow browsers on the same LAN (including Android Chrome) to load
+            # this stream cross-origin even when the frontend is on HTTPS.
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
             self.end_headers()
             try:
                 while True:
