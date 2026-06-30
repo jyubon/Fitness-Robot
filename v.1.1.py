@@ -8,6 +8,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io.wavfile import write
 from google import genai
+# pyrefly: ignore [missing-import]
 from google.genai import types
 import serial
 import json
@@ -17,6 +18,7 @@ import queue
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
+# pyrefly: ignore [missing-import]
 import api_keys
 
 # 1. Initialize the new client with the API key from api_keys.py
@@ -725,8 +727,8 @@ def draw_frame(frame, command, state, person_x, shoulder_width, fps, d_zone, h_z
     h, w = frame.shape[:2]
 
     # Zone overlays
-    CENTER_ZONE_LEFT  = 0.42
-    CENTER_ZONE_RIGHT = 0.58
+    CENTER_ZONE_LEFT  = 0.38
+    CENTER_ZONE_RIGHT = 0.62
     TOO_CLOSE = 0.43
     TOO_FAR   = 0.18
 
@@ -828,8 +830,8 @@ def run_person_tracking() -> str:
     FRAME_SKIP    = 1
 
     # ─── Following Thresholds ───
-    CENTER_ZONE_LEFT  = 0.42
-    CENTER_ZONE_RIGHT = 0.58
+    CENTER_ZONE_LEFT  = 0.38
+    CENTER_ZONE_RIGHT = 0.62
     TOO_CLOSE = 0.43
     TOO_FAR   = 0.18
 
