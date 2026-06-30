@@ -1543,7 +1543,6 @@ def save_session_to_firestore(summary):
 
 def print_session_error_summary():
     """Print a summary of all unique errors logged in the session."""
-    global session_errors
     if session_errors:
         print("\n" + "=" * 50)
         print("  SESSION ERROR SUMMARY (ALL DETECTED ERRORS)")
@@ -1789,7 +1788,7 @@ def run_bicep_curls(ui=None):
     # Workout set/rep trackers
     current_set = 1
     current_set_reps = 0
-    set_finished = False
+    workout_state = "DOING_SET"
     last_rep_time = None
     left_reps_at_set_start = 0
     right_reps_at_set_start = 0
@@ -1968,15 +1967,34 @@ def run_bicep_curls(ui=None):
             current_set_right_reps = arms['right']['counter'] - right_reps_at_set_start
             current_set_reps = min(current_set_left_reps, current_set_right_reps)
 
-            # End current set if >= 8 reps completed and no new reps done for 10 seconds
-            if current_set_reps >= 8 and not set_finished:
-                if last_rep_time is not None and now - last_rep_time > 10.0:
-                    set_finished = True
-                    print(f"\n✅ Set {current_set} Finished! Completed {current_set_reps} reps.")
+            person_in_frame = results and results.pose_landmarks and len(results.pose_landmarks) > 0
+
+            if current_set > 4:
+                print("🎉 Workout completed! 4 Sets done.")
+                break
+
+            if workout_state == "DOING_SET":
+                if current_set_reps >= 8:
+                    if current_set >= 4:
+                        print("🎉 Workout completed! 4 Sets done.")
+                        try:
+                            publish_set_complete("bicep_curls", current_set, current_set_reps)
+                        except Exception:
+                            pass
+                        break
+                    print(f"\n✅ Set {current_set} Finished! Instantly starting next set.")
+                    try:
+                        publish_set_complete("bicep_curls", current_set, current_set_reps)
+                    except Exception:
+                        pass
+                    current_set += 1
+                    left_reps_at_set_start = arms['left']['counter']
+                    right_reps_at_set_start = arms['right']['counter']
+                    print(f"🔄 Starting Set {current_set}")
 
             # Warn user if the hands have uneven reps in the current set
             is_uneven = (current_set_left_reps != current_set_right_reps) and (max(current_set_left_reps, current_set_right_reps) > 0)
-            if is_uneven and not set_finished:
+            if is_uneven and workout_state == "DOING_SET":
                 if now - last_uneven_warning_time > 5.0:
                     log_session_error(f"Equalize both hands (Left: {current_set_left_reps} | Right: {current_set_right_reps})")
                     last_uneven_warning_time = now
@@ -1999,8 +2017,12 @@ def run_bicep_curls(ui=None):
                 prev_l_cnt = arms['left']['counter']
                 prev_r_cnt = arms['right']['counter']
 
-                l_fb, l_clr, l_stg, l_swing = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
-                r_fb, r_clr, r_stg, r_swing = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
+                if workout_state != "DOING_SET":
+                    l_fb, l_clr, l_stg, l_swing = "REST", ACCENT_GREEN, "REST", False
+                    r_fb, r_clr, r_stg, r_swing = "REST", ACCENT_GREEN, "REST", False
+                else:
+                    l_fb, l_clr, l_stg, l_swing = process_arm(l_s, l_e, l_w, "Left", arms['left'], image, img_w, img_h)
+                    r_fb, r_clr, r_stg, r_swing = process_arm(r_s, r_e, r_w, "Right", arms['right'], image, img_w, img_h)
 
                 if l_swing or r_swing:
                     swing_warning_active_until = now + 0.5
@@ -2039,6 +2061,7 @@ def run_bicep_curls(ui=None):
                         last_console_warning_time = now
 
                 draw_skeleton(image, results)
+<<<<<<< Updated upstream
 
                 draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
                 cv2.putText(image, "BICEP CURLS", (15, 28),
@@ -2053,6 +2076,95 @@ def run_bicep_curls(ui=None):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+=======
+
+                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
+                cv2.putText(image, "BICEP CURLS", (15, 28),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
+                cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
+                cv2.putText(image, l_fb, (120, 58),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
+                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
+                cv2.putText(image, r_fb, (120, 90),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
+                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+            else:
+                if positioning_completed and not paused:
+                    robot_status = adjust_robot_position("BICEP_CURLS", None)
+                    if robot_status != "SEARCHING":
+                        log_session_error("Align horizontally GET IN POSITION.")
+                else:
+                    send_command("STOP")
+
+            # Show slow down warning banner on screen
+            if time.time() < warning_active_until:
+                flash = int(time.time() * 5) % 2 == 0
+                bg_color = (20, 20, 100) if flash else (10, 10, 40)
+                border_color = (0, 0, 255) if flash else (50, 50, 200)
+
+                p_w = int(img_w * 0.7)
+                p_h = 65
+                p_x = (img_w - p_w) // 2
+                p_y = int(img_h * 0.4)
+
+                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
+                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
+
+                warn_msg = "WARNING: SLOW DOWN!"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.7
+                thickness = 2
+                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
+                tx = p_x + (p_w - text_w) // 2
+                ty = p_y + (p_h + text_h) // 2
+
+                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
+                            (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
+
+            # Show swing warning banner on screen
+            if time.time() < swing_warning_active_until:
+                bg_color = (15, 45, 95)
+                border_color = (80, 175, 225)
+
+                p_w = int(img_w * 0.8)
+                p_h = 55
+                p_x = (img_w - p_w) // 2
+                p_y = int(img_h * 0.75)
+
+                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
+                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
+
+                warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.55
+                thickness = 2
+                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
+                tx = p_x + (p_w - text_w) // 2
+                ty = p_y + (p_h + text_h) // 2
+
+                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
+                            (255, 255, 255), thickness, cv2.LINE_AA)
+
+            # Draw set stats panel (Set X, Reps Y)
+            draw_glass_panel(image, 5, 130, 280, 110, alpha=0.65, radius=10)
+            cv2.putText(image, "CURRENT SET STATS", (15, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
+            cv2.putText(image, f"SET: {current_set}", (15, 185),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+            cv2.putText(image, f"REPS: {current_set_reps}", (140, 185),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+
+            # Show individual arm counts in the current set
+            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
+
+            if set_finished:
+                cv2.putText(image, "SET FINISHED (REST)", (15, 230),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
+>>>>>>> Stashed changes
             else:
                 if positioning_completed and not paused:
                     robot_status = adjust_robot_position("BICEP_CURLS", None)
@@ -2263,10 +2375,11 @@ def run_pushups(ui=None):
         return stage, counter, is_body_straight, elbow_angle
 
     pushup_counter = 0
-    pushup_stage = 'up'
+    pushup_stage = "up"
     current_set = 1
     reps_in_set = 0
-    set_ended = False
+    workout_state = "DOING_SET"
+    set_started = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -2480,21 +2593,17 @@ def run_pushups(ui=None):
                         is_horizontal = abs(shoulder[0] - ankle[0]) > abs(shoulder[1] - ankle[1])
 
                         if is_horizontal:
-                            prev_counter = pushup_counter
-                            pushup_stage, pushup_counter, is_body_straight, elbow_angle = count_pushups(
-                                shoulder, elbow, wrist, neck, hip, ankle, pushup_stage, pushup_counter
-                            )
+                            if workout_state == "DOING_SET":
+                                prev_counter = pushup_counter
+                                pushup_stage, pushup_counter, is_body_straight, elbow_angle = count_pushups(
+                                    shoulder, elbow, wrist, neck, hip, ankle, pushup_stage, pushup_counter
+                                )
 
-                            if pushup_counter > prev_counter:
-                                if set_ended:
-                                    current_set += 1
-                                    reps_in_set = 1
-                                    set_ended = False
-                                else:
+                                if pushup_counter > prev_counter:
                                     reps_in_set += 1
 
-                            if not is_body_straight:
-                                log_session_error("Form a straight line with body")
+                                if not is_body_straight:
+                                    log_session_error("Form a straight line with body")
                         else:
                             if reps_in_set > 0 and not set_ended:
                                 set_ended = True
@@ -2639,6 +2748,7 @@ def run_squats(ui=None):
     current_set = 1
     reps_in_set = 0
     last_rep_time = None
+    workout_state = "DOING_SET"
     set_started = False
 
     # Arm check grace period timer
@@ -3716,7 +3826,6 @@ def main():
             if (results.pose_landmarks and
                     len(results.pose_landmarks) > 0):
                 lm        = results.pose_landmarks[0]
-                nose      = lm[0]
                 l_shoulder = lm[11]
                 r_shoulder = lm[12]
                 l_hip      = lm[23]
