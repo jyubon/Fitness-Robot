@@ -707,6 +707,49 @@ def calculate_command(person_x, shoulder_width):
     return command, state, d_zone, h_zone
 
 
+def calculate_approach_command(person_x, shoulder_width):
+    """Calculate 8-directional movement command specifically for 0.5m screen interaction approach."""
+
+    # Horizontal zone
+    if person_x < CENTER_ZONE_LEFT:
+        h_zone = "LEFT"
+    elif person_x > CENTER_ZONE_RIGHT:
+        h_zone = "RIGHT"
+    else:
+        h_zone = "CENTER"
+
+    # Distance zone targeting 0.5m (normalized shoulder width between 0.65 and 0.75)
+    APPROACH_TOO_CLOSE = 0.75
+    APPROACH_TOO_FAR   = 0.65
+
+    if shoulder_width > APPROACH_TOO_CLOSE:
+        d_zone = "CLOSE"
+    elif shoulder_width < APPROACH_TOO_FAR:
+        d_zone = "FAR"
+    else:
+        d_zone = "GOOD"
+
+    # 8-direction matrix
+    matrix = {
+        ("FAR",   "LEFT"):   "FWD_LEFT",
+        ("FAR",   "CENTER"): "FORWARD",
+        ("FAR",   "RIGHT"):  "FWD_RIGHT",
+        ("GOOD",  "LEFT"):   "LEFT",
+        ("GOOD",  "CENTER"): "STOP",
+        ("GOOD",  "RIGHT"):  "RIGHT",
+        ("CLOSE", "LEFT"):   "BWD_LEFT",
+        ("CLOSE", "CENTER"): "BACKWARD",
+        ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+    }
+
+    command = matrix.get((d_zone, h_zone), "STOP")
+    state = (f"APPROACH {command} "
+             f"(x:{person_x:.2f} w:{shoulder_width:.3f})")
+
+    return command, state, d_zone, h_zone
+
+
+
 # ═══════════════════════════════════════════════════════
 #  DRAWING
 # ═══════════════════════════════════════════════════════
@@ -4607,7 +4650,8 @@ class FitnessRobotUI(tk.Tk):
         
         self.exercise_active = False
         self.next_remote_mode = None
-        self.show_home_screen()
+        # Schedule the startup follow launch after the window is fully initialized
+        self.after(500, self.launch_startup_follow)
         self.after(200, self.check_remote_commands)
         
     def show_home_screen(self):
@@ -4762,6 +4806,9 @@ class FitnessRobotUI(tk.Tk):
 
     def launch_person_follow(self):
         self.run_exercise("Person Following", lambda ui: main())
+
+    def launch_startup_follow(self):
+        self.run_exercise("Startup Follow", run_startup_follow)
 
     def launch_bicep_curls(self):
         self.run_exercise("Bicep Curls", run_bicep_curls)
@@ -5172,6 +5219,292 @@ def run_rest_mode(ui=None):
         else:
             ui.resting_shown = False
             ui.show_home_screen()
+
+
+def run_startup_follow(ui=None):
+    """
+    Startup sequence:
+    Phase 1: Follow the person as they walk to their exercise spot (normal follow distance).
+    Phase 2: Once the person stops and faces the screen (or waves/triggers stop),
+             approach them until the distance is exactly 0.5m (comfortable arm's reach).
+    Phase 3: Exit to home screen automatically.
+    """
+    # ─── MediaPipe Tasks API Setup ───
+    options = vision.PoseLandmarkerOptions(
+        base_options=mp_tasks.BaseOptions(
+            model_asset_path=MODEL_PATH
+        ),
+        running_mode=vision.RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    landmarker = vision.PoseLandmarker.create_from_options(options)
+    
+    # Setup hand landmark detection for open palm stop gesture
+    hand_options = vision.HandLandmarkerOptions(
+        base_options=mp_tasks.BaseOptions(
+            model_asset_path=HAND_MODEL_PATH
+        ),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.6,
+        min_hand_presence_confidence=0.6,
+        min_tracking_confidence=0.6
+    )
+    hand_landmarker = vision.HandLandmarker.create_from_options(hand_options)
+    
+    timestamp_ms = 0
+    print("✅ MediaPipe Pose/Hand Loaded for Startup Follow")
+
+    # ─── Camera ───
+    print("\nOpening camera for Startup Follow...")
+    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(CAMERA_INDEX)
+
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    for _ in range(5):
+        cap.read()
+
+    # GUI text customization
+    if ui is not None:
+        if hasattr(ui, 'home_btn') and ui.home_btn is not None:
+            ui.home_btn.text = "Skip to Menu"
+            ui.home_btn._draw()
+        ui.update_feedback("Welcome! Please walk to your exercise spot. I will follow you...", "#96D75F")
+
+    # Global tracking variables
+    global home_clicked
+    home_clicked = False
+    
+    # Phase tracking: 1 = Following, 2 = Approaching to 0.5m
+    phase = 1 
+    
+    frame_counter = 0
+    fps = 0
+    fps_counter = 0
+    fps_time = time.time()
+    
+    # Hand tracking gestures
+    palm_stop_frames = 0
+    
+    command = "STOP"
+    state = "STARTING"
+    person_x = None
+    shoulder_width = None
+    d_zone = "GOOD"
+    h_zone = "CENTER"
+    last_results = None
+    lost_since = None
+    
+    # Timing variables for state transition
+    stop_start_time = None
+    good_approach_start_time = None
+
+    try:
+        while True:
+            # Handle remote UI exit commands if any
+            if force_stop.is_set():
+                print("  [REMOTE] Force Stop / Exit Startup Follow received")
+                break
+                
+            ret, frame = cap.read()
+            if not ret:
+                continue
+                
+            frame_counter += 1
+            timestamp_ms += 33
+            
+            # Process frames
+            if frame_counter % FRAME_SKIP == 0:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                mp_image  = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=frame_rgb
+                )
+
+                # Pose detection
+                results = landmarker.detect_for_video(mp_image, timestamp_ms)
+                last_results = results
+
+                # Hand detection (every few frames to optimize performance)
+                hand_detected_palm = False
+                if frame_counter % HAND_FRAME_SKIP == 0:
+                    hand_results = detect_hand_frame(hand_landmarker, frame, timestamp_ms)
+                    if is_open_palm_stop(hand_results):
+                        palm_stop_frames += 1
+                        if palm_stop_frames >= 5: # Detected open palm gesture
+                            hand_detected_palm = True
+                    else:
+                        palm_stop_frames = max(0, palm_stop_frames - 1)
+
+                person_x = None
+                shoulder_width = None
+
+                if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    lm = results.pose_landmarks[0]
+                    l_shoulder = lm[11]
+                    r_shoulder = lm[12]
+                    l_hip = lm[23]
+                    r_hip = lm[24]
+                    nose = lm[0]
+
+                    shoulder_ok = l_shoulder.visibility > 0.2 and r_shoulder.visibility > 0.2
+                    hip_ok = l_hip.visibility > 0.2 and r_hip.visibility > 0.2
+                    facing_front = nose.visibility > 0.5
+
+                    if shoulder_ok:
+                        shoulder_center = (l_shoulder.x + r_shoulder.x) / 2
+                        shoulder_width = abs(l_shoulder.x - r_shoulder.x)
+                        
+                        if hip_ok:
+                            hip_center = (l_hip.x + r_hip.x) / 2
+                            person_x = shoulder_center * 0.6 + hip_center * 0.4
+                        else:
+                            person_x = shoulder_center
+
+                        lost_since = None
+
+                        # --- MOVEMENT LOGIC BASED ON PHASE ---
+                        if phase == 1:
+                            # Standard tracking distance
+                            command, state, d_zone, h_zone = calculate_command(person_x, shoulder_width)
+                            
+                            # Transition trigger 1: Hand stop gesture
+                            # Transition trigger 2: User stopped and stood still facing camera for 1.5s
+                            if command == "STOP" and facing_front:
+                                if stop_start_time is None:
+                                    stop_start_time = time.time()
+                                elif time.time() - stop_start_time > 1.5:
+                                    # User is stationary and facing us. Transition to Phase 2.
+                                    phase = 2
+                                    stop_start_time = None
+                                    print("🤖 Transition to Phase 2: Approach to 0.5m (Automatic Stand Still & Facing)")
+                            else:
+                                stop_start_time = None
+                                
+                            if hand_detected_palm:
+                                phase = 2
+                                stop_start_time = None
+                                print("🤖 Transition to Phase 2: Approach to 0.5m (Palm Gesture)")
+
+                        elif phase == 2:
+                            # Approach closer to 0.5m
+                            # Target: shoulder width between 0.65 and 0.75
+                            command, state, d_zone, h_zone = calculate_approach_command(person_x, shoulder_width)
+                            
+                            # Transition to Phase 3:
+                            # Robot is stable in the GOOD zone at 0.5m distance and centered
+                            if d_zone == "GOOD" and h_zone == "CENTER":
+                                if good_approach_start_time is None:
+                                    good_approach_start_time = time.time()
+                                elif time.time() - good_approach_start_time > 1.5:
+                                    print("🤖 Transition to Phase 3: Exercise Selection Screen (Stable at 0.5m)")
+                                    break
+                            else:
+                                good_approach_start_time = None
+                                
+                        send_command(command)
+
+                        # Publish status
+                        try:
+                            if person_x is not None and command not in ("STOP", "SEARCH"):
+                                publish_robot_state("FOLLOWING", command)
+                            else:
+                                publish_robot_state("STOPPED", command)
+                        except Exception:
+                            pass
+                else:
+                    # Lost person
+                    now = time.time()
+                    if lost_since is None:
+                        lost_since = now
+                        send_command("STOP")
+                        command = "STOP"
+                        state = "LOST"
+                    elif now - lost_since > LOST_PERSON_TIMEOUT:
+                        send_command("SEARCH")
+                        command = "SEARCH"
+                        state = "SEARCHING..."
+
+                    d_zone = "GOOD"
+                    h_zone = "CENTER"
+                    stop_start_time = None
+                    good_approach_start_time = None
+
+            # Render display
+            display = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            if last_results:
+                draw_skeleton(display, last_results)
+
+            draw_frame(display, command, state, person_x, shoulder_width, fps, d_zone, h_zone)
+            draw_home_button(display)
+
+            # Local server stream update
+            local_stream_server.update_frame(display)
+            if SHOW_WINDOW:
+                cv2.imshow('Person Follower', display)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+
+            # Update UI elements
+            if ui is not None:
+                # Update status cards in UI
+                phase_name = "1/2: Walk to spot" if phase == 1 else "2/2: Approaching (0.5m)"
+                ui.update_stat_card("Phase", phase_name, "#96D75F" if phase == 1 else "#FF9500")
+                
+                dist_str = "Far" if d_zone == "FAR" else ("Close" if d_zone == "CLOSE" else "Good")
+                ui.update_stat_card("Distance", dist_str, "#96D75F" if d_zone == "GOOD" else "#FF9500")
+                
+                target_str = "0.5m" if phase == 2 else "1.2m"
+                ui.update_stat_card("Target Dist", target_str, "#5F5FDF")
+                
+                if phase == 1:
+                    ui.update_feedback("Walk to your exercise spot. I will follow you behind.\nTurn around & stop (or show open palm) when ready.", "#96D75F")
+                else:
+                    ui.update_feedback("Arrived! Stand still while I move to 0.5m distance so you can select exercises from the screen.", "#FF9500")
+
+                ui.update()
+                if home_clicked:
+                    print("  [UI] Skip to Menu clicked during Startup Follow")
+                    break
+
+            # FPS calculation
+            fps_counter += 1
+            if time.time() - fps_time >= 1.0:
+                fps = fps_counter
+                fps_counter = 0
+                fps_time = time.time()
+
+    finally:
+        send_command("STOP")
+        cap.release()
+        if ui is None:
+            cv2.destroyAllWindows()
+        try:
+            landmarker.close()
+        except:
+            pass
+        try:
+            hand_landmarker.close()
+        except:
+            pass
+            
+        if ui is not None:
+            # Restore Home button text and show home screen
+            if hasattr(ui, 'home_btn') and ui.home_btn is not None:
+                ui.home_btn.text = "Home"
+                ui.home_btn._draw()
+            ui.show_home_screen()
+
 
 if __name__ == "__main__":
     # Start local HTTP/WS servers for streaming & remote control
