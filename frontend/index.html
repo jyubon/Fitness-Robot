@@ -194,9 +194,18 @@
               <button onclick="switchMode('pushups')" class="mode-btn">Push-ups</button>
               <button onclick="switchMode('squats')" class="mode-btn">Squats</button>
               <button onclick="switchMode('plank')" class="mode-btn">Plank</button>
+              <button onclick="switchMode('rest')" class="mode-btn border-amber-500 hover:bg-amber-500/10">Rest</button>
             </div>
             <div class="text-[10px] text-white/40 mt-2 px-1">
               Clicking a button sends a command to the Pi. The Pi must be running and listening.
+            </div>
+          </div>
+
+          <!-- Active Exercise State Controller -->
+          <div id="stateControllerCard" class="xl:col-span-12 glass rounded-3xl p-4 hidden">
+            <div class="text-xs uppercase tracking-widest text-white/50 mb-2 px-1">Active Workout Controller</div>
+            <div class="flex flex-wrap gap-3 mt-2 px-1" id="stateControlsContainer">
+              <!-- Dynamically populated buttons -->
             </div>
           </div>
 

@@ -152,6 +152,11 @@ _pause_accumulator = 0.0
 force_stop = threading.Event()
 remote_mode_queue = queue.Queue()  # ("switch", "BICEP_CURLS") etc.
 
+# Shared state for manual set/rest transitions
+workout_state = "DOING_SET" # "BETWEEN_SETS", "RESTING", "ACTIVE", "READY"
+workout_action = None # "continue", "rest", "resume"
+workout_action_queue = queue.Queue()
+
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
@@ -484,6 +489,8 @@ def _control_listener():
                     mode = data.get("mode")
                     if mode:
                         remote_mode_queue.put(("switch", str(mode).upper()))
+                elif action in ("continue_set", "take_rest", "resume_exercise"):
+                    remote_mode_queue.put(("action", action))
 
                 processed.add(doc.id)
                 doc.reference.set({
@@ -1786,9 +1793,10 @@ def run_bicep_curls(ui=None):
     last_swing_warning_time = 0.0
 
     # Workout set/rep trackers
+    global workout_state, workout_action
+    workout_state = "DOING_SET"
     current_set = 1
     current_set_reps = 0
-    workout_state = "DOING_SET"
     last_rep_time = None
     left_reps_at_set_start = 0
     right_reps_at_set_start = 0
@@ -1884,6 +1892,120 @@ def run_bicep_curls(ui=None):
                         except Exception:
                             pass
 
+            # --- Check workout state transitions ---
+            # Drain actions from workout_action_queue
+            while not workout_action_queue.empty():
+                act = workout_action_queue.get_nowait()
+                if act == "continue_set":
+                    workout_action = "continue"
+                elif act == "take_rest":
+                    workout_action = "rest"
+                elif act == "resume_exercise":
+                    workout_action = "resume"
+
+            # Transition from BETWEEN_SETS
+            if workout_state == "BETWEEN_SETS":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "between_sets_shown", False):
+                    ui.show_between_sets_screen(
+                        continue_callback=lambda: workout_action_queue.put("continue_set"),
+                        rest_callback=lambda: workout_action_queue.put("take_rest")
+                    )
+                    ui.between_sets_shown = True
+                    ui.resting_shown = False
+                    publish_robot_state("BETWEEN_SETS")
+                
+                # Check actions
+                if workout_action == "continue":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                        ui.show_exercise_screen("Bicep Curls")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    left_reps_at_set_start = arms['left']['counter']
+                    right_reps_at_set_start = arms['right']['counter']
+                    continue
+                elif workout_action == "rest":
+                    workout_state = "RESTING"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                    continue
+                
+                # Draw between sets frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(30, 20, 20), radius=15)
+                cv2.putText(image, "BETWEEN SETS", (img_w // 2 - 120, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_GREEN, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Continue or Rest", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Bicep Curls', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
+
+            # Transition from RESTING
+            elif workout_state == "RESTING":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "resting_shown", False):
+                    ui.show_resting_screen(
+                        resume_callback=lambda: workout_action_queue.put("resume_exercise")
+                    )
+                    ui.resting_shown = True
+                    ui.between_sets_shown = False
+                    publish_robot_state("RESTING")
+                
+                # Check actions
+                if workout_action == "resume":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.resting_shown = False
+                        ui.show_exercise_screen("Bicep Curls")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    left_reps_at_set_start = arms['left']['counter']
+                    right_reps_at_set_start = arms['right']['counter']
+                    continue
+                
+                # Draw resting frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(20, 20, 30), radius=15)
+                cv2.putText(image, "RESTING...", (img_w // 2 - 90, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_ORANGE, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Resume when ready", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Bicep Curls', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
+
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
                 if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
@@ -1975,22 +2097,15 @@ def run_bicep_curls(ui=None):
 
             if workout_state == "DOING_SET":
                 if current_set_reps >= 8:
-                    if current_set >= 4:
-                        print("🎉 Workout completed! 4 Sets done.")
-                        try:
-                            publish_set_complete("bicep_curls", current_set, current_set_reps)
-                        except Exception:
-                            pass
-                        break
-                    print(f"\n✅ Set {current_set} Finished! Instantly starting next set.")
+                    print(f"\n✅ Set {current_set} Finished! Completed {current_set_reps} reps.")
                     try:
                         publish_set_complete("bicep_curls", current_set, current_set_reps)
                     except Exception:
                         pass
-                    current_set += 1
-                    left_reps_at_set_start = arms['left']['counter']
-                    right_reps_at_set_start = arms['right']['counter']
-                    print(f"🔄 Starting Set {current_set}")
+                    workout_state = "BETWEEN_SETS"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
 
             # Warn user if the hands have uneven reps in the current set
             is_uneven = (current_set_left_reps != current_set_right_reps) and (max(current_set_left_reps, current_set_right_reps) > 0)
@@ -2061,22 +2176,6 @@ def run_bicep_curls(ui=None):
                         last_console_warning_time = now
 
                 draw_skeleton(image, results)
-<<<<<<< Updated upstream
-
-                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
-                cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-                cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
-                cv2.putText(image, l_fb, (120, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
-                cv2.putText(image, r_fb, (120, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
-                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
-=======
 
                 draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
                 cv2.putText(image, "BICEP CURLS", (15, 28),
@@ -2164,7 +2263,6 @@ def run_bicep_curls(ui=None):
             if set_finished:
                 cv2.putText(image, "SET FINISHED (REST)", (15, 230),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
->>>>>>> Stashed changes
             else:
                 if positioning_completed and not paused:
                     robot_status = adjust_robot_position("BICEP_CURLS", None)
@@ -2470,6 +2568,118 @@ def run_pushups(ui=None):
                         except Exception:
                             pass
 
+            # --- Check workout state transitions ---
+            # Drain actions from workout_action_queue
+            while not workout_action_queue.empty():
+                act = workout_action_queue.get_nowait()
+                if act == "continue_set":
+                    workout_action = "continue"
+                elif act == "take_rest":
+                    workout_action = "rest"
+                elif act == "resume_exercise":
+                    workout_action = "resume"
+
+            # Transition from BETWEEN_SETS
+            if workout_state == "BETWEEN_SETS":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "between_sets_shown", False):
+                    ui.show_between_sets_screen(
+                        continue_callback=lambda: workout_action_queue.put("continue_set"),
+                        rest_callback=lambda: workout_action_queue.put("take_rest")
+                    )
+                    ui.between_sets_shown = True
+                    ui.resting_shown = False
+                    publish_robot_state("BETWEEN_SETS")
+                
+                # Check actions
+                if workout_action == "continue":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                        ui.show_exercise_screen("Push-ups")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    reps_in_set = 0
+                    continue
+                elif workout_action == "rest":
+                    workout_state = "RESTING"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                    continue
+                
+                # Draw between sets frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(30, 20, 20), radius=15)
+                cv2.putText(image, "BETWEEN SETS", (img_w // 2 - 120, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_GREEN, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Continue or Rest", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Push-ups', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
+
+            # Transition from RESTING
+            elif workout_state == "RESTING":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "resting_shown", False):
+                    ui.show_resting_screen(
+                        resume_callback=lambda: workout_action_queue.put("resume_exercise")
+                    )
+                    ui.resting_shown = True
+                    ui.between_sets_shown = False
+                    publish_robot_state("RESTING")
+                
+                # Check actions
+                if workout_action == "resume":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.resting_shown = False
+                        ui.show_exercise_screen("Push-ups")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    reps_in_set = 0
+                    continue
+                
+                # Draw resting frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(20, 20, 30), radius=15)
+                cv2.putText(image, "RESTING...", (img_w // 2 - 90, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_ORANGE, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Resume when ready", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Push-ups', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
+
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
                 if frame_counter % HAND_FRAME_SKIP == 0 or last_hand_results is None:
@@ -2605,14 +2815,17 @@ def run_pushups(ui=None):
                                 if not is_body_straight:
                                     log_session_error("Form a straight line with body")
                         else:
-                            if reps_in_set > 0 and not set_ended:
-                                set_ended = True
+                            if reps_in_set > 0:
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
                                 robot_status = "TRACKING"
                                 try:
                                     publish_set_complete("pushups", current_set, reps_in_set)
                                 except Exception:
                                     pass
+                                workout_state = "BETWEEN_SETS"
+                                workout_action = None
+                                if ui is not None:
+                                    ui.between_sets_shown = False
                             log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     if positioning_completed and not paused:
@@ -2855,6 +3068,122 @@ def run_squats(ui=None):
                             publish_robot_state("ACTIVE")
                         except Exception:
                             pass
+
+            # --- Check workout state transitions ---
+            # Drain actions from workout_action_queue
+            while not workout_action_queue.empty():
+                act = workout_action_queue.get_nowait()
+                if act == "continue_set":
+                    workout_action = "continue"
+                elif act == "take_rest":
+                    workout_action = "rest"
+                elif act == "resume_exercise":
+                    workout_action = "resume"
+
+            # Transition from BETWEEN_SETS
+            if workout_state == "BETWEEN_SETS":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "between_sets_shown", False):
+                    ui.show_between_sets_screen(
+                        continue_callback=lambda: workout_action_queue.put("continue_set"),
+                        rest_callback=lambda: workout_action_queue.put("take_rest")
+                    )
+                    ui.between_sets_shown = True
+                    ui.resting_shown = False
+                    publish_robot_state("BETWEEN_SETS")
+                
+                # Check actions
+                if workout_action == "continue":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                        ui.show_exercise_screen("Squats")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    reps_in_set = 0
+                    set_started = False
+                    last_rep_time = None
+                    continue
+                elif workout_action == "rest":
+                    workout_state = "RESTING"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                    continue
+                
+                # Draw between sets frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(30, 20, 20), radius=15)
+                cv2.putText(image, "BETWEEN SETS", (img_w // 2 - 120, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_GREEN, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Continue or Rest", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Squats', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
+
+            # Transition from RESTING
+            elif workout_state == "RESTING":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "resting_shown", False):
+                    ui.show_resting_screen(
+                        resume_callback=lambda: workout_action_queue.put("resume_exercise")
+                    )
+                    ui.resting_shown = True
+                    ui.between_sets_shown = False
+                    publish_robot_state("RESTING")
+                
+                # Check actions
+                if workout_action == "resume":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.resting_shown = False
+                        ui.show_exercise_screen("Squats")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    reps_in_set = 0
+                    set_started = False
+                    last_rep_time = None
+                    continue
+                
+                # Draw resting frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(20, 20, 30), radius=15)
+                cv2.putText(image, "RESTING...", (img_w // 2 - 90, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_ORANGE, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Resume when ready", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Squats', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -3125,11 +3454,12 @@ def run_squats(ui=None):
                         publish_set_complete("squats", current_set, reps_in_set)
                     except Exception:
                         pass
-                    current_set += 1
-                    reps_in_set = 0
+                    workout_state = "BETWEEN_SETS"
+                    workout_action = None
                     set_started = False
                     last_rep_time = None
-                    set_finished = True
+                    if ui is not None:
+                        ui.between_sets_shown = False
 
             img_h, img_w = image.shape[:2]
 
@@ -3290,6 +3620,8 @@ def run_plank(ui=None):
     plank_timer = 0
     in_plank = False
     start_time = None
+    current_set = 1
+    plank_hold_in_set = 0.0
 
     def count_plank_time(shoulder, hip, ankle, in_plank_state, plank_start):
         if check_plank(shoulder, hip, ankle):
@@ -3394,6 +3726,122 @@ def run_plank(ui=None):
                             publish_robot_state("ACTIVE")
                         except Exception:
                             pass
+
+            # --- Check workout state transitions ---
+            # Drain actions from workout_action_queue
+            while not workout_action_queue.empty():
+                act = workout_action_queue.get_nowait()
+                if act == "continue_set":
+                    workout_action = "continue"
+                elif act == "take_rest":
+                    workout_action = "rest"
+                elif act == "resume_exercise":
+                    workout_action = "resume"
+
+            # Transition from BETWEEN_SETS
+            if workout_state == "BETWEEN_SETS":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "between_sets_shown", False):
+                    ui.show_between_sets_screen(
+                        continue_callback=lambda: workout_action_queue.put("continue_set"),
+                        rest_callback=lambda: workout_action_queue.put("take_rest")
+                    )
+                    ui.between_sets_shown = True
+                    ui.resting_shown = False
+                    publish_robot_state("BETWEEN_SETS")
+                
+                # Check actions
+                if workout_action == "continue":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                        ui.show_exercise_screen("Plank")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    plank_hold_in_set = 0.0
+                    in_plank = False
+                    start_time = None
+                    continue
+                elif workout_action == "rest":
+                    workout_state = "RESTING"
+                    workout_action = None
+                    if ui is not None:
+                        ui.between_sets_shown = False
+                    continue
+                
+                # Draw between sets frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(30, 20, 20), radius=15)
+                cv2.putText(image, "BETWEEN SETS", (img_w // 2 - 120, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_GREEN, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Continue or Rest", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Plank', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
+
+            # Transition from RESTING
+            elif workout_state == "RESTING":
+                send_command("STOP")
+                # Show screen if not shown
+                if ui is not None and not getattr(ui, "resting_shown", False):
+                    ui.show_resting_screen(
+                        resume_callback=lambda: workout_action_queue.put("resume_exercise")
+                    )
+                    ui.resting_shown = True
+                    ui.between_sets_shown = False
+                    publish_robot_state("RESTING")
+                
+                # Check actions
+                if workout_action == "resume":
+                    workout_state = "DOING_SET"
+                    workout_action = None
+                    if ui is not None:
+                        ui.resting_shown = False
+                        ui.show_exercise_screen("Plank")
+                    publish_robot_state("ACTIVE")
+                    # Increment set and reset reps in set
+                    current_set += 1
+                    plank_hold_in_set = 0.0
+                    in_plank = False
+                    start_time = None
+                    continue
+                
+                # Draw resting frame overlay on OpenCV image
+                if results and results.pose_landmarks:
+                    draw_skeleton(image, results)
+                img_h, img_w = image.shape[:2]
+                draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(20, 20, 30), radius=15)
+                cv2.putText(image, "RESTING...", (img_w // 2 - 90, img_h // 2 - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_ORANGE, 3, cv2.LINE_AA)
+                cv2.putText(image, "Select Resume when ready", (img_w // 2 - 170, img_h // 2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                
+                if hand_landmarker is not None:
+                    draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
+                draw_home_button(image)
+                local_stream_server.update_frame(image)
+                if ui is not None:
+                    ui.update()
+                else:
+                    cv2.imshow('Plank', image)
+                    if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                        break
+                continue
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -3524,6 +3972,7 @@ def run_plank(ui=None):
                                 neck, hip, ankle, in_plank, start_time
                             )
                             plank_timer += elapsed_time
+                            plank_hold_in_set += elapsed_time
                             robot_status = "TRACKING"
                             try:
                                 publish_plank_time(plank_timer)
@@ -3535,8 +3984,23 @@ def run_plank(ui=None):
                             if is_looking_around:
                                 log_session_error("Look in front of you")
                         else:
-                            in_plank = False
-                            start_time = None
+                            if plank_hold_in_set >= 5.0:
+                                print(f"\n✅ Plank Set {current_set} Finished! Held for {int(plank_hold_in_set)} seconds.")
+                                try:
+                                    publish_set_complete("plank", current_set, int(plank_hold_in_set))
+                                except Exception:
+                                    pass
+                                workout_state = "BETWEEN_SETS"
+                                workout_action = None
+                                in_plank = False
+                                start_time = None
+                                plank_hold_in_set = 0.0
+                                if ui is not None:
+                                    ui.between_sets_shown = False
+                            else:
+                                in_plank = False
+                                start_time = None
+                                plank_hold_in_set = 0.0
                             log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     if positioning_completed and not paused:
@@ -3622,7 +4086,9 @@ def run_plank(ui=None):
                 else:
                     time_str = f"{secs:.1f}s"
 
+                ui.update_stat_card("Set", current_set)
                 ui.update_stat_card("Hold Time", time_str)
+                ui.update_stat_card("Set Hold", f"{int(plank_hold_in_set)}s")
                 ui.update_stat_card("Status", state_text)
 
                 feedback_msgs = []
@@ -3693,7 +4159,8 @@ def run_plank(ui=None):
         last_session_summary = {
             'exercise': 'Plank',
             'metrics': [
-                ('Total Hold Time', f"{plank_timer:.1f}s")
+                ('Total Hold Time', f"{plank_timer:.1f}s"),
+                ('Total Sets', current_set)
             ],
             'errors': list(session_errors)
         }
@@ -4168,6 +4635,7 @@ class FitnessRobotUI(tk.Tk):
             ("Push-ups", self.launch_pushups, "#96D75F"),
             ("Squats", self.launch_squats, "#96D75F"),
             ("Plank", self.launch_plank, "#96D75F"),
+            ("Rest", self.launch_rest_mode, "#FF9500"),
         ]
         
         # Layout in grid
@@ -4192,8 +4660,9 @@ class FitnessRobotUI(tk.Tk):
             
         grid_frame.columnconfigure(0, weight=1)
         grid_frame.columnconfigure(1, weight=1)
-        grid_frame.rowconfigure(0, weight=1)
-        grid_frame.rowconfigure(1, weight=1)
+        num_rows = (len(exercises) + 1) // 2
+        for r in range(num_rows):
+            grid_frame.rowconfigure(r, weight=1)
         
         # Bottom system buttons
         sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
@@ -4267,6 +4736,9 @@ class FitnessRobotUI(tk.Tk):
                         force_stop.set()
                     else:
                         self.launch_by_name(cmd_val)
+                elif cmd_type == "action":
+                    print(f"[GUI] Remote action received: {cmd_val}")
+                    workout_action_queue.put(cmd_val)
             self.after(200, self.check_remote_commands)
         except (tk.TclError, Exception) as e:
             pass
@@ -4281,6 +4753,8 @@ class FitnessRobotUI(tk.Tk):
             self.launch_squats()
         elif name == "PLANK":
             self.launch_plank()
+        elif name in ("REST", "REST_MODE"):
+            self.launch_rest_mode()
         elif name in ("PERSON_FOLLOW", "PERSON_TRACKING", "FOLLOWING", "FOLLOW"):
             self.launch_person_follow()
         else:
@@ -4300,6 +4774,9 @@ class FitnessRobotUI(tk.Tk):
         
     def launch_plank(self):
         self.run_exercise("Plank", run_plank)
+
+    def launch_rest_mode(self):
+        self.run_exercise("Rest", run_rest_mode)
 
     def show_exercise_screen(self, exercise_name):
         # Clear container
@@ -4466,6 +4943,141 @@ class FitnessRobotUI(tk.Tk):
         )
         btn.pack(pady=10)
 
+    def show_between_sets_screen(self, continue_callback, rest_callback):
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+            
+        title_canvas = OutlinedLabel(
+            self.main_container,
+            text="SET COMPLETED!",
+            font=("Helvetica", 22, "bold"),
+            fg="#96D75F",
+            outline_color="#000000",
+            height=40
+        )
+        title_canvas.pack(pady=(5, 10))
+        
+        action_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        action_frame.pack(fill="x", pady=5)
+        
+        btn_continue = RoundedButton(
+            action_frame,
+            text="Continue to Next Set",
+            command=continue_callback,
+            bg_color="#2B2B36",
+            fg_color="#96D75F",
+            outline_color="#96D75F",
+            outline_width=2,
+            radius=10,
+            font=("Helvetica", 12, "bold"),
+            height=45
+        )
+        btn_continue.pack(side="left", fill="x", expand=True, padx=5)
+        
+        btn_rest = RoundedButton(
+            action_frame,
+            text="Take a Rest",
+            command=rest_callback,
+            bg_color="#2B2B36",
+            fg_color="#FF9500",
+            outline_color="#FF9500",
+            outline_width=2,
+            radius=10,
+            font=("Helvetica", 12, "bold"),
+            height=45
+        )
+        btn_rest.pack(side="right", fill="x", expand=True, padx=5)
+        
+        tk.Label(self.main_container, text="OR SWITCH EXERCISE:", font=("Helvetica", 10, "bold"), fg="#5F5FDF", bg="#1E1E24").pack(pady=(10, 2))
+        
+        grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        grid_frame.pack(fill="both", expand=True)
+        
+        exercises = [
+            ("Bicep Curls", self.launch_bicep_curls, "#96D75F"),
+            ("Push-ups", self.launch_pushups, "#96D75F"),
+            ("Squats", self.launch_squats, "#96D75F"),
+            ("Plank", self.launch_plank, "#96D75F"),
+            ("Rest", self.launch_rest_mode, "#FF9500"),
+        ]
+        
+        for i, (name, callback, color) in enumerate(exercises):
+            btn = RoundedButton(
+                grid_frame,
+                text=name,
+                command=callback,
+                bg_color="#2B2B36",
+                fg_color=color,
+                outline_color=color,
+                outline_width=2,
+                radius=10,
+                font=("Helvetica", 12, "bold"),
+                height=45
+            )
+            row = i // 2
+            col = i % 2
+            btn.grid(row=row, column=col, sticky="nsew", padx=8, pady=4)
+            
+        num_rows = (len(exercises) + 1) // 2
+        for r in range(num_rows):
+            grid_frame.rowconfigure(r, weight=1)
+        grid_frame.columnconfigure(0, weight=1)
+        grid_frame.columnconfigure(1, weight=1)
+
+    def show_resting_screen(self, resume_callback):
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+            
+        title_canvas = OutlinedLabel(
+            self.main_container,
+            text="RESTING",
+            font=("Helvetica", 24, "bold"),
+            fg="#FF9500",
+            outline_color="#000000",
+            height=40
+        )
+        title_canvas.pack(pady=(20, 10))
+        
+        lbl = tk.Label(
+            self.main_container,
+            text="Take a deep breath and catch your breath.\nPress below when you are ready to resume.",
+            font=("Helvetica", 12),
+            fg="#EBEBEF",
+            bg="#1E1E24",
+            justify="center"
+        )
+        lbl.pack(pady=10)
+        
+        btn_resume = RoundedButton(
+            self.main_container,
+            text="Resume Exercise",
+            command=resume_callback,
+            bg_color="#2B2B36",
+            fg_color="#96D75F",
+            outline_color="#96D75F",
+            outline_width=2,
+            radius=12,
+            font=("Helvetica", 14, "bold"),
+            height=50,
+            width=250
+        )
+        btn_resume.pack(pady=20)
+        
+        btn_home = RoundedButton(
+            self.main_container,
+            text="Back to Home Menu",
+            command=self.show_home_screen,
+            bg_color="#2B2B36",
+            fg_color="#5F5FDF",
+            outline_color="#5F5FDF",
+            outline_width=2,
+            radius=10,
+            font=("Helvetica", 11, "bold"),
+            height=35,
+            width=180
+        )
+        btn_home.pack(pady=10)
+
     def confirm_shutdown(self):
         if messagebox.askyesno("Shutdown", "Are you sure you want to shutdown the Raspberry Pi?"):
             self.destroy()
@@ -4485,6 +5097,81 @@ class FitnessRobotUI(tk.Tk):
     def quit_app(self):
         self.destroy()
 
+
+def run_rest_mode(ui=None):
+    """Manual Rest Mode loop."""
+    global workout_state, workout_action
+    workout_state = "RESTING"
+    workout_action = None
+    
+    # Empty any action in queue
+    while not workout_action_queue.empty():
+        workout_action_queue.get_nowait()
+        
+    publish_robot_state("RESTING")
+    
+    # Initialize camera to overlay rest status on video feed
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+                
+            frame = cv2.flip(frame, 1)
+            image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            img_h, img_w = image.shape[:2]
+            
+            # Drain action queue
+            while not workout_action_queue.empty():
+                act = workout_action_queue.get_nowait()
+                if act == "resume_exercise":
+                    workout_action = "resume"
+            
+            if workout_action == "resume":
+                # Go back to home menu
+                if ui is not None:
+                    ui.show_home_screen()
+                publish_robot_state("READY")
+                break
+                
+            # Rest mode screens routing
+            if ui is not None and not getattr(ui, "resting_shown", False):
+                ui.show_resting_screen(
+                    resume_callback=lambda: workout_action_queue.put("resume_exercise")
+                )
+                ui.resting_shown = True
+                publish_robot_state("RESTING")
+                
+            # Draw resting overlay
+            draw_glass_panel(image, 20, 20, img_w - 40, img_h - 40, alpha=0.75, color=(20, 20, 30), radius=15)
+            cv2.putText(image, "RESTING...", (img_w // 2 - 90, img_h // 2 - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, ACCENT_ORANGE, 3, cv2.LINE_AA)
+            cv2.putText(image, "Select Resume to finish rest", (img_w // 2 - 190, img_h // 2 + 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+            
+            draw_home_button(image)
+            local_stream_server.update_frame(image)
+            
+            if ui is not None:
+                ui.update()
+                if home_clicked:
+                    break
+            else:
+                cv2.imshow('Rest Mode', image)
+                if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                    break
+    finally:
+        send_command("STOP")
+        cap.release()
+        if ui is None:
+            cv2.destroyAllWindows()
+        else:
+            ui.resting_shown = False
+            ui.show_home_screen()
 
 if __name__ == "__main__":
     # Start local HTTP/WS servers for streaming & remote control

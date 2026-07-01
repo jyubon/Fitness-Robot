@@ -171,6 +171,11 @@ async def _ws_handler(websocket):
                 else:
                     print(f"[WS] ERROR: Mode Switch requested to {mode}, but no queue configured.")
 
+            elif action in ("continue_set", "take_rest", "resume_exercise"):
+                if _remote_mode_queue is not None:
+                    _remote_mode_queue.put(("action", action))
+                    print(f"[WS] Workout Action put in queue: {action}")
+
             # Send acknowledgement back to client
             ack = {"status": "acknowledged", "action": action, "time": time.time()}
             await websocket.send(json.dumps(ack))

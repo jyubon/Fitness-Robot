@@ -256,6 +256,7 @@ function handleTelemetryMessage(msg) {
   if (type === 'session_end') {
     appendLog(`Session ended. Active: ${Number(payload.active_duration_s || 0).toFixed(1)}s`);
     currentSessionId = null;
+    updateStateController('STOPPED');
     return;
   }
 
@@ -264,6 +265,7 @@ function handleTelemetryMessage(msg) {
     const state = (payload.state || 'STOPPED').toUpperCase();
     pill.textContent = state;
     pill.setAttribute('data-state', state);
+    updateStateController(state);
     return;
   }
 
@@ -394,12 +396,45 @@ async function switchMode(mode) {
     pushups: 'PUSHUPS',
     squats: 'SQUATS',
     plank: 'PLANK',
-    person_follow: 'PERSON_FOLLOW'
+    person_follow: 'PERSON_FOLLOW',
+    rest: 'REST'
   };
   await sendControlCommand({
     action: 'switch_mode',
     mode: mapping[mode] || mode.toUpperCase()
   }, `Requested mode: ${mode}`);
+}
+
+async function sendWorkoutAction(action) {
+  let msg = '';
+  if (action === 'continue_set') msg = 'Continuing to next set';
+  else if (action === 'take_rest') msg = 'Taking a rest';
+  else if (action === 'resume_exercise') msg = 'Resuming exercise';
+  
+  await sendControlCommand({ action: action }, msg);
+}
+
+function updateStateController(state) {
+  const card = document.getElementById('stateControllerCard');
+  const container = document.getElementById('stateControlsContainer');
+  if (!card || !container) return;
+
+  state = (state || '').toUpperCase();
+  if (state === 'BETWEEN_SETS') {
+    card.classList.remove('hidden');
+    container.innerHTML = `
+      <button onclick="sendWorkoutAction('continue_set')" class="px-5 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-medium text-sm transition-all duration-200 shadow-lg shadow-emerald-500/20 hover:scale-[1.02] active:scale-[0.98]">Continue to Next Set</button>
+      <button onclick="sendWorkoutAction('take_rest')" class="px-5 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-medium text-sm transition-all duration-200 shadow-lg shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98]">Take a Rest</button>
+    `;
+  } else if (state === 'RESTING') {
+    card.classList.remove('hidden');
+    container.innerHTML = `
+      <button onclick="sendWorkoutAction('resume_exercise')" class="px-5 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-medium text-sm transition-all duration-200 shadow-lg shadow-emerald-500/20 hover:scale-[1.02] active:scale-[0.98]">Resume Exercise</button>
+    `;
+  } else {
+    card.classList.add('hidden');
+    container.innerHTML = '';
+  }
 }
 
 async function sendControlCommand(command, successMessage) {
