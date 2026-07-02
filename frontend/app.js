@@ -163,6 +163,15 @@ function showTab(tab) {
   const btnLive = document.getElementById('tab-live');
   const btnSteps = document.getElementById('tab-steps');
   const btnAnalytics = document.getElementById('tab-analytics');
+  const btnStart = document.getElementById('startExerciseBtn');
+
+  if (btnStart) {
+    if (tab === 'live') {
+      btnStart.classList.remove('hidden');
+    } else {
+      btnStart.classList.add('hidden');
+    }
+  }
 
   if (tab === 'live') {
     live.classList.remove('hidden');
@@ -386,6 +395,10 @@ function connectLocalWebSocket(piIp) {
 
 async function sendForceStop() {
   await sendControlCommand({ action: 'force_stop' }, 'Force Stop sent to robot');
+}
+
+async function sendStartExercise() {
+  await sendControlCommand({ action: 'start_exercise' }, 'Start detecting exercise signal sent to robot');
 }
 
 async function switchMode(mode) {

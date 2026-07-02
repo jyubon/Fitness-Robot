@@ -171,6 +171,13 @@ async def _ws_handler(websocket):
                 else:
                     print(f"[WS] ERROR: Mode Switch requested to {mode}, but no queue configured.")
 
+            elif action == "start_exercise":
+                if _start_exercise_event is not None:
+                    _start_exercise_event.set()
+                    print("[WS] Start Exercise signal set.")
+                else:
+                    print("[WS] ERROR: Start Exercise requested, but no event handler configured.")
+
             # Send acknowledgement back to client
             ack = {"status": "acknowledged", "action": action, "time": time.time()}
             await websocket.send(json.dumps(ack))
@@ -203,6 +210,8 @@ async def _send_to_all_clients(msg):
     if _connected_clients:
         await asyncio.gather(*(client.send(msg) for client in _connected_clients), return_exceptions=True)
 
+_start_exercise_event = None
+
 # ─── 3. External API ───
 
 def update_frame(frame):
@@ -228,18 +237,20 @@ def broadcast_telemetry(event_type, payload):
         msg = json.dumps({"type": event_type, "payload": payload, "ts": time.time()})
         asyncio.run_coroutine_threadsafe(_send_to_all_clients(msg), _ws_loop)
 
-def start_servers(force_stop_event=None, remote_mode_queue=None, host="0.0.0.0", http_port=8081, ws_port=8001):
+def start_servers(force_stop_event=None, remote_mode_queue=None, start_exercise_event=None, host="0.0.0.0", http_port=8081, ws_port=8001):
     """
     Start the local MJPEG HTTP server and WS remote control server in background threads.
     :param force_stop_event: threading.Event to toggle on force stop.
     :param remote_mode_queue: queue.Queue to receive switch mode commands.
+    :param start_exercise_event: threading.Event to trigger start exercise.
     :param host: host IP address to bind to (defaults to all interfaces: 0.0.0.0).
     :param http_port: Port number for the HTTP MJPEG stream (default 8081).
     :param ws_port: Port number for the WebSocket server (default 8001).
     """
-    global _force_stop_event, _remote_mode_queue
+    global _force_stop_event, _remote_mode_queue, _start_exercise_event
     _force_stop_event = force_stop_event
     _remote_mode_queue = remote_mode_queue
+    _start_exercise_event = start_exercise_event
 
     # Spin up MJPEG Stream HTTP Server
     http_thread = threading.Thread(target=_run_http_server, args=(host, http_port), daemon=True)

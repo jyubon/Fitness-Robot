@@ -15,7 +15,16 @@ try:
     from dotenv import load_dotenv
     load_dotenv(PROJECT_DIR / ".env")
 except ImportError:
-    pass
+    env_path = PROJECT_DIR / ".env"
+    if env_path.exists():
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    parts = line.split("=", 1)
+                    if len(parts) == 2:
+                        os.environ[parts[0].strip()] = parts[1].strip()
+
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 os.environ['GLOG_minloglevel'] = '3'
@@ -151,6 +160,7 @@ _pause_accumulator = 0.0
 # Remote control from web UI
 force_stop = threading.Event()
 remote_mode_queue = queue.Queue()  # ("switch", "BICEP_CURLS") etc.
+start_exercise = threading.Event()
 
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
@@ -484,6 +494,8 @@ def _control_listener():
                     mode = data.get("mode")
                     if mode:
                         remote_mode_queue.put(("switch", str(mode).upper()))
+                elif action == "start_exercise":
+                    start_exercise.set()
 
                 processed.add(doc.id)
                 doc.reference.set({
@@ -541,6 +553,48 @@ def check_plank(shoulder, hip, ankle, min_angle=165.0):
     """Check if body is in plank position by checking if the shoulder-hip-ankle angle is close to straight (165-180 degrees)."""
     angle = calculate_angle(shoulder, hip, ankle)
     return angle >= min_angle
+
+
+def draw_follow_phase_overlay(image, position):
+    """Draw a premium glass overlay indicating the robot is following the user."""
+    h, w = image.shape[:2]
+    
+    # 1. Dark semi-transparent overlay over the entire frame
+    overlay = image.copy()
+    cv2.rectangle(overlay, (0, 0), (w, h), (10, 10, 15), -1)
+    cv2.addWeighted(overlay, 0.45, image, 0.55, 0, image)
+    
+    # 2. Central glass panel
+    panel_w = int(w * 0.8)
+    panel_h = int(h * 0.4)
+    px = (w - panel_w) // 2
+    py = (h - panel_h) // 2
+    draw_glass_panel(image, px, py, panel_w, panel_h, alpha=0.85, color=(15, 15, 20), radius=16)
+    
+    # Border
+    cv2.rectangle(image, (px, py), (px + panel_w, py + panel_h), (80, 100, 120), 1, cv2.LINE_AA)
+    
+    # 3. Pulsing status dot
+    cx = w // 2
+    cy = py + int(panel_h * 0.3)
+    r = 12
+    pulse_color = ACCENT_CYAN
+    cv2.circle(image, (cx, cy), r, pulse_color, -1, cv2.LINE_AA)
+    
+    # 4. Text: "ROBOT FOLLOWING"
+    msg1 = "ROBOT FOLLOWING"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.55
+    thickness = 2
+    (tw1, th1), _ = cv2.getTextSize(msg1, font, font_scale, thickness)
+    cv2.putText(image, msg1, (w // 2 - tw1 // 2, cy + 28), font, font_scale, TEXT_WHITE, thickness, cv2.LINE_AA)
+    
+    # 5. Text: "Walk to position & press START on Web App"
+    msg2 = "Walk to position & press START on Web App"
+    font_scale2 = 0.38
+    thickness2 = 1
+    (tw2, th2), _ = cv2.getTextSize(msg2, font, font_scale2, thickness2)
+    cv2.putText(image, msg2, (w // 2 - tw2 // 2, cy + 48), font, font_scale2, TEXT_DIM, thickness2, cv2.LINE_AA)
 
 
 def draw_positioning_overlay(image, position, elapsed_pct):
@@ -1793,6 +1847,7 @@ def run_bicep_curls(ui=None):
     left_reps_at_set_start = 0
     right_reps_at_set_start = 0
     last_uneven_warning_time = 0.0
+    set_finished = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -1822,11 +1877,9 @@ def run_bicep_curls(ui=None):
     thumbs_up_cooldown_active = False
     pause_start_time = 0.0
 
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("FRONT")
+    # Following / waiting for start state
+    waiting_for_start = True
+    start_exercise.clear()
 
     try:
         while cap.isOpened():
@@ -1852,30 +1905,14 @@ def run_bicep_curls(ui=None):
             else:
                 results = last_results
 
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_positioning_overlay(image, "FRONT", pct)
-                    draw_home_button(image)
-                    local_stream_server.update_frame(image)
-
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to FRONT view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        send_command("FRONT")
-                        cv2.imshow('Bicep Curls', image)
-                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("FRONT")
-                    continue
-                else:
+            # Check waiting_for_start phase
+            if waiting_for_start:
+                if home_clicked:
+                    break
+                if start_exercise.is_set():
                     send_command("STOP")
-                    positioning_completed = True
+                    waiting_for_start = False
+                    start_exercise.clear()
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
                         try:
@@ -1883,6 +1920,27 @@ def run_bicep_curls(ui=None):
                             publish_robot_state("ACTIVE")
                         except Exception:
                             pass
+                else:
+                    # Follow the person but don't count reps or check form yet
+                    robot_status = "TRACKING"
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                        robot_status = adjust_robot_position("BICEP_CURLS", results)
+                    else:
+                        robot_status = adjust_robot_position("BICEP_CURLS", None)
+
+                    draw_follow_phase_overlay(image, "FRONT")
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
+                    if ui is not None:
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update()
+                    else:
+                        cv2.imshow('Bicep Curls', image)
+                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                            break
+                    continue
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -1982,15 +2040,9 @@ def run_bicep_curls(ui=None):
                         except Exception:
                             pass
                         break
-                    print(f"\n✅ Set {current_set} Finished! Instantly starting next set.")
-                    try:
-                        publish_set_complete("bicep_curls", current_set, current_set_reps)
-                    except Exception:
-                        pass
-                    current_set += 1
-                    left_reps_at_set_start = arms['left']['counter']
-                    right_reps_at_set_start = arms['right']['counter']
-                    print(f"🔄 Starting Set {current_set}")
+                    if not set_finished:
+                        print(f"\n✅ Set {current_set} Finished! Please rest.")
+                        set_finished = True
 
             # Warn user if the hands have uneven reps in the current set
             is_uneven = (current_set_left_reps != current_set_right_reps) and (max(current_set_left_reps, current_set_right_reps) > 0)
@@ -2000,10 +2052,8 @@ def run_bicep_curls(ui=None):
                     last_uneven_warning_time = now
 
             robot_status = "TRACKING"
-            if positioning_completed and not paused:
-                robot_status = robot_status = adjust_robot_position("BICEP_CURLS", results)
-                if robot_status == "LOST_TIMEOUT":
-                    break
+            if not waiting_for_start and not paused:
+                robot_status = adjust_robot_position("BICEP_CURLS", results)
                 if robot_status == "LOST_TIMEOUT":
                     break
 
@@ -2061,23 +2111,6 @@ def run_bicep_curls(ui=None):
                         last_console_warning_time = now
 
                 draw_skeleton(image, results)
-<<<<<<< Updated upstream
-
-                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
-                cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-                cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
-                cv2.putText(image, l_fb, (120, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
-                cv2.putText(image, r_fb, (120, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
-                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
-=======
-
                 draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
                 cv2.putText(image, "BICEP CURLS", (15, 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
@@ -2092,81 +2125,7 @@ def run_bicep_curls(ui=None):
                 cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
             else:
-                if positioning_completed and not paused:
-                    robot_status = adjust_robot_position("BICEP_CURLS", None)
-                    if robot_status != "SEARCHING":
-                        log_session_error("Align horizontally GET IN POSITION.")
-                else:
-                    send_command("STOP")
-
-            # Show slow down warning banner on screen
-            if time.time() < warning_active_until:
-                flash = int(time.time() * 5) % 2 == 0
-                bg_color = (20, 20, 100) if flash else (10, 10, 40)
-                border_color = (0, 0, 255) if flash else (50, 50, 200)
-
-                p_w = int(img_w * 0.7)
-                p_h = 65
-                p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.4)
-
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
-
-                warn_msg = "WARNING: SLOW DOWN!"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.7
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
-
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
-
-            # Show swing warning banner on screen
-            if time.time() < swing_warning_active_until:
-                bg_color = (15, 45, 95)
-                border_color = (80, 175, 225)
-
-                p_w = int(img_w * 0.8)
-                p_h = 55
-                p_x = (img_w - p_w) // 2
-                p_y = int(img_h * 0.75)
-
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
-
-                warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.55
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
-
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255), thickness, cv2.LINE_AA)
-
-            # Draw set stats panel (Set X, Reps Y)
-            draw_glass_panel(image, 5, 130, 280, 110, alpha=0.65, radius=10)
-            cv2.putText(image, "CURRENT SET STATS", (15, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-            cv2.putText(image, f"SET: {current_set}", (15, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
-            cv2.putText(image, f"REPS: {current_set_reps}", (140, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
-
-            # Show individual arm counts in the current set
-            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
-
-            if set_finished:
-                cv2.putText(image, "SET FINISHED (REST)", (15, 230),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
->>>>>>> Stashed changes
-            else:
-                if positioning_completed and not paused:
+                if not waiting_for_start and not paused:
                     robot_status = adjust_robot_position("BICEP_CURLS", None)
                     if robot_status != "SEARCHING":
                         log_session_error("Align horizontally GET IN POSITION.")
@@ -2408,11 +2367,9 @@ def run_pushups(ui=None):
     thumbs_up_cooldown_active = False
     pause_start_time = 0.0
 
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("SIDE")
+    # Following / waiting for start state
+    waiting_for_start = True
+    start_exercise.clear()
 
     robot_status = "TRACKING"
     try:
@@ -2437,30 +2394,14 @@ def run_pushups(ui=None):
             else:
                 results = last_results
 
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_positioning_overlay(image, "SIDE", pct)
-                    draw_home_button(image)
-                    local_stream_server.update_frame(image)
-
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to SIDE view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        send_command("SIDE")
-                        cv2.imshow('Push-ups', image)
-                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("SIDE")
-                    continue
-                else:
+            # Check waiting_for_start phase
+            if waiting_for_start:
+                if home_clicked:
+                    break
+                if start_exercise.is_set():
                     send_command("STOP")
-                    positioning_completed = True
+                    waiting_for_start = False
+                    start_exercise.clear()
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
                         robot_status = "TRACKING"
@@ -2469,6 +2410,27 @@ def run_pushups(ui=None):
                             publish_robot_state("ACTIVE")
                         except Exception:
                             pass
+                else:
+                    # Follow the person but don't count reps or check form yet
+                    robot_status = "TRACKING"
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                        robot_status = adjust_robot_position("PUSH_UPS", results)
+                    else:
+                        robot_status = adjust_robot_position("PUSH_UPS", None)
+
+                    draw_follow_phase_overlay(image, "SIDE")
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
+                    if ui is not None:
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update()
+                    else:
+                        cv2.imshow('Push-ups', image)
+                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                            break
+                    continue
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -2551,7 +2513,7 @@ def run_pushups(ui=None):
             robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if positioning_completed and not paused:
+                    if not waiting_for_start and not paused:
                         robot_status = adjust_robot_position("PUSH_UPS", results)
                         if robot_status == "LOST_TIMEOUT":
                             break
@@ -2615,7 +2577,7 @@ def run_pushups(ui=None):
                                     pass
                             log_session_error("Align horizontally GET IN POSITION.")
                 else:
-                    if positioning_completed and not paused:
+                    if not waiting_for_start and not paused:
                         robot_status = adjust_robot_position("PUSH_UPS", None)
                         if robot_status != "SEARCHING":
                             log_session_error("Align horizontally GET IN POSITION.")
@@ -2794,11 +2756,9 @@ def run_squats(ui=None):
     thumbs_up_cooldown_active = False
     pause_start_time = 0.0
 
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("FRONT")
+    # Following / waiting for start state
+    waiting_for_start = True
+    start_exercise.clear()
 
     robot_status = "TRACKING"
     try:
@@ -2823,30 +2783,14 @@ def run_squats(ui=None):
             else:
                 results = last_results
 
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_positioning_overlay(image, "FRONT", pct)
-                    draw_home_button(image)
-                    local_stream_server.update_frame(image)
-
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to FRONT view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        send_command("FRONT")
-                        cv2.imshow('Squats', image)
-                        if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("FRONT")
-                    continue
-                else:
+            # Check waiting_for_start phase
+            if waiting_for_start:
+                if home_clicked:
+                    break
+                if start_exercise.is_set():
                     send_command("STOP")
-                    positioning_completed = True
+                    waiting_for_start = False
+                    start_exercise.clear()
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
                         robot_status = "TRACKING"
@@ -2855,6 +2799,27 @@ def run_squats(ui=None):
                             publish_robot_state("ACTIVE")
                         except Exception:
                             pass
+                else:
+                    # Follow the person but don't count reps or check form yet
+                    robot_status = "TRACKING"
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                        robot_status = adjust_robot_position("SQUATS", results)
+                    else:
+                        robot_status = adjust_robot_position("SQUATS", None)
+
+                    draw_follow_phase_overlay(image, "FRONT")
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
+                    if ui is not None:
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update()
+                    else:
+                        cv2.imshow('Squats', image)
+                        if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
+                            break
+                    continue
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -2945,11 +2910,7 @@ def run_squats(ui=None):
             robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if positioning_completed and not paused:
-                        robot_status = adjust_robot_position("SQUATS", results)
-                        if robot_status == "LOST_TIMEOUT":
-                            break
-                    if positioning_completed and not paused:
+                    if not waiting_for_start and not paused:
                         robot_status = adjust_robot_position("SQUATS", results)
                         if robot_status == "LOST_TIMEOUT":
                             break
@@ -3099,10 +3060,9 @@ def run_squats(ui=None):
                     posture_correct = (feet_warning is None) and (arms_warning is None) and \
                                       (depth_warning is None) and (knees_warning is None)
 
-                    if ui is None:
-                        draw_skeleton(image, results)
+                    draw_skeleton(image, results)
                 else:
-                    if positioning_completed and not paused:
+                    if not waiting_for_start and not paused:
                         robot_status = adjust_robot_position("SQUATS", None)
                         if robot_status != "SEARCHING":
                             log_session_error("Align horizontally GET IN POSITION.")
@@ -3290,6 +3250,11 @@ def run_plank(ui=None):
     plank_timer = 0
     in_plank = False
     start_time = None
+    
+    # Workout set trackers
+    current_set = 1
+    current_set_time = 0.0
+    set_finished = False
 
     def count_plank_time(shoulder, hip, ankle, in_plank_state, plank_start):
         if check_plank(shoulder, hip, ankle):
@@ -3333,11 +3298,9 @@ def run_plank(ui=None):
     thumbs_up_frames = 0
     thumbs_up_cooldown_active = False
 
-    # Positioning state
-    positioning_duration = 3.0
-    positioning_start_time = time.time()
-    positioning_completed = False
-    send_command("SIDE")
+    # Following / waiting for start state
+    waiting_for_start = True
+    start_exercise.clear()
 
     robot_status = "TRACKING"
     try:
@@ -3362,30 +3325,14 @@ def run_plank(ui=None):
             else:
                 results = last_results
 
-            # Check positioning phase
-            if not positioning_completed:
-                elapsed = time.time() - positioning_start_time
-                if elapsed < positioning_duration:
-                    pct = elapsed / positioning_duration
-                    if results and results.pose_landmarks:
-                        draw_skeleton(image, results)
-                    draw_positioning_overlay(image, "SIDE", pct)
-                    draw_home_button(image)
-                    local_stream_server.update_frame(image)
-
-                    if ui is not None:
-                        ui.update_feedback(f"🤖 ROBOT POSITIONING...\nAligning to SIDE view... ({int(pct*100)}%)", ACCENT_CYAN)
-                        ui.update()
-                    else:
-                        send_command("SIDE")
-                        cv2.imshow('Plank', image)
-                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
-                            break
-                    send_command("SIDE")
-                    continue
-                else:
+            # Check waiting_for_start phase
+            if waiting_for_start:
+                if home_clicked:
+                    break
+                if start_exercise.is_set():
                     send_command("STOP")
-                    positioning_completed = True
+                    waiting_for_start = False
+                    start_exercise.clear()
                     # Start real session for live dashboard (no dummy data)
                     if _session_id is None:
                         robot_status = "TRACKING"
@@ -3394,6 +3341,27 @@ def run_plank(ui=None):
                             publish_robot_state("ACTIVE")
                         except Exception:
                             pass
+                else:
+                    # Follow the person but don't count reps or check form yet
+                    robot_status = "TRACKING"
+                    if results and results.pose_landmarks:
+                        draw_skeleton(image, results)
+                        robot_status = adjust_robot_position("PLANK", results)
+                    else:
+                        robot_status = adjust_robot_position("PLANK", None)
+
+                    draw_follow_phase_overlay(image, "SIDE")
+                    draw_home_button(image)
+                    local_stream_server.update_frame(image)
+
+                    if ui is not None:
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update()
+                    else:
+                        cv2.imshow('Plank', image)
+                        if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
+                            break
+                    continue
 
             # Run Hand detection every HAND_FRAME_SKIP frames
             if hand_landmarker is not None:
@@ -3475,7 +3443,7 @@ def run_plank(ui=None):
             robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
-                    if positioning_completed and not paused:
+                    if not waiting_for_start and not paused:
                         robot_status = adjust_robot_position("PLANK", results)
                         if robot_status == "LOST_TIMEOUT":
                             break
@@ -3524,6 +3492,17 @@ def run_plank(ui=None):
                                 neck, hip, ankle, in_plank, start_time
                             )
                             plank_timer += elapsed_time
+                            if in_plank:
+                                current_set_time += elapsed_time
+                                if current_set_time >= 30.0:
+                                    try:
+                                        publish_set_complete("plank", current_set, 30)
+                                    except Exception:
+                                        pass
+                                    current_set += 1
+                                    current_set_time = 0.0
+                                    print(f"\n✅ Plank Set completed! Total sets: {current_set - 1}")
+                            
                             robot_status = "TRACKING"
                             try:
                                 publish_plank_time(plank_timer)
@@ -3539,7 +3518,7 @@ def run_plank(ui=None):
                             start_time = None
                             log_session_error("Align horizontally GET IN POSITION.")
                 else:
-                    if positioning_completed and not paused:
+                    if not waiting_for_start and not paused:
                         robot_status = adjust_robot_position("PLANK", None)
                         if robot_status != "SEARCHING":
                             log_session_error("Align horizontally GET IN POSITION.")
@@ -3548,8 +3527,7 @@ def run_plank(ui=None):
             except Exception:
                 pass
 
-            if ui is None:
-                draw_skeleton(image, results)
+            draw_skeleton(image, results)
 
             ring_cx, ring_cy, ring_r = 55, 88, 38
 
@@ -3593,10 +3571,11 @@ def run_plank(ui=None):
                             (ring_cx - tw // 2, ring_cy + 6),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_WHITE, 1, cv2.LINE_AA)
 
-                cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 8),
+                cv2.putText(image, state_text, (ring_cx + ring_r + 12, ring_cy - 12),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, state_color, 1, cv2.LINE_AA)
-                cv2.putText(image, f"Total: {plank_timer:.1f}s",
-                            (ring_cx + ring_r + 12, ring_cy + 16),
+                cv2.putText(image, f"Sets: {current_set - 1}", (ring_cx + ring_r + 12, ring_cy + 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
+                cv2.putText(image, f"Total: {plank_timer:.1f}s", (ring_cx + ring_r + 12, ring_cy + 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_WHITE, 1, cv2.LINE_AA)
 
                 if is_horizontal:
@@ -3623,7 +3602,7 @@ def run_plank(ui=None):
                     time_str = f"{secs:.1f}s"
 
                 ui.update_stat_card("Hold Time", time_str)
-                ui.update_stat_card("Status", state_text)
+                ui.update_stat_card("Set", current_set)
 
                 feedback_msgs = []
                 feedback_color = ACCENT_GREEN
@@ -3693,7 +3672,8 @@ def run_plank(ui=None):
         last_session_summary = {
             'exercise': 'Plank',
             'metrics': [
-                ('Total Hold Time', f"{plank_timer:.1f}s")
+                ('Total Hold Time', f"{plank_timer:.1f}s"),
+                ('Total Sets', current_set - 1)
             ],
             'errors': list(session_errors)
         }
@@ -4148,6 +4128,12 @@ class FitnessRobotUI(tk.Tk):
         for widget in self.main_container.winfo_children():
             widget.destroy()
             
+        # Stop robot in the menu section
+        try:
+            send_command("STOP")
+        except Exception:
+            pass
+
         # Title banner with Outlined Label
         title_canvas = OutlinedLabel(
             self.main_container,
@@ -4415,6 +4401,12 @@ class FitnessRobotUI(tk.Tk):
         for widget in self.main_container.winfo_children():
             widget.destroy()
             
+        # Stop robot when returning to/showing summary
+        try:
+            send_command("STOP")
+        except Exception:
+            pass
+
         title_label = tk.Label(self.main_container, text=f"SESSION SUMMARY: {summary['exercise'].upper()}", font=("Helvetica", 14, "bold"), fg="#96D75F", bg="#1E1E24")
         title_label.pack(pady=(5, 10))
         
@@ -4489,7 +4481,7 @@ class FitnessRobotUI(tk.Tk):
 if __name__ == "__main__":
     # Start local HTTP/WS servers for streaming & remote control
     try:
-        local_stream_server.start_servers(force_stop_event=force_stop, remote_mode_queue=remote_mode_queue)
+        local_stream_server.start_servers(force_stop_event=force_stop, remote_mode_queue=remote_mode_queue, start_exercise_event=start_exercise)
         print("Local HTTP/WS servers started successfully.")
     except Exception as e:
         print(f"Failed to start local servers: {e}")
