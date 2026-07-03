@@ -25,6 +25,17 @@ AsyncWebServer server(80);
 HardwareSerial piSerial(1);
 
 // ============================================================
+// Voltage Sensor & RGB LED Pins
+// ============================================================
+#define VOLTAGE_SENSOR_PIN 3
+#define LED_R_PIN 36
+#define LED_G_PIN 37
+#define LED_B_PIN 38
+
+// Standard 25V voltage sensor module (30k/7.5k resistor divider -> 1/5)
+const float VOLTAGE_MULTIPLIER = 5.0;
+
+// ============================================================
 // Ultrasonic Sensor Pins (HC-SR04)
 // ============================================================
 #define TRIG_FRONT 12
@@ -148,6 +159,17 @@ void setup() {
   ElegantOTA.begin(&server);
   server.begin();
   Serial.println("[OTA] HTTP server started, ElegantOTA ready");
+
+  // --- Voltage Sensor & LED ---
+  pinMode(VOLTAGE_SENSOR_PIN, INPUT);
+  pinMode(LED_R_PIN, OUTPUT);
+  pinMode(LED_G_PIN, OUTPUT);
+  pinMode(LED_B_PIN, OUTPUT);
+  
+  // Initialize LED to off
+  digitalWrite(LED_R_PIN, LOW);
+  digitalWrite(LED_G_PIN, LOW);
+  digitalWrite(LED_B_PIN, LOW);
 
   // --- Ultrasonic Pins ---
   for (int i = 0; i < 4; i++) {
@@ -412,10 +434,48 @@ void handleNewCommand(String cmd) {
 }
 
 // ============================================================
+// Voltage Indicator Update
+// ============================================================
+void updateVoltageIndicator() {
+  // Read analog value (0-4095)
+  int adcValue = analogRead(VOLTAGE_SENSOR_PIN);
+  
+  // Calculate voltage (Assuming 3.3V reference)
+  float voltage = (adcValue / 4095.0) * 3.3 * VOLTAGE_MULTIPLIER;
+  
+  // Set RGB LED based on voltage
+  // (Assuming Common Cathode: HIGH = ON. If Common Anode, invert HIGH/LOW)
+  if (voltage >= 11.0) {
+    // Green
+    digitalWrite(LED_R_PIN, LOW);
+    digitalWrite(LED_G_PIN, HIGH);
+    digitalWrite(LED_B_PIN, LOW);
+  } else if (voltage >= 10.0) {
+    // Yellow (Red + Green)
+    digitalWrite(LED_R_PIN, HIGH);
+    digitalWrite(LED_G_PIN, HIGH);
+    digitalWrite(LED_B_PIN, LOW);
+  } else {
+    // Red
+    digitalWrite(LED_R_PIN, HIGH);
+    digitalWrite(LED_G_PIN, LOW);
+    digitalWrite(LED_B_PIN, LOW);
+  }
+}
+
+// ============================================================
 // LOOP
 // ============================================================
 void loop() {
   unsigned long now = millis();
+
+  // --- Update Battery Voltage Indicator ---
+  // Read every 1 second to avoid flickering and save CPU
+  static unsigned long lastVoltageCheck = 0;
+  if (now - lastVoltageCheck >= 1000) {
+    updateVoltageIndicator();
+    lastVoltageCheck = now;
+  }
 
   // --- Read Ultrasonic Sensors ---
   readAllSensors();
