@@ -17,6 +17,7 @@ let formChart = null;
 let currentSessionId = null;
 let currentExercise = null;
 let latestEventTimestamp = null;
+let robotState = 'READY';
 
 // Analytics real-time listeners (unsubscribed when tab is hidden)
 let analyticsAggUnsubscribe = null;
@@ -273,6 +274,15 @@ function handleTelemetryMessage(msg) {
     const state = (payload.state || 'STOPPED').toUpperCase();
     pill.textContent = state;
     pill.setAttribute('data-state', state);
+    robotState = state;
+
+    if (payload.exercise) {
+      currentExercise = payload.exercise;
+      document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+    } else if (state === 'READY') {
+      currentExercise = null;
+      document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+    }
     return;
   }
 
@@ -402,6 +412,14 @@ async function sendStartExercise() {
 }
 
 async function switchMode(mode) {
+  if (robotState === 'ACTIVE' || robotState === 'LOADING') {
+    appendLog("⚠️ Exercise is currently active. Selection disabled.", true);
+    return;
+  }
+  
+  currentExercise = mode;
+  document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+
   const mapping = {
     bicep_curls: 'BICEP_CURLS',
     pushups: 'PUSHUPS',

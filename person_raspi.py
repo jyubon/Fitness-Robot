@@ -324,6 +324,16 @@ def publish_session_start(exercise_type):
     _session_start_wall = time.time()
     _pause_accumulator = 0.0
 
+    # Generate a temporary session ID for local WebSocket broadcasting first
+    sid = "local_" + str(int(time.time()))
+    _session_id = sid
+
+    # Broadcast session_start locally immediately so the web dashboard syncs
+    publish_event("session_start", {
+        "session_id": sid,
+        "exercise_type": exercise_type
+    })
+
     user_ref = _firebase_user_ref()
     if user_ref is not None:
         try:
@@ -332,6 +342,12 @@ def publish_session_start(exercise_type):
             session_ref = user_ref.collection("sessions").document()
             _session_id = session_ref.id
             sid = _session_id
+
+            # Broadcast updated official session ID
+            publish_event("session_start", {
+                "session_id": sid,
+                "exercise_type": exercise_type
+            })
 
             def _do():
                 try:
@@ -346,19 +362,14 @@ def publish_session_start(exercise_type):
                         "summary": {},
                         "robot_involved": exercise_type == "person_follow"
                     })
-                    publish_event("session_start", {
-                        "session_id": sid,
-                        "exercise_type": exercise_type
-                    })
                 except Exception:
                     pass
             _enqueue(_do)
             return
         except Exception:
-            _session_id = None
+            pass
 
     if not BACKEND_TOKEN:
-        _session_id = None
         return
 
     payload = {
@@ -411,13 +422,15 @@ def publish_session_end(summary=None):
         "summary": summary or {}
     }
 
+    # Broadcast session_end locally immediately so the web dashboard syncs
+    publish_event("session_end", payload)
+
     user_ref = _firebase_user_ref()
 
     def _do():
         if user_ref is not None:
             try:
                 user_ref.collection("sessions").document(sid).set(payload, merge=True)
-                publish_event("session_end", payload)
                 return
             except Exception:
                 pass
@@ -428,7 +441,6 @@ def publish_session_end(summary=None):
             legacy_payload = dict(payload)
             legacy_payload["ended_at"] = now.isoformat()
             _post_json("/api/sessions/end", legacy_payload)
-            publish_event("session_end", legacy_payload)
         except Exception:
             pass
 
@@ -455,9 +467,10 @@ def publish_form_error(message, side=None):
     publish_event("form_error", p)
 
 
-def publish_robot_state(state, command=None):
+def publish_robot_state(state, command=None, exercise=None):
     p = {"state": state}
     if command: p["command"] = command
+    if exercise: p["exercise"] = exercise
     publish_event("robot_state", p)
 
 
@@ -591,8 +604,8 @@ def draw_follow_phase_overlay(image, position):
     (tw1, th1), _ = cv2.getTextSize(msg1, font, font_scale, thickness)
     cv2.putText(image, msg1, (w // 2 - tw1 // 2, cy + 28), font, font_scale, TEXT_WHITE, thickness, cv2.LINE_AA)
     
-    # 5. Text: "Walk to position & press START on Web App"
-    msg2 = "Walk to position & press START on Web App"
+    # 5. Text: "Get in Position and Press the Start"
+    msg2 = "Get in Position and Press the Start"
     font_scale2 = 0.38
     thickness2 = 1
     (tw2, th2), _ = cv2.getTextSize(msg2, font, font_scale2, thickness2)
@@ -1878,7 +1891,7 @@ def run_bicep_curls(ui=None):
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
-    publish_robot_state("LOADING")
+    publish_robot_state("LOADING", exercise="bicep_curls")
     landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -1945,7 +1958,7 @@ def run_bicep_curls(ui=None):
                     if _session_id is None:
                         try:
                             publish_session_start("bicep_curls")
-                            publish_robot_state("ACTIVE")
+                            publish_robot_state("ACTIVE", exercise="bicep_curls")
                         except Exception:
                             pass
                 else:
@@ -1961,14 +1974,15 @@ def run_bicep_curls(ui=None):
                         break
 
                     draw_follow_phase_overlay(image, "FRONT")
-                    draw_home_button(image)
                     local_stream_server.update_frame(image)
 
                     if ui is not None:
-                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press the Start", ACCENT_CYAN)
                         ui.update()
                     else:
-                        cv2.imshow('Bicep Curls', image)
+                        img_copy = image.copy()
+                        draw_home_button(img_copy)
+                        cv2.imshow('Bicep Curls', img_copy)
                         if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                             break
                     continue
@@ -2031,7 +2045,6 @@ def run_bicep_curls(ui=None):
                 draw_paused_overlay(image, thumbs_up_frames)
                 if hand_landmarker is not None:
                     draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                draw_home_button(image)
                 local_stream_server.update_frame(image)
 
                 if ui is not None:
@@ -2045,7 +2058,9 @@ def run_bicep_curls(ui=None):
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Bicep Curls', image)
                             break
-                    cv2.imshow('Bicep Curls', image)
+                    img_copy = image.copy()
+                    draw_home_button(img_copy)
+                    cv2.imshow('Bicep Curls', img_copy)
                     if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
                 continue
@@ -2146,19 +2161,23 @@ def run_bicep_curls(ui=None):
                         last_console_warning_time = now
 
                 draw_skeleton(image, results)
-                draw_glass_panel(image, 5, 5, 280, 120, alpha=0.65, radius=10)
-                cv2.putText(image, "BICEP CURLS", (15, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-                cv2.putText(image, f"L: {arms['left']['counter']}", (15, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
-                cv2.putText(image, l_fb, (120, 58),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
-                cv2.putText(image, f"R: {arms['right']['counter']}", (15, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
-                cv2.putText(image, r_fb, (120, 90),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
-                cv2.putText(image, f"{l_stg} | {r_stg}", (15, 115),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+                if ui is None:
+                    img_copy = image.copy()
+                    draw_glass_panel(img_copy, 5, 5, 280, 120, alpha=0.65, radius=10)
+                    cv2.putText(img_copy, "BICEP CURLS", (15, 28),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
+                    cv2.putText(img_copy, f"L: {arms['left']['counter']}", (15, 58),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, l_clr, 2)
+                    cv2.putText(img_copy, l_fb, (120, 58),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, l_clr, 1)
+                    cv2.putText(img_copy, f"R: {arms['right']['counter']}", (15, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, r_clr, 2)
+                    cv2.putText(img_copy, r_fb, (120, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, r_clr, 1)
+                    cv2.putText(img_copy, f"{l_stg} | {r_stg}", (15, 115),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
+                else:
+                    img_copy = None
             else:
                 if not waiting_for_start and not paused:
                     robot_status = adjust_robot_position("BICEP_CURLS", None, in_exercise_mode=True)
@@ -2201,19 +2220,20 @@ def run_bicep_curls(ui=None):
                 p_x = (img_w - p_w) // 2
                 p_y = int(img_h * 0.4)
 
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
+                if img_copy is not None:
+                    draw_glass_panel(img_copy, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=12)
+                    cv2.rectangle(img_copy, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
 
-                warn_msg = "WARNING: SLOW DOWN!"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.7
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
+                    warn_msg = "WARNING: SLOW DOWN!"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.7
+                    thickness = 2
+                    (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
+                    tx = p_x + (p_w - text_w) // 2
+                    ty = p_y + (p_h + text_h) // 2
 
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
+                    cv2.putText(img_copy, warn_msg, (tx, ty), font, font_scale,
+                                (255, 255, 255) if flash else (200, 200, 255), thickness, cv2.LINE_AA)
 
             # Show swing warning banner on screen
             if time.time() < swing_warning_active_until:
@@ -2225,51 +2245,53 @@ def run_bicep_curls(ui=None):
                 p_x = (img_w - p_w) // 2
                 p_y = int(img_h * 0.75)
 
-                draw_glass_panel(image, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
-                cv2.rectangle(image, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
+                if img_copy is not None:
+                    draw_glass_panel(img_copy, p_x, p_y, p_w, p_h, alpha=0.85, color=bg_color, radius=10)
+                    cv2.rectangle(img_copy, (p_x, p_y), (p_x + p_w, p_y + p_h), border_color, 2)
 
-                warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.55
-                thickness = 2
-                (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
-                tx = p_x + (p_w - text_w) // 2
-                ty = p_y + (p_h + text_h) // 2
+                    warn_msg = "DONT SWING: KEEP HANDS STRAIGHT"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.55
+                    thickness = 2
+                    (text_w, text_h), _ = cv2.getTextSize(warn_msg, font, font_scale, thickness)
+                    tx = p_x + (p_w - text_w) // 2
+                    ty = p_y + (p_h + text_h) // 2
 
-                cv2.putText(image, warn_msg, (tx, ty), font, font_scale,
-                            (255, 255, 255), thickness, cv2.LINE_AA)
+                    cv2.putText(img_copy, warn_msg, (tx, ty), font, font_scale,
+                                (255, 255, 255), thickness, cv2.LINE_AA)
 
             # Draw set stats panel (Set X, Reps Y)
-            draw_glass_panel(image, 5, 130, 280, 110, alpha=0.65, radius=10)
-            cv2.putText(image, "CURRENT SET STATS", (15, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
-            cv2.putText(image, f"SET: {current_set}", (15, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
-            cv2.putText(image, f"REPS: {current_set_reps}", (140, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+            if img_copy is not None:
+                draw_glass_panel(img_copy, 5, 130, 280, 110, alpha=0.65, radius=10)
+                cv2.putText(img_copy, "CURRENT SET STATS", (15, 150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1)
+                cv2.putText(img_copy, f"SET: {current_set}", (15, 185),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
+                cv2.putText(img_copy, f"REPS: {current_set_reps}", (140, 185),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2)
 
-            # Show individual arm counts in the current set
-            cv2.putText(image, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
+                # Show individual arm counts in the current set
+                cv2.putText(img_copy, f"Set L: {current_set_left_reps}  R: {current_set_right_reps}", (15, 210),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1)
 
-            if set_finished:
-                cv2.putText(image, "SET FINISHED (REST)", (15, 230),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
-            else:
-                status_parts = []
-                status_color = TEXT_DIM
-                if is_uneven:
-                    status_parts.append("EQUALIZE BOTH HANDS!")
-                    status_color = ACCENT_ORANGE
-                if current_set_reps >= 8 and last_rep_time is not None:
-                    time_left = max(0.0, 10.0 - (time.time() - last_rep_time))
-                    status_parts.append(f"Rest in: {time_left:.1f}s")
-                    status_color = ACCENT_ORANGE
+                if set_finished:
+                    cv2.putText(img_copy, "SET FINISHED (REST)", (15, 230),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, ACCENT_GREEN, 1)
+                else:
+                    status_parts = []
+                    status_color = TEXT_DIM
+                    if is_uneven:
+                        status_parts.append("EQUALIZE BOTH HANDS!")
+                        status_color = ACCENT_ORANGE
+                    if current_set_reps >= 8 and last_rep_time is not None:
+                        time_left = max(0.0, 10.0 - (time.time() - last_rep_time))
+                        status_parts.append(f"Rest in: {time_left:.1f}s")
+                        status_color = ACCENT_ORANGE
 
-                if status_parts:
-                    status_text = " | ".join(status_parts)
-                    cv2.putText(image, status_text, (15, 230),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1, cv2.LINE_AA)
+                    if status_parts:
+                        status_text = " | ".join(status_parts)
+                        cv2.putText(img_copy, status_text, (15, 230),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, status_color, 1, cv2.LINE_AA)
 
             # Update stats & feedback on the Tkinter UI
             if ui is not None:
@@ -2322,7 +2344,6 @@ def run_bicep_curls(ui=None):
 
             if hand_landmarker is not None:
                 draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-            draw_home_button(image)
             local_stream_server.update_frame(image)
 
             if ui is None:
@@ -2330,7 +2351,9 @@ def run_bicep_curls(ui=None):
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Bicep Curls', image)
                         break
-                cv2.imshow('Bicep Curls', image)
+                img_copy = image.copy()
+                draw_home_button(img_copy)
+                cv2.imshow('Bicep Curls', img_copy)
                 if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
             else:
@@ -2419,7 +2442,7 @@ def run_pushups(ui=None):
         cv2.setMouseCallback('Push-ups', on_mouse_click)
     print("💪 Push-up Counter Active! Press Q to quit.")
 
-    publish_robot_state("LOADING")
+    publish_robot_state("LOADING", exercise="pushups")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -2486,7 +2509,7 @@ def run_pushups(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("pushups")
-                            publish_robot_state("ACTIVE")
+                            publish_robot_state("ACTIVE", exercise="pushups")
                         except Exception:
                             pass
                 else:
@@ -2502,14 +2525,15 @@ def run_pushups(ui=None):
                         break
 
                     draw_follow_phase_overlay(image, "SIDE")
-                    draw_home_button(image)
                     local_stream_server.update_frame(image)
 
                     if ui is not None:
-                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press the Start", ACCENT_CYAN)
                         ui.update()
                     else:
-                        cv2.imshow('Push-ups', image)
+                        img_copy = image.copy()
+                        draw_home_button(img_copy)
+                        cv2.imshow('Push-ups', img_copy)
                         if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                             break
                     continue
@@ -2569,7 +2593,6 @@ def run_pushups(ui=None):
                 draw_paused_overlay(image, thumbs_up_frames)
                 if hand_landmarker is not None:
                     draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                draw_home_button(image)
                 local_stream_server.update_frame(image)
 
                 if ui is not None:
@@ -2583,7 +2606,9 @@ def run_pushups(ui=None):
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Push-ups', image)
                             break
-                    cv2.imshow('Push-ups', image)
+                    img_copy = image.copy()
+                    draw_home_button(img_copy)
+                    cv2.imshow('Push-ups', img_copy)
                     if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
                 continue
@@ -2728,38 +2753,41 @@ def run_pushups(ui=None):
                 pass
 
             draw_skeleton(image, results)
+            if ui is None:
+                img_copy = image.copy()
+                draw_glass_panel(img_copy, 5, 5, 280, 115, alpha=0.65, radius=10)
+                cv2.rectangle(img_copy, (5, 5), (9, 120), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
+                cv2.putText(img_copy, "PUSH-UPS", (18, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
 
-            draw_glass_panel(image, 5, 5, 280, 115, alpha=0.65, radius=10)
-            cv2.rectangle(image, (5, 5), (9, 120), ACCENT_GREEN if (is_horizontal and is_body_straight) else ACCENT_RED, -1)
-            cv2.putText(image, "PUSH-UPS", (18, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_DIM, 1, cv2.LINE_AA)
+                if is_horizontal:
+                    stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
+                    cv2.putText(img_copy, f"SET: {current_set}", (18, 55),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                    cv2.putText(img_copy, f"REPS: {reps_in_set}", (140, 55),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                    cv2.putText(img_copy, pushup_stage.upper(), (18, 88),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, stage_clr, 2, cv2.LINE_AA)
+                    cv2.putText(img_copy, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 108),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+                else:
+                    cv2.putText(img_copy, f"SET: {current_set}", (18, 55),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                    cv2.putText(img_copy, f"REPS: {reps_in_set}", (140, 55),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
+                    cv2.putText(img_copy, "GET IN POSITION", (18, 88),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACCENT_ORANGE, 2, cv2.LINE_AA)
+                    cv2.putText(img_copy, "Align horizontally", (18, 108),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
 
-            if is_horizontal:
-                stage_clr = ACCENT_GREEN if pushup_stage == 'up' else ACCENT_CYAN
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, pushup_stage.upper(), (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, stage_clr, 2, cv2.LINE_AA)
-                cv2.putText(image, f"Total: {pushup_counter} | Elbow: {int(elbow_angle)} deg", (18, 108),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
+                if is_horizontal and not is_body_straight:
+                    warn_msg = "Form a straight line with body!"
+                    img_h, img_w = image.shape[:2]
+                    draw_glass_panel(img_copy, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
+                    cv2.putText(img_copy, warn_msg, (15, img_h - 25),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
             else:
-                cv2.putText(image, f"SET: {current_set}", (18, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, f"REPS: {reps_in_set}", (140, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_WHITE, 2, cv2.LINE_AA)
-                cv2.putText(image, "GET IN POSITION", (18, 88),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, ACCENT_ORANGE, 2, cv2.LINE_AA)
-                cv2.putText(image, "Align horizontally", (18, 108),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, TEXT_DIM, 1, cv2.LINE_AA)
-
-            if is_horizontal and not is_body_straight:
-                warn_msg = "Form a straight line with body!"
-                img_h, img_w = image.shape[:2]
-                draw_glass_panel(image, 5, img_h - 55, img_w - 10, 50, alpha=0.8, color=(20, 20, 100), radius=10)
-                cv2.putText(image, warn_msg, (15, img_h - 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ACCENT_RED, 2, cv2.LINE_AA)
+                img_copy = None
 
             # Update stats & feedback on the Tkinter UI
             if ui is not None:
@@ -2797,7 +2825,6 @@ def run_pushups(ui=None):
 
             if hand_landmarker is not None:
                 draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-            draw_home_button(image)
             local_stream_server.update_frame(image)
 
             if ui is None:
@@ -2805,7 +2832,9 @@ def run_pushups(ui=None):
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Push-ups', image)
                         break
-                cv2.imshow('Push-ups', image)
+                img_copy = image.copy()
+                draw_home_button(img_copy)
+                cv2.imshow('Push-ups', img_copy)
                 if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
             else:
@@ -2891,7 +2920,7 @@ def run_squats(ui=None):
 
     print("🦵 Squat Counter Active! Press Q to quit.")
 
-    publish_robot_state("LOADING")
+    publish_robot_state("LOADING", exercise="squats")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -2958,7 +2987,7 @@ def run_squats(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("squats")
-                            publish_robot_state("ACTIVE")
+                            publish_robot_state("ACTIVE", exercise="squats")
                         except Exception:
                             pass
                 else:
@@ -2974,14 +3003,15 @@ def run_squats(ui=None):
                         break
 
                     draw_follow_phase_overlay(image, "FRONT")
-                    draw_home_button(image)
                     local_stream_server.update_frame(image)
 
                     if ui is not None:
-                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press the Start", ACCENT_CYAN)
                         ui.update()
                     else:
-                        cv2.imshow('Squats', image)
+                        img_copy = image.copy()
+                        draw_home_button(img_copy)
+                        cv2.imshow('Squats', img_copy)
                         if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                             break
                     continue
@@ -3044,7 +3074,6 @@ def run_squats(ui=None):
                 draw_paused_overlay(image, thumbs_up_frames)
                 if hand_landmarker is not None:
                     draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                draw_home_button(image)
                 local_stream_server.update_frame(image)
 
                 if ui is not None:
@@ -3058,7 +3087,9 @@ def run_squats(ui=None):
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Squats', image)
                             break
-                    cv2.imshow('Squats', image)
+                    img_copy = image.copy()
+                    draw_home_button(img_copy)
+                    cv2.imshow('Squats', img_copy)
                     if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                         break
                 continue
@@ -3427,7 +3458,6 @@ def run_squats(ui=None):
 
             if hand_landmarker is not None:
                 draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-            draw_home_button(image)
             local_stream_server.update_frame(image)
 
             if ui is None:
@@ -3435,7 +3465,9 @@ def run_squats(ui=None):
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Squats', image)
                         break
-                cv2.imshow('Squats', image)
+                img_copy = image.copy()
+                draw_home_button(img_copy)
+                cv2.imshow('Squats', img_copy)
 
                 if cv2.waitKey(5) & 0xFF == ord('q') or home_clicked:
                     break
@@ -3518,7 +3550,7 @@ def run_plank(ui=None):
         cv2.setMouseCallback('Plank', on_mouse_click)
     print("🧘 Plank Timer Active! Press Q to quit.")
 
-    publish_robot_state("LOADING")
+    publish_robot_state("LOADING", exercise="plank")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -3584,7 +3616,7 @@ def run_plank(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("plank")
-                            publish_robot_state("ACTIVE")
+                            publish_robot_state("ACTIVE", exercise="plank")
                         except Exception:
                             pass
                 else:
@@ -3600,14 +3632,15 @@ def run_plank(ui=None):
                         break
 
                     draw_follow_phase_overlay(image, "SIDE")
-                    draw_home_button(image)
                     local_stream_server.update_frame(image)
 
                     if ui is not None:
-                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nWalk to position, then click START on Web App.", ACCENT_CYAN)
+                        ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press the Start", ACCENT_CYAN)
                         ui.update()
                     else:
-                        cv2.imshow('Plank', image)
+                        img_copy = image.copy()
+                        draw_home_button(img_copy)
+                        cv2.imshow('Plank', img_copy)
                         if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                             break
                     continue
@@ -3667,7 +3700,6 @@ def run_plank(ui=None):
                 draw_paused_overlay(image, thumbs_up_frames)
                 if hand_landmarker is not None:
                     draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=True)
-                draw_home_button(image)
                 local_stream_server.update_frame(image)
 
                 if ui is not None:
@@ -3681,7 +3713,9 @@ def run_plank(ui=None):
                         if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                             show_palm_stop_message('Plank', image)
                             break
-                    cv2.imshow('Plank', image)
+                    img_copy = image.copy()
+                    draw_home_button(img_copy)
+                    cv2.imshow('Plank', img_copy)
                     if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                         break
                 continue
@@ -3924,7 +3958,6 @@ def run_plank(ui=None):
 
             if hand_landmarker is not None:
                 draw_hand_controls_status(image, thumbs_up_frames, palm_stop_frames, is_paused=False)
-            draw_home_button(image)
             local_stream_server.update_frame(image)
 
             if ui is None:
@@ -3932,7 +3965,9 @@ def run_plank(ui=None):
                     if palm_stop_frames >= PALM_STOP_REQUIRED_FRAMES:
                         show_palm_stop_message('Plank', image)
                         break
-                cv2.imshow('Plank', image)
+                img_copy = image.copy()
+                draw_home_button(img_copy)
+                cv2.imshow('Plank', img_copy)
 
                 if cv2.waitKey(10) & 0xFF == ord('q') or home_clicked:
                     break
@@ -4406,6 +4441,13 @@ class FitnessRobotUI(tk.Tk):
         self.after(200, self.check_remote_commands)
         
     def show_home_screen(self):
+        # Broadcast READY state to dashboard
+        try:
+            publish_robot_state("READY")
+        except Exception:
+            pass
+        self.exercise_active = False
+
         # Cancel any summary screen auto-timeout timer
         if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
             try:
@@ -4539,8 +4581,7 @@ class FitnessRobotUI(tk.Tk):
                 if cmd_type == "switch":
                     print(f"[GUI] Remote mode switch received: {cmd_val}")
                     if self.exercise_active:
-                        self.next_remote_mode = cmd_val
-                        force_stop.set()
+                        print("[GUI] Ignored remote switch mode because an exercise is active.")
                     else:
                         self.launch_by_name(cmd_val)
             self.after(200, self.check_remote_commands)
