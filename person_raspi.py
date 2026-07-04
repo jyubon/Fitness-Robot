@@ -104,8 +104,8 @@ PALM_STOP_MIN_HAND_SIZE = 0.12
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
 CENTER_ZONE_LEFT  = 0.38
 CENTER_ZONE_RIGHT = 0.62
-TOO_CLOSE = 0.11
-TOO_FAR   = 0.08
+TOO_CLOSE = 0.43
+TOO_FAR   = 0.18
 
 # ─── Timing ───
 COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
@@ -1630,10 +1630,6 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
     """
     global last_person_side, lost_person_since
 
-    if in_exercise_mode:
-        send_command("STOP")
-        return "TRACKING"
-
     # 1. If person is NOT detected (goes out of bounding box / camera frame)
     if not results or not results.pose_landmarks or len(results.pose_landmarks) == 0:
         if in_exercise_mode:
@@ -2386,17 +2382,6 @@ def run_bicep_curls(ui=None):
         }
         print_session_error_summary()
         save_session_to_firestore(last_session_summary)
-        
-        # Publish session end for dashboard / DB
-        try:
-            summary = {
-                "exercise": "bicep_curls",
-                "left_reps": arms['left']['counter'],
-                "right_reps": arms['right']['counter']
-            }
-            publish_session_end(summary)
-        except Exception as e:
-            print(f"⚠️ Failed to publish session end: {e}")
 
     cap.release()
     if ui is None:
@@ -2875,18 +2860,6 @@ def run_pushups(ui=None):
             ],
             'errors': list(session_errors)
         }
-        print_session_error_summary()
-        save_session_to_firestore(last_session_summary)
-        
-        # Publish session end for dashboard / DB
-        try:
-            summary = {
-                "exercise": "pushups",
-                "total_reps": pushup_counter
-            }
-            publish_session_end(summary)
-        except Exception as e:
-            print(f"⚠️ Failed to publish session end: {e}")
 
     cap.release()
     if ui is None:
@@ -3523,16 +3496,6 @@ def run_squats(ui=None):
         }
         print_session_error_summary()
         save_session_to_firestore(last_session_summary)
-        
-        # Publish session end for dashboard / DB
-        try:
-            summary = {
-                "exercise": "squats",
-                "total_reps": counter
-            }
-            publish_session_end(summary)
-        except Exception as e:
-            print(f"⚠️ Failed to publish session end: {e}")
 
     cap.release()
     cv2.destroyAllWindows()
@@ -4033,16 +3996,6 @@ def run_plank(ui=None):
         }
         print_session_error_summary()
         save_session_to_firestore(last_session_summary)
-        
-        # Publish session end for dashboard / DB
-        try:
-            summary = {
-                "exercise": "plank",
-                "total_plank_time_s": plank_timer
-            }
-            publish_session_end(summary)
-        except Exception as e:
-            print(f"⚠️ Failed to publish session end: {e}")
 
     cap.release()
     if ui is None:
@@ -4804,12 +4757,6 @@ class FitnessRobotUI(tk.Tk):
         summary = last_session_summary
         last_session_summary = None  # Reset
         
-        # Broadcast READY state to dashboard so the web dashboard knows the exercise is over and buttons are active
-        try:
-            publish_robot_state("READY")
-        except Exception:
-            pass
-        
         # Cancel any existing summary timer
         if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
             try:
@@ -4900,7 +4847,6 @@ class FitnessRobotUI(tk.Tk):
 
     def quit_app(self):
         self.destroy()
-        sys.exit(0)
 
 
 if __name__ == "__main__":
