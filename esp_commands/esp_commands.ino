@@ -38,14 +38,14 @@ const float VOLTAGE_MULTIPLIER = 5.0;
 // ============================================================
 // Ultrasonic Sensor Pins (HC-SR04)
 // ============================================================
-#define TRIG_FRONT 12
-#define ECHO_FRONT 1
-#define TRIG_LEFT 13
-#define ECHO_LEFT 2
-#define TRIG_RIGHT 15
-#define ECHO_RIGHT 42
-#define TRIG_REAR 14
-#define ECHO_REAR 41
+#define TRIG_FRONT 15
+#define ECHO_FRONT 42
+#define TRIG_LEFT 20
+#define ECHO_LEFT 41
+#define TRIG_RIGHT 19
+#define ECHO_RIGHT 1
+#define TRIG_REAR 13
+#define ECHO_REAR 2
 
 // ============================================================
 // Motor Driver Pins (L298N / TB6612)
@@ -83,7 +83,7 @@ const float VOLTAGE_MULTIPLIER = 5.0;
 #define MOTOR_SPEED_HALF 128
 
 // Obstacle Detection Threshold
-#define OBSTACLE_THRESHOLD_CM 30
+#define OBSTACLE_THRESHOLD_CM 50
 
 // Command timeout - stop motors if no command received
 #define CMD_TIMEOUT_MS 2000
@@ -491,6 +491,15 @@ void loop() {
 
   // --- Read Ultrasonic Sensors ---
   readAllSensors();
+
+  // --- Check Obstacle Safety during movement ---
+  if (currentCommand != "STOP" && !isSafeToMove(currentCommand)) {
+    Serial.print("[OBSTACLE] Sudden block detected! Stopping motors for: ");
+    Serial.println(currentCommand);
+    stopAllMotors();
+    currentCommand = "STOP";
+    piSerial.println("ALERT:OBSTACLE");
+  }
 
   // --- Send Data to Pi ---
   sendDistances();

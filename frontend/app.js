@@ -17,6 +17,7 @@ let formChart = null;
 let currentSessionId = null;
 let currentExercise = null;
 let latestEventTimestamp = null;
+let robotState = 'READY';
 
 // Analytics real-time listeners (unsubscribed when tab is hidden)
 let analyticsAggUnsubscribe = null;
@@ -163,6 +164,15 @@ function showTab(tab) {
   const btnLive = document.getElementById('tab-live');
   const btnSteps = document.getElementById('tab-steps');
   const btnAnalytics = document.getElementById('tab-analytics');
+  const btnStart = document.getElementById('startExerciseBtn');
+
+  if (btnStart) {
+    if (tab === 'live') {
+      btnStart.classList.remove('hidden');
+    } else {
+      btnStart.classList.add('hidden');
+    }
+  }
 
   if (tab === 'live') {
     live.classList.remove('hidden');
@@ -264,6 +274,15 @@ function handleTelemetryMessage(msg) {
     const state = (payload.state || 'STOPPED').toUpperCase();
     pill.textContent = state;
     pill.setAttribute('data-state', state);
+    robotState = state;
+
+    if (payload.exercise) {
+      currentExercise = payload.exercise;
+      document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+    } else if (state === 'READY') {
+      currentExercise = null;
+      document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+    }
     return;
   }
 
@@ -344,7 +363,7 @@ function connectLocalWebSocket(piIp) {
   if (localControlSocket) {
     try {
       localControlSocket.close();
-    } catch (e) {}
+    } catch (e) { }
   }
 
   console.log(`🔌 Attempting to connect to local robot control at ws://${piIp}:8001`);
@@ -388,7 +407,19 @@ async function sendForceStop() {
   await sendControlCommand({ action: 'force_stop' }, 'Force Stop sent to robot');
 }
 
+async function sendStartExercise() {
+  await sendControlCommand({ action: 'start_exercise' }, 'Start detecting exercise signal sent to robot');
+}
+
 async function switchMode(mode) {
+  if (robotState === 'ACTIVE' || robotState === 'LOADING') {
+    appendLog("⚠️ Exercise is currently active. Selection disabled.", true);
+    return;
+  }
+
+  currentExercise = mode;
+  document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+
   const mapping = {
     bicep_curls: 'BICEP_CURLS',
     pushups: 'PUSHUPS',
@@ -443,12 +474,12 @@ async function sendControlCommand(command, successMessage) {
 function normalizeUrl(input) {
   let url = input.trim();
   if (!url) return '';
-  
+
   // If it doesn't have a protocol, prepend http://
   if (!/^https?:\/\//i.test(url)) {
     url = 'http://' + url;
   }
-  
+
   try {
     const parsed = new URL(url);
     // If no port is specified, default to 8081 for the stream
@@ -725,7 +756,7 @@ function connectAnalyticsListeners() {
         rebuildAndRender();
       }
     })
-    .catch(() => {});
+    .catch(() => { });
 }
 
 // Kept for backward compatibility (called after generateDemoData)
@@ -933,31 +964,31 @@ function onStepDisconnected() {
 function onStepCountChanged(event) {
   const value = new TextDecoder().decode(event.target.value);
   const steps = parseInt(value, 10) || 0;
-  
+
   // Calculate metrics using watch coefficients (calPerStep=0.04, metersPerStep=0.75)
   const cal = steps * 0.04;
   const km = (steps * 0.75) / 1000.0;
-  
+
   // Read current active minutes from UI if present, to keep it consistent
   const activeMinEl = document.getElementById('stepActiveMin');
   const min = activeMinEl ? parseInt(activeMinEl.textContent, 10) || 0 : 0;
-  
+
   const data = {
     steps: steps,
     cal: cal,
     km: km,
     min: min
   };
-  
+
   // Update local UI immediately in real time so the user sees changes instantly
   updateStepDisplay(data, true);
-  
+
   // Only sync to Firestore on the initial connection (when lastSyncedStepCount is -1)
   // or when the steps have increased by at least 10 since the last write.
   if (lastSyncedStepCount !== -1 && Math.abs(steps - lastSyncedStepCount) < 10) {
     return;
   }
-  
+
   lastSyncedStepCount = steps;
   syncStepsToFirestore(data);
 }
@@ -968,10 +999,10 @@ function onStepDailyDataChanged(event) {
 
   try {
     const data = JSON.parse(value);
-    
+
     // Keep lastSyncedStepCount updated to prevent duplicate step notifications
     lastSyncedStepCount = Number(data.steps || 0);
-    
+
     updateStepDisplay(data, true);
     saveStepHistory(data);
     syncStepsToFirestore(data);
@@ -1169,7 +1200,7 @@ async function syncStepsToFirestore(data) {
     const cal = Number(data.cal ?? data.calories ?? 0);
     const km = Number(data.km ?? data.distance_km ?? 0);
     const min = Number(data.min ?? data.active_min ?? 0);
-    
+
     await db.collection('users').doc(currentUserId)
       .collection('watch_data')
       .doc(today)
@@ -1180,7 +1211,7 @@ async function syncStepsToFirestore(data) {
         active_min: min,
         last_synced_at: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
-      
+
     stepLog(`Firestore synced: ${steps.toLocaleString()} steps, ${cal.toFixed(1)} cal, ${km.toFixed(2)} km, ${min} active min`);
   } catch (error) {
     stepLog(`Firestore sync failed: ${error.message}`);

@@ -481,6 +481,11 @@ async def ws_control(websocket: WebSocket):
         ws_manager.disconnect_control(user_id, websocket)
 
 
+# Serve frontend static files if path exists
+if frontend_path.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
+
+
 # --- Run hint ---
 if __name__ == "__main__":
     import uvicorn
