@@ -70,10 +70,10 @@ const float VOLTAGE_MULTIPLIER = 5.0;
 // ============================================================
 // LEDC PWM Configuration
 // ============================================================
-#define FL_PWM_CH FL_ENA
-#define FR_PWM_CH FR_ENA
-#define RL_PWM_CH RL_ENA
-#define RR_PWM_CH RR_ENA
+#define FL_PWM_CH 0
+#define FR_PWM_CH 1
+#define RL_PWM_CH 2
+#define RR_PWM_CH 3
 #define PWM_FREQ 1000
 #define PWM_RES 8
 
@@ -203,10 +203,17 @@ void setup() {
 // PWM INIT
 // ============================================================
 void initPWM() {
-  ledcAttach(FL_ENA, PWM_FREQ, PWM_RES);
-  ledcAttach(FR_ENA, PWM_FREQ, PWM_RES);
-  ledcAttach(RL_ENA, PWM_FREQ, PWM_RES);
-  ledcAttach(RR_ENA, PWM_FREQ, PWM_RES);
+  ledcSetup(FL_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(FL_ENA, FL_PWM_CH);
+  
+  ledcSetup(FR_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(FR_ENA, FR_PWM_CH);
+  
+  ledcSetup(RL_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RL_ENA, RL_PWM_CH);
+  
+  ledcSetup(RR_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RR_ENA, RR_PWM_CH);
 }
 
 // ============================================================
@@ -442,6 +449,11 @@ void updateVoltageIndicator() {
   
   // Calculate voltage (Assuming 3.3V reference)
   float voltage = (adcValue / 4095.0) * 3.3 * VOLTAGE_MULTIPLIER;
+
+  Serial.print("[VOLTAGE] ADC: ");
+  Serial.print(adcValue);
+  Serial.print(" | Computed Voltage: ");
+  Serial.println(voltage);
   
   // Set RGB LED based on voltage
   // (Assuming Common Cathode: HIGH = ON. If Common Anode, invert HIGH/LOW)
