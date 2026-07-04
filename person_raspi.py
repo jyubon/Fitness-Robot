@@ -68,6 +68,8 @@ home_clicked = False
 last_session_summary = None
 last_person_side = None
 lost_person_since = None
+is_resting = False
+person_missing = False
 
 def on_mouse_click(event, x, y, flags, param):
     global home_clicked
@@ -1522,7 +1524,9 @@ def play_voice_command(err_msg):
     Looks up the error message in VOICE_FILE_MAP and plays the matching MP3
     in a background thread if the file exists.
     """
-    global lost_person_since
+    global lost_person_since, is_resting, person_missing
+    if is_resting or person_missing:
+        return   # Do not play audio tracks when person is resting or missing
     if lost_person_since is not None and (time.time() - lost_person_since) > 2.0:
         return   # In searching phase, voice commands should not play
 
@@ -1606,7 +1610,7 @@ def print_session_error_summary():
         print("=" * 50 + "\n")
 
 
-def adjust_robot_position(exercise_name, results):
+def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
     """
     Adjust the robot's physical position dynamically during exercise detection.
     Optimized for a camera height of 2.5 feet above the ground.
@@ -1615,13 +1619,17 @@ def adjust_robot_position(exercise_name, results):
 
     # 1. If person is NOT detected (goes out of bounding box / camera frame)
     if not results or not results.pose_landmarks or len(results.pose_landmarks) == 0:
+        if in_exercise_mode:
+            send_command("STOP")
+            return "TRACKING"
+
         now = time.time()
         if lost_person_since is None:
             lost_person_since = now
         
         elapsed_lost = now - lost_person_since
-        if elapsed_lost > 2.0:
-            search_elapsed = elapsed_lost - 2.0
+        if elapsed_lost > 5.0:
+            search_elapsed = elapsed_lost - 5.0
             if search_elapsed > 8.0:
                 send_command("STOP")
                 return "LOST_TIMEOUT"
@@ -1848,6 +1856,14 @@ def run_bicep_curls(ui=None):
     right_reps_at_set_start = 0
     last_uneven_warning_time = 0.0
     set_finished = False
+    lost_start_time = None
+    set_incremented_while_lost = False
+    is_mid_workout_rest = False
+    rest_start_time = None
+    
+    global is_resting, person_missing
+    is_resting = False
+    person_missing = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -1897,6 +1913,18 @@ def run_bicep_curls(ui=None):
             frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             img_h, img_w, _ = image.shape
+            
+            # --- Rest Timer Check ---
+            if is_mid_workout_rest and rest_start_time is not None:
+                elapsed_rest = time.time() - rest_start_time
+                if elapsed_rest > 30.0:
+                    is_mid_workout_rest = False
+                    is_resting = False
+                    if ui is not None:
+                        ui.is_resting = False
+                        if hasattr(ui, 'set_count_warning_label'):
+                            ui.set_count_warning_label.configure(text="")
+                    print("  [REST OVER] Resuming Bicep Curls.")
 
             # Run Pose detection every FRAME_SKIP frames
             if frame_counter % FRAME_SKIP == 0 or last_results is None:
@@ -1925,9 +1953,12 @@ def run_bicep_curls(ui=None):
                     robot_status = "TRACKING"
                     if results and results.pose_landmarks:
                         draw_skeleton(image, results)
-                        robot_status = adjust_robot_position("BICEP_CURLS", results)
+                        robot_status = adjust_robot_position("BICEP_CURLS", results, in_exercise_mode=False)
                     else:
-                        robot_status = adjust_robot_position("BICEP_CURLS", None)
+                        robot_status = adjust_robot_position("BICEP_CURLS", None, in_exercise_mode=False)
+
+                    if robot_status == "LOST_TIMEOUT":
+                        break
 
                     draw_follow_phase_overlay(image, "FRONT")
                     draw_home_button(image)
@@ -2027,22 +2058,27 @@ def run_bicep_curls(ui=None):
 
             person_in_frame = results and results.pose_landmarks and len(results.pose_landmarks) > 0
 
-            if current_set > 4:
-                print("🎉 Workout completed! 4 Sets done.")
-                break
-
             if workout_state == "DOING_SET":
                 if current_set_reps >= 8:
-                    if current_set >= 4:
-                        print("🎉 Workout completed! 4 Sets done.")
+                    if not set_finished:
+                        print(f"\n✅ Set {current_set} Finished! Please rest.")
                         try:
                             publish_set_complete("bicep_curls", current_set, current_set_reps)
                         except Exception:
                             pass
-                        break
-                    if not set_finished:
-                        print(f"\n✅ Set {current_set} Finished! Please rest.")
                         set_finished = True
+                        if current_set == 2:
+                            is_mid_workout_rest = True
+                            is_resting = True
+                            if ui is not None:
+                                ui.is_resting = True
+                                if hasattr(ui, 'set_count_warning_label'):
+                                    ui.set_count_warning_label.configure(text="Rest for a While.", fg="#96D75F")
+                            rest_start_time = time.time()
+                            current_set = 3
+                            left_reps_at_set_start = arms['left']['counter']
+                            right_reps_at_set_start = arms['right']['counter']
+                            set_finished = False
 
             # Warn user if the hands have uneven reps in the current set
             is_uneven = (current_set_left_reps != current_set_right_reps) and (max(current_set_left_reps, current_set_right_reps) > 0)
@@ -2053,11 +2089,14 @@ def run_bicep_curls(ui=None):
 
             robot_status = "TRACKING"
             if not waiting_for_start and not paused:
-                robot_status = adjust_robot_position("BICEP_CURLS", results)
+                robot_status = adjust_robot_position("BICEP_CURLS", results, in_exercise_mode=True)
                 if robot_status == "LOST_TIMEOUT":
                     break
 
             if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                lost_start_time = None
+                set_incremented_while_lost = False
+                person_missing = False
                 lm = results.pose_landmarks[0]
 
                 # Swapped to account for camera mirroring: MediaPipe Right (12, 14, 16) -> Left arm on display, MediaPipe Left (11, 13, 15) -> Right arm on display
@@ -2067,7 +2106,7 @@ def run_bicep_curls(ui=None):
                 prev_l_cnt = arms['left']['counter']
                 prev_r_cnt = arms['right']['counter']
 
-                if workout_state != "DOING_SET":
+                if workout_state != "DOING_SET" or is_mid_workout_rest:
                     l_fb, l_clr, l_stg, l_swing = "REST", ACCENT_GREEN, "REST", False
                     r_fb, r_clr, r_stg, r_swing = "REST", ACCENT_GREEN, "REST", False
                 else:
@@ -2080,13 +2119,9 @@ def run_bicep_curls(ui=None):
                         log_session_error("Keep hands in straight position without swinging")
                         last_swing_warning_time = now
 
-                if (arms['left']['counter'] > prev_l_cnt) or (arms['right']['counter'] > prev_r_cnt):
+                if not is_mid_workout_rest and ((arms['left']['counter'] > prev_l_cnt) or (arms['right']['counter'] > prev_r_cnt)):
                     curl_timestamps.append(now)
                     if set_finished:
-                        try:
-                            publish_set_complete("bicep_curls", current_set, current_set_reps)
-                        except Exception:
-                            pass
                         current_set += 1
                         left_reps_at_set_start = prev_l_cnt
                         right_reps_at_set_start = prev_r_cnt
@@ -2126,7 +2161,30 @@ def run_bicep_curls(ui=None):
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1)
             else:
                 if not waiting_for_start and not paused:
-                    robot_status = adjust_robot_position("BICEP_CURLS", None)
+                    robot_status = adjust_robot_position("BICEP_CURLS", None, in_exercise_mode=True)
+                    if robot_status == "LOST_TIMEOUT":
+                        break
+                    
+                    person_missing = True
+                    if lost_start_time is None:
+                        lost_start_time = time.time()
+                    elapsed_lost = time.time() - lost_start_time
+                    if elapsed_lost > 60.0:
+                        print("  [TIMEOUT] Person lost for more than 1 minute during Bicep Curls.")
+                        break
+                    if elapsed_lost > 20.0 and not set_incremented_while_lost:
+                        if not is_mid_workout_rest:
+                            if current_set_reps > 6:
+                                try:
+                                    publish_set_complete("bicep_curls", current_set, current_set_reps)
+                                except Exception:
+                                    pass
+                                current_set += 1
+                                left_reps_at_set_start = arms['left']['counter']
+                                right_reps_at_set_start = arms['right']['counter']
+                                set_finished = False
+                                set_incremented_while_lost = True
+
                     if robot_status != "SEARCHING":
                         log_session_error("Align horizontally GET IN POSITION.")
                 else:
@@ -2339,6 +2397,15 @@ def run_pushups(ui=None):
     reps_in_set = 0
     workout_state = "DOING_SET"
     set_started = False
+    set_finished = False
+    lost_start_time = None
+    set_incremented_while_lost = False
+    is_mid_workout_rest = False
+    rest_start_time = None
+
+    global is_resting, person_missing
+    is_resting = False
+    person_missing = False
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -2387,6 +2454,18 @@ def run_pushups(ui=None):
             frame_counter += 1
             frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            
+            # --- Rest Timer Check ---
+            if is_mid_workout_rest and rest_start_time is not None:
+                elapsed_rest = time.time() - rest_start_time
+                if elapsed_rest > 30.0:
+                    is_mid_workout_rest = False
+                    is_resting = False
+                    if ui is not None:
+                        ui.is_resting = False
+                        if hasattr(ui, 'set_count_warning_label'):
+                            ui.set_count_warning_label.configure(text="")
+                    print("  [REST OVER] Resuming Pushups.")
             # Run Pose detection every FRAME_SKIP frames
             if frame_counter % FRAME_SKIP == 0 or last_results is None:
                 results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
@@ -2415,9 +2494,12 @@ def run_pushups(ui=None):
                     robot_status = "TRACKING"
                     if results and results.pose_landmarks:
                         draw_skeleton(image, results)
-                        robot_status = adjust_robot_position("PUSH_UPS", results)
+                        robot_status = adjust_robot_position("PUSH_UPS", results, in_exercise_mode=False)
                     else:
-                        robot_status = adjust_robot_position("PUSH_UPS", None)
+                        robot_status = adjust_robot_position("PUSH_UPS", None, in_exercise_mode=False)
+
+                    if robot_status == "LOST_TIMEOUT":
+                        break
 
                     draw_follow_phase_overlay(image, "SIDE")
                     draw_home_button(image)
@@ -2513,8 +2595,11 @@ def run_pushups(ui=None):
             robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    lost_start_time = None
+                    set_incremented_while_lost = False
+                    person_missing = False
                     if not waiting_for_start and not paused:
-                        robot_status = adjust_robot_position("PUSH_UPS", results)
+                        robot_status = adjust_robot_position("PUSH_UPS", results, in_exercise_mode=True)
                         if robot_status == "LOST_TIMEOUT":
                             break
                     lm = results.pose_landmarks[0]
@@ -2555,30 +2640,86 @@ def run_pushups(ui=None):
                         is_horizontal = abs(shoulder[0] - ankle[0]) > abs(shoulder[1] - ankle[1])
 
                         if is_horizontal:
-                            if workout_state == "DOING_SET":
+                            if workout_state == "DOING_SET" and not is_mid_workout_rest:
                                 prev_counter = pushup_counter
                                 pushup_stage, pushup_counter, is_body_straight, elbow_angle = count_pushups(
                                     shoulder, elbow, wrist, neck, hip, ankle, pushup_stage, pushup_counter
                                 )
 
                                 if pushup_counter > prev_counter:
+                                    if set_finished:
+                                        current_set += 1
+                                        reps_in_set = 0
+                                        set_finished = False
                                     reps_in_set += 1
+
+                                    if reps_in_set >= 8:
+                                        print(f"\n✅ Push-up Set {current_set} Finished! Please rest.")
+                                        try:
+                                            publish_set_complete("pushups", current_set, reps_in_set)
+                                        except Exception:
+                                            pass
+                                        set_finished = True
+                                        if current_set == 2:
+                                            is_mid_workout_rest = True
+                                            is_resting = True
+                                            if ui is not None:
+                                                ui.is_resting = True
+                                                if hasattr(ui, 'set_count_warning_label'):
+                                                    ui.set_count_warning_label.configure(text="Rest for a While.", fg="#96D75F")
+                                            rest_start_time = time.time()
+                                            current_set = 3
+                                            reps_in_set = 0
+                                            set_finished = False
 
                                 if not is_body_straight:
                                     log_session_error("Form a straight line with body")
                         else:
-                            if reps_in_set > 0 and not set_ended:
-                                set_ended = True
+                            if reps_in_set > 0 and not set_finished:
+                                set_finished = True
                                 print(f"\n✅ Push-up Set {current_set} Finished! Completed {reps_in_set} reps.")
                                 robot_status = "TRACKING"
                                 try:
                                     publish_set_complete("pushups", current_set, reps_in_set)
                                 except Exception:
                                     pass
+                                if current_set == 2:
+                                    is_mid_workout_rest = True
+                                    is_resting = True
+                                    if ui is not None:
+                                        ui.is_resting = True
+                                        if hasattr(ui, 'set_count_warning_label'):
+                                            ui.set_count_warning_label.configure(text="Rest for a While.", fg="#96D75F")
+                                    rest_start_time = time.time()
+                                    current_set = 3
+                                    reps_in_set = 0
+                                    set_finished = False
                             log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     if not waiting_for_start and not paused:
-                        robot_status = adjust_robot_position("PUSH_UPS", None)
+                        robot_status = adjust_robot_position("PUSH_UPS", None, in_exercise_mode=True)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
+                        
+                        person_missing = True
+                        if lost_start_time is None:
+                            lost_start_time = time.time()
+                        elapsed_lost = time.time() - lost_start_time
+                        if elapsed_lost > 60.0:
+                            print("  [TIMEOUT] Person lost for more than 1 minute during Pushups.")
+                            break
+                        if elapsed_lost > 20.0 and not set_incremented_while_lost:
+                            if not is_mid_workout_rest:
+                                if reps_in_set > 6:
+                                    try:
+                                        publish_set_complete("pushups", current_set, reps_in_set)
+                                    except Exception:
+                                        pass
+                                    current_set += 1
+                                    reps_in_set = 0
+                                    set_finished = False
+                                    set_incremented_while_lost = True
+
                         if robot_status != "SEARCHING":
                             log_session_error("Align horizontally GET IN POSITION.")
                     else:
@@ -2709,6 +2850,15 @@ def run_squats(ui=None):
     # Exercise sets and reps state
     current_set = 1
     reps_in_set = 0
+    set_finished = False
+    lost_start_time = None
+    set_incremented_while_lost = False
+    is_mid_workout_rest = False
+    rest_start_time = None
+
+    global is_resting, person_missing
+    is_resting = False
+    person_missing = False
     last_rep_time = None
     workout_state = "DOING_SET"
     set_started = False
@@ -2776,6 +2926,18 @@ def run_squats(ui=None):
             frame_counter += 1
             frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            
+            # --- Rest Timer Check ---
+            if is_mid_workout_rest and rest_start_time is not None:
+                elapsed_rest = time.time() - rest_start_time
+                if elapsed_rest > 30.0:
+                    is_mid_workout_rest = False
+                    is_resting = False
+                    if ui is not None:
+                        ui.is_resting = False
+                        if hasattr(ui, 'set_count_warning_label'):
+                            ui.set_count_warning_label.configure(text="")
+                    print("  [REST OVER] Resuming Squats.")
             # Run Pose detection every FRAME_SKIP frames
             if frame_counter % FRAME_SKIP == 0 or last_results is None:
                 results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
@@ -2804,9 +2966,12 @@ def run_squats(ui=None):
                     robot_status = "TRACKING"
                     if results and results.pose_landmarks:
                         draw_skeleton(image, results)
-                        robot_status = adjust_robot_position("SQUATS", results)
+                        robot_status = adjust_robot_position("SQUATS", results, in_exercise_mode=False)
                     else:
-                        robot_status = adjust_robot_position("SQUATS", None)
+                        robot_status = adjust_robot_position("SQUATS", None, in_exercise_mode=False)
+
+                    if robot_status == "LOST_TIMEOUT":
+                        break
 
                     draw_follow_phase_overlay(image, "FRONT")
                     draw_home_button(image)
@@ -2910,8 +3075,11 @@ def run_squats(ui=None):
             robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    lost_start_time = None
+                    set_incremented_while_lost = False
+                    person_missing = False
                     if not waiting_for_start and not paused:
-                        robot_status = adjust_robot_position("SQUATS", results)
+                        robot_status = adjust_robot_position("SQUATS", results, in_exercise_mode=True)
                         if robot_status == "LOST_TIMEOUT":
                             break
                     lm = results.pose_landmarks[0]
@@ -3016,17 +3184,43 @@ def run_squats(ui=None):
                             stage = "up"
                             # Enforce that hands, body (shoulders), knees, and hips all lowered during descent
                             if lowered_shoulders and lowered_hips and lowered_wrists and lowered_knees:
-                                reps_in_set += 1
-                                counter += 1
-                                print(f"  Rep {reps_in_set} completed! Angle: {int(down_angle)}")
-                                last_rep_time = time.time()
-                                set_started = True
-                                # Publish live squat rep (real data)
-                                robot_status = "TRACKING"
-                                try:
-                                    publish_rep("squats", set_num=current_set, count=reps_in_set)
-                                except Exception:
-                                    pass
+                                if not is_mid_workout_rest:
+                                    if set_finished:
+                                        current_set += 1
+                                        reps_in_set = 0
+                                        set_finished = False
+                                    reps_in_set += 1
+                                    counter += 1
+                                    print(f"  Rep {reps_in_set} completed! Angle: {int(down_angle)}")
+                                    last_rep_time = time.time()
+                                    set_started = True
+                                    # Publish live squat rep (real data)
+                                    robot_status = "TRACKING"
+                                    try:
+                                        publish_rep("squats", set_num=current_set, count=reps_in_set)
+                                    except Exception:
+                                        pass
+
+                                    if reps_in_set >= 8:
+                                        print(f"\n✅ Set {current_set} Finished! Please rest.")
+                                        try:
+                                            publish_set_complete("squats", current_set, reps_in_set)
+                                        except Exception:
+                                            pass
+                                        set_finished = True
+                                        set_started = False
+                                        last_rep_time = None
+                                        if current_set == 2:
+                                            is_mid_workout_rest = True
+                                            is_resting = True
+                                            if ui is not None:
+                                                ui.is_resting = True
+                                                if hasattr(ui, 'set_count_warning_label'):
+                                                    ui.set_count_warning_label.configure(text="Rest for a While.", fg="#96D75F")
+                                            rest_start_time = time.time()
+                                            current_set = 3
+                                            reps_in_set = 0
+                                            set_finished = False
                             else:
                                 print(f"  Rep ignored: Whole body did not lower. Shoulders: {lowered_shoulders}, Hips: {lowered_hips}, Wrists: {lowered_wrists}, Knees: {lowered_knees}")
 
@@ -3063,7 +3257,31 @@ def run_squats(ui=None):
                     draw_skeleton(image, results)
                 else:
                     if not waiting_for_start and not paused:
-                        robot_status = adjust_robot_position("SQUATS", None)
+                        robot_status = adjust_robot_position("SQUATS", None, in_exercise_mode=True)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
+                        
+                        person_missing = True
+                        if lost_start_time is None:
+                            lost_start_time = time.time()
+                        elapsed_lost = time.time() - lost_start_time
+                        if elapsed_lost > 60.0:
+                            print("  [TIMEOUT] Person lost for more than 1 minute during Squats.")
+                            break
+                        if elapsed_lost > 20.0 and not set_incremented_while_lost:
+                            if not is_mid_workout_rest:
+                                if reps_in_set > 6:
+                                    try:
+                                        publish_set_complete("squats", current_set, reps_in_set)
+                                    except Exception:
+                                        pass
+                                    current_set += 1
+                                    reps_in_set = 0
+                                    set_finished = False
+                                    set_started = False
+                                    last_rep_time = None
+                                    set_incremented_while_lost = True
+
                         if robot_status != "SEARCHING":
                             log_session_error("Align horizontally GET IN POSITION.")
                     else:
@@ -3073,7 +3291,6 @@ def run_squats(ui=None):
 
             # --- Set transition / Countdown timer logic ---
             now_time = time.time()
-            set_finished = False
             if set_started and last_rep_time is not None:
                 time_elapsed = now_time - last_rep_time
                 time_limit = 15.0 if reps_in_set >= 6 else 20.0
@@ -3085,11 +3302,20 @@ def run_squats(ui=None):
                         publish_set_complete("squats", current_set, reps_in_set)
                     except Exception:
                         pass
-                    current_set += 1
-                    reps_in_set = 0
+                    set_finished = True
                     set_started = False
                     last_rep_time = None
-                    set_finished = True
+                    if current_set == 2:
+                        is_mid_workout_rest = True
+                        is_resting = True
+                        if ui is not None:
+                            ui.is_resting = True
+                            if hasattr(ui, 'set_count_warning_label'):
+                                ui.set_count_warning_label.configure(text="Rest for a While.", fg="#96D75F")
+                        rest_start_time = time.time()
+                        current_set = 3
+                        reps_in_set = 0
+                        set_finished = False
 
             img_h, img_w = image.shape[:2]
 
@@ -3255,6 +3481,14 @@ def run_plank(ui=None):
     current_set = 1
     current_set_time = 0.0
     set_finished = False
+    lost_start_time = None
+    set_incremented_while_lost = False
+    is_mid_workout_rest = False
+    rest_start_time = None
+
+    global is_resting, person_missing
+    is_resting = False
+    person_missing = False
 
     def count_plank_time(shoulder, hip, ankle, in_plank_state, plank_start):
         if check_plank(shoulder, hip, ankle):
@@ -3318,6 +3552,18 @@ def run_plank(ui=None):
             frame_counter += 1
             frame = cv2.flip(frame, 1)
             image = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            
+            # --- Rest Timer Check ---
+            if is_mid_workout_rest and rest_start_time is not None:
+                elapsed_rest = time.time() - rest_start_time
+                if elapsed_rest > 30.0:
+                    is_mid_workout_rest = False
+                    is_resting = False
+                    if ui is not None:
+                        ui.is_resting = False
+                        if hasattr(ui, 'set_count_warning_label'):
+                            ui.set_count_warning_label.configure(text="")
+                    print("  [REST OVER] Resuming Planks.")
             # Run Pose detection every FRAME_SKIP frames
             if frame_counter % FRAME_SKIP == 0 or last_results is None:
                 results, timestamp_ms = detect_pose_frame(landmarker, frame, timestamp_ms)
@@ -3346,9 +3592,12 @@ def run_plank(ui=None):
                     robot_status = "TRACKING"
                     if results and results.pose_landmarks:
                         draw_skeleton(image, results)
-                        robot_status = adjust_robot_position("PLANK", results)
+                        robot_status = adjust_robot_position("PLANK", results, in_exercise_mode=False)
                     else:
-                        robot_status = adjust_robot_position("PLANK", None)
+                        robot_status = adjust_robot_position("PLANK", None, in_exercise_mode=False)
+
+                    if robot_status == "LOST_TIMEOUT":
+                        break
 
                     draw_follow_phase_overlay(image, "SIDE")
                     draw_home_button(image)
@@ -3443,8 +3692,11 @@ def run_plank(ui=None):
             robot_status = "TRACKING"
             try:
                 if results.pose_landmarks and len(results.pose_landmarks) > 0:
+                    lost_start_time = None
+                    set_incremented_while_lost = False
+                    person_missing = False
                     if not waiting_for_start and not paused:
-                        robot_status = adjust_robot_position("PLANK", results)
+                        robot_status = adjust_robot_position("PLANK", results, in_exercise_mode=True)
                         if robot_status == "LOST_TIMEOUT":
                             break
                     lm = results.pose_landmarks[0]
@@ -3491,17 +3743,26 @@ def run_plank(ui=None):
                             in_plank, start_time, elapsed_time = count_plank_time(
                                 neck, hip, ankle, in_plank, start_time
                             )
-                            plank_timer += elapsed_time
-                            if in_plank:
-                                current_set_time += elapsed_time
-                                if current_set_time >= 30.0:
-                                    try:
-                                        publish_set_complete("plank", current_set, 30)
-                                    except Exception:
-                                        pass
-                                    current_set += 1
-                                    current_set_time = 0.0
-                                    print(f"\n✅ Plank Set completed! Total sets: {current_set - 1}")
+                            if not is_mid_workout_rest:
+                                plank_timer += elapsed_time
+                                if in_plank:
+                                    current_set_time += elapsed_time
+                                    if current_set_time >= 30.0:
+                                        try:
+                                            publish_set_complete("plank", current_set, 30)
+                                        except Exception:
+                                            pass
+                                        current_set += 1
+                                        current_set_time = 0.0
+                                        print(f"\n✅ Plank Set completed! Total sets: {current_set - 1}")
+                                        if current_set == 3:
+                                            is_mid_workout_rest = True
+                                            is_resting = True
+                                            if ui is not None:
+                                                ui.is_resting = True
+                                                if hasattr(ui, 'set_count_warning_label'):
+                                                    ui.set_count_warning_label.configure(text="Rest for a While.", fg="#96D75F")
+                                            rest_start_time = time.time()
                             
                             robot_status = "TRACKING"
                             try:
@@ -3519,7 +3780,28 @@ def run_plank(ui=None):
                             log_session_error("Align horizontally GET IN POSITION.")
                 else:
                     if not waiting_for_start and not paused:
-                        robot_status = adjust_robot_position("PLANK", None)
+                        robot_status = adjust_robot_position("PLANK", None, in_exercise_mode=True)
+                        if robot_status == "LOST_TIMEOUT":
+                            break
+                        
+                        person_missing = True
+                        if lost_start_time is None:
+                            lost_start_time = time.time()
+                        elapsed_lost = time.time() - lost_start_time
+                        if elapsed_lost > 60.0:
+                            print("  [TIMEOUT] Person lost for more than 1 minute during Planks.")
+                            break
+                        if elapsed_lost > 20.0 and not set_incremented_while_lost:
+                            if not is_mid_workout_rest:
+                                if current_set_time > 20.0:
+                                    try:
+                                        publish_set_complete("plank", current_set, int(current_set_time))
+                                    except Exception:
+                                        pass
+                                    current_set += 1
+                                    current_set_time = 0.0
+                                    set_incremented_while_lost = True
+
                         if robot_status != "SEARCHING":
                             log_session_error("Align horizontally GET IN POSITION.")
                     else:
@@ -4124,6 +4406,14 @@ class FitnessRobotUI(tk.Tk):
         self.after(200, self.check_remote_commands)
         
     def show_home_screen(self):
+        # Cancel any summary screen auto-timeout timer
+        if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
+            try:
+                self.after_cancel(self.summary_timer_id)
+            except Exception:
+                pass
+            self.summary_timer_id = None
+
         # Clear container
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -4292,6 +4582,8 @@ class FitnessRobotUI(tk.Tk):
         for widget in self.main_container.winfo_children():
             widget.destroy()
             
+        self.is_resting = False
+            
         # Title Banner (Exercise Type)
         self.ex_title_label = tk.Label(
             self.main_container, 
@@ -4308,6 +4600,19 @@ class FitnessRobotUI(tk.Tk):
         
         # Dictionary to hold the dynamically updated count/stat cards
         self.stat_cards = {}
+        
+        # Required Set Count Warning Label (placed above feedback_label)
+        self.set_count_warning_label = tk.Label(
+            self.main_container,
+            text="",
+            font=("Helvetica", 14, "bold"),
+            fg="#FF3B30",
+            bg="#1E1E24",
+            wraplength=450,
+            justify="left",
+            anchor="w"
+        )
+        self.set_count_warning_label.pack(anchor="w", fill="x", pady=(5, 0), padx=5)
         
         # Direct Label for comments/feedback (no framing/no border to match screenshot)
         self.feedback_label = tk.Label(
@@ -4372,6 +4677,20 @@ class FitnessRobotUI(tk.Tk):
                 card.border_color = color
                 card._draw()
                 lbl.configure(fg=color)
+                
+            if label == "Set":
+                try:
+                    val_int = int(value)
+                    if hasattr(self, 'is_resting') and self.is_resting:
+                        pass
+                    elif val_int >= 4:
+                        if hasattr(self, 'set_count_warning_label'):
+                            self.set_count_warning_label.configure(text="Required Set Count is Over.", fg="#FF3B30")
+                    else:
+                        if hasattr(self, 'set_count_warning_label'):
+                            self.set_count_warning_label.configure(text="", fg="#FF3B30")
+                except (ValueError, TypeError):
+                    pass
         except tk.TclError:
             pass
 
@@ -4397,6 +4716,17 @@ class FitnessRobotUI(tk.Tk):
         summary = last_session_summary
         last_session_summary = None  # Reset
         
+        # Cancel any existing summary timer
+        if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
+            try:
+                self.after_cancel(self.summary_timer_id)
+            except Exception:
+                pass
+            self.summary_timer_id = None
+
+        # Schedule automatic redirect back to the menu after 60 seconds (1 minute)
+        self.summary_timer_id = self.after(60000, self.show_home_screen)
+
         # Clear container
         for widget in self.main_container.winfo_children():
             widget.destroy()
