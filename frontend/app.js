@@ -260,6 +260,12 @@ function handleTelemetryMessage(msg) {
     currentExercise = msg.exercise_type || payload.exercise_type;
     document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
     appendLog(`Session started: ${formatExercise(currentExercise)}`);
+    
+    // Reset counts on UI
+    document.getElementById('currentSet').textContent = '—';
+    document.getElementById('currentReps').textContent = '—';
+    document.getElementById('repsDetail').textContent = '';
+    document.getElementById('plankTime').textContent = '—';
     return;
   }
 
@@ -419,6 +425,12 @@ async function switchMode(mode) {
   
   currentExercise = mode;
   document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+
+  // Reset counts on UI when switching exercise
+  document.getElementById('currentSet').textContent = '—';
+  document.getElementById('currentReps').textContent = '—';
+  document.getElementById('repsDetail').textContent = '';
+  document.getElementById('plankTime').textContent = '—';
 
   const mapping = {
     bicep_curls: 'BICEP_CURLS',
