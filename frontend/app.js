@@ -301,7 +301,7 @@ function handleTelemetryMessage(msg) {
     }
 
     if (payload.exercise === 'bicep_curls' && (payload.left !== undefined || payload.right !== undefined)) {
-      document.getElementById('currentReps').textContent = Math.max(payload.left || 0, payload.right || 0);
+      document.getElementById('currentReps').textContent = Math.min(payload.left || 0, payload.right || 0);
       document.getElementById('repsDetail').textContent = `L:${payload.left ?? 0}  R:${payload.right ?? 0}`;
     } else {
       document.getElementById('currentReps').textContent = payload.count ?? payload.reps ?? payload.total ?? 0;
