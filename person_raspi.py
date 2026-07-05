@@ -4830,7 +4830,13 @@ class FitnessRobotUI(tk.Tk):
         if not last_session_summary:
             self.show_home_screen()
             return
-            
+
+        # Publish READY so the web app unlocks exercise selection immediately
+        try:
+            publish_robot_state("READY")
+        except Exception:
+            pass
+
         summary = last_session_summary
         last_session_summary = None  # Reset
         

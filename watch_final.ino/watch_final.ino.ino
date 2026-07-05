@@ -8,7 +8,6 @@
 #include <sys/time.h>
 #include <time.h>
 
-
 // ==================== HARDWARE PINS ====================
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -17,6 +16,7 @@
 #define SDA_PIN 8
 #define SCL_PIN 9
 #define LED_PIN 10
+#define BUTTON_PIN 4 // Physical start button on GPIO 4
 
 // ==================== DEVICE CONFIG ====================
 #define DEVICE_NAME "StepTracker" // ✅ Fixed missing macro definition
@@ -85,6 +85,12 @@ int currentMinute = 0;
 bool bleConnected = false;
 unsigned long lastBLENotify = 0;
 const int BLE_NOTIFY_INTERVAL = 2000;
+
+// ==================== BUTTON ====================
+bool lastButtonState = HIGH; // INPUT_PULLUP idles HIGH
+bool buttonState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long DEBOUNCE_DELAY = 50; // ms
 
 // ==================== OBJECTS ====================
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -282,6 +288,17 @@ void notifyStepCount() {
   String stepStr = String(stepCount);
   pStepCountChar->setValue(stepStr.c_str());
   pStepCountChar->notify();
+}
+
+// Send "start" command to web app via BLE notification
+void sendStartCommand() {
+  if (!bleConnected) {
+    Serial.println(F("Button: BLE not connected, ignoring press"));
+    return;
+  }
+  Serial.println(F("Button: sending 'start' to web app"));
+  pCommandChar->setValue("start");
+  pCommandChar->notify();
 }
 
 void notifyDailyData() {
@@ -564,6 +581,11 @@ void setup() {
   lastSaveTime = millis();
   for (int i = 0; i < WINDOW_SIZE; i++)
     magWindow[i] = 9.8f;
+
+  // Button setup
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  lastButtonState = digitalRead(BUTTON_PIN);
+  Serial.println(F("Button ready on GPIO 4"));
 }
 
 // ==================== LOOP ====================
@@ -609,6 +631,22 @@ void loop() {
   trackActiveTime(magnitude);
 
   unsigned long now = millis();
+
+  // ==================== BUTTON DEBOUNCE ====================
+  bool reading = digitalRead(BUTTON_PIN);
+  if (reading != lastButtonState) {
+    lastDebounceTime = now; // Reset debounce timer on any change
+  }
+  if ((now - lastDebounceTime) >= DEBOUNCE_DELAY) {
+    if (reading != buttonState) {
+      buttonState = reading;
+      if (buttonState == LOW) { // LOW = pressed (INPUT_PULLUP)
+        sendStartCommand();
+      }
+    }
+  }
+  lastButtonState = reading;
+  // ==========================================================
 
   if (now % 1000 < 15) {
     updateCurrentTime();

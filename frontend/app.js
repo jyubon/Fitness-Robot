@@ -907,6 +907,10 @@ async function connectStepTracker() {
     await stepDailyDataChar.startNotifications();
     stepDailyDataChar.addEventListener('characteristicvaluechanged', onStepDailyDataChanged);
 
+    await stepCommandChar.startNotifications();
+    stepCommandChar.addEventListener('characteristicvaluechanged', onStepCommandReceived);
+    stepLog('Subscribed to command notifications (physical button ready)');
+
     stepConnected = true;
     setStepStatus('connected');
     stepLog('Connected successfully');
@@ -959,6 +963,27 @@ function onStepDisconnected() {
   stepConnected = false;
   setStepStatus('disconnected');
   stepLog('Device disconnected');
+}
+
+function onStepCommandReceived(event) {
+  const cmd = new TextDecoder().decode(event.target.value).trim();
+  stepLog(`BLE command received from wristband: "${cmd}"`);
+  if (cmd !== 'switch') return;
+
+  // FOLLOWING/SEARCHING/STOPPED = person-follow movement mode
+  const movementStates = ['LOADING'];
+  // LOADING/ACTIVE = exercise detection in progress
+  const exerciseStates = ['ACTIVE'];
+
+  if (movementStates.includes(robotState)) {
+    stepLog('Physical button — movement mode → Start Detecting');
+    sendStartExercise();
+  } else if (exerciseStates.includes(robotState)) {
+    stepLog('Physical button — exercise mode → Force Stop');
+    sendForceStop();
+  } else {
+    stepLog(`Physical button — state "${robotState}" — ignored`);
+  }
 }
 
 function onStepCountChanged(event) {
