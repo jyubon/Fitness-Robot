@@ -1730,6 +1730,8 @@ def log_session_error(err_msg, cooldown=3.0):
 
 
 def save_session_to_firestore(summary):
+    global _session_id
+    _session_id = None  # Reset so the next exercise starts a fresh session
     if 'db' not in globals() or db is None:
         print("⚠️ Cannot save to Firestore: Database not initialized.")
         return
@@ -2040,9 +2042,12 @@ def run_bicep_curls(ui=None):
                     if _session_id is None:
                         try:
                             publish_session_start("bicep_curls")
-                            publish_robot_state("ACTIVE", exercise="bicep_curls")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="bicep_curls")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -2597,9 +2602,12 @@ def run_pushups(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("pushups")
-                            publish_robot_state("ACTIVE", exercise="pushups")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="pushups")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -3082,9 +3090,12 @@ def run_squats(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("squats")
-                            publish_robot_state("ACTIVE", exercise="squats")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="squats")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -3718,9 +3729,12 @@ def run_plank(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("plank")
-                            publish_robot_state("ACTIVE", exercise="plank")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="plank")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
