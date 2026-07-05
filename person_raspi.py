@@ -102,10 +102,10 @@ PALM_STOP_REQUIRED_FRAMES = 12
 PALM_STOP_MIN_HAND_SIZE = 0.12
 
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
-CENTER_ZONE_LEFT  = 0.38
-CENTER_ZONE_RIGHT = 0.62
-TOO_CLOSE = 0.43
-TOO_FAR   = 0.18
+CENTER_ZONE_LEFT  = 0.3
+CENTER_ZONE_RIGHT = 0.7
+TOO_CLOSE = 0.11
+TOO_FAR   = 0.08
 
 # ─── Timing ───
 COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
@@ -676,6 +676,33 @@ except Exception as e:
     ser = None
     print(f"⚠️ Serial initialization failed: {e}")
 
+def _serial_read_worker():
+    """Background thread to read serial inputs from ESP32."""
+    global ser
+    if ser is None:
+        return
+    print("📡 Started background serial input reader...")
+    while True:
+        try:
+            if ser.in_waiting:
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                if "ALERT:OBSTACLE" in line:
+                    print("⚠️ ALERT: OBSTACLE DETECTED!")
+                    # Publish warning event for dashboard
+                    try:
+                        publish_form_error("Sudden block detected! Obstacle in path.")
+                    except Exception:
+                        pass
+                    # Play voice track 016
+                    play_audio_track(16)
+        except Exception:
+            pass
+        time.sleep(0.1)
+
+# Start background thread
+_serial_read_thread = threading.Thread(target=_serial_read_worker, daemon=True)
+_serial_read_thread.start()
+
 current_command  = "STOP"
 last_command_time = 0
 
@@ -730,8 +757,8 @@ def send_command(command):
 #  8 DIRECTION LOGIC
 # ═══════════════════════════════════════════════════════
 
-def calculate_command(person_x, shoulder_width):
-    """Calculate 8-directional movement command."""
+def calculate_command(person_x, body_height):
+    """Calculate 8-directional movement command based on body height."""
 
     # Horizontal zone
     if person_x < CENTER_ZONE_LEFT:
@@ -741,10 +768,13 @@ def calculate_command(person_x, shoulder_width):
     else:
         h_zone = "CENTER"
 
-    # Distance zone
-    if shoulder_width > TOO_CLOSE:
+    # Distance zone based on body height
+    too_close = 0.85
+    too_far = 0.20
+
+    if body_height > too_close:
         d_zone = "CLOSE"
-    elif shoulder_width < TOO_FAR:
+    elif body_height < too_far:
         d_zone = "FAR"
     else:
         d_zone = "GOOD"
@@ -764,7 +794,7 @@ def calculate_command(person_x, shoulder_width):
 
     command = matrix.get((d_zone, h_zone), "STOP")
     state = (f"{command} "
-             f"(x:{person_x:.2f} w:{shoulder_width:.3f})")
+             f"(x:{person_x:.2f} h:{body_height:.3f})")
 
     return command, state, d_zone, h_zone
 
@@ -948,7 +978,7 @@ def draw_zone_grid(frame, d_zone, h_zone, gx, gy):
 
 
 def draw_frame(frame, command, state, person_x,
-               shoulder_width, fps, d_zone, h_zone):
+               body_height, fps, d_zone, h_zone):
     """Draw all overlay elements."""
     h, w = frame.shape[:2]
 
@@ -1000,18 +1030,22 @@ def draw_frame(frame, command, state, person_x,
     draw_zone_grid(frame, d_zone, h_zone, 5, h - 75)
 
     # Distance bar (bottom)
-    if shoulder_width is not None:
+    if body_height is not None:
         bar_start = 125
         bar_end   = w - 5
         bar_y     = h - 22
         bar_h     = 14
-        bar_max   = TOO_CLOSE + 0.15
-        bar_pct   = min(shoulder_width / bar_max, 1.0)
+        
+        too_close = 0.85
+        too_far = 0.20
+        bar_max = too_close + 0.15 # 1.00
+        
+        bar_pct   = min(body_height / bar_max, 1.0)
         bar_w     = int(bar_pct * (bar_end - bar_start))
 
-        if shoulder_width > TOO_CLOSE:
+        if body_height > too_close:
             bc = ACCENT_RED
-        elif shoulder_width < TOO_FAR:
+        elif body_height < too_far:
             bc = ACCENT_ORANGE
         else:
             bc = ACCENT_GREEN
@@ -1025,14 +1059,14 @@ def draw_frame(frame, command, state, person_x,
         cv2.rectangle(frame, (bar_start, bar_y),
                       (bar_start + bar_w, bar_y + bar_h), bc, -1)
 
-        fm = int((TOO_FAR / bar_max) * (bar_end - bar_start)) + bar_start
-        cm = int((TOO_CLOSE / bar_max) * (bar_end - bar_start)) + bar_start
+        fm = int((too_far / bar_max) * (bar_end - bar_start)) + bar_start
+        cm = int((too_close / bar_max) * (bar_end - bar_start)) + bar_start
         cv2.line(frame, (fm, bar_y - 2), (fm, bar_y + bar_h + 2),
                  ACCENT_ORANGE, 1)
         cv2.line(frame, (cm, bar_y - 2), (cm, bar_y + bar_h + 2),
                  ACCENT_RED, 1)
 
-        cv2.putText(frame, f"DIST: {shoulder_width:.3f}",
+        cv2.putText(frame, f"HEIGHT: {body_height:.3f}",
                     (bar_start, bar_y - 3),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.3,
                     TEXT_DIM, 1)
@@ -1407,6 +1441,56 @@ def get_pt(lm, idx, min_vis=0.5, use_z=False):
     return [p.x, p.y, p.z] if use_z else [p.x, p.y]
 
 
+def get_body_height(lm):
+    """Calculate the normalized vertical body height, scaled to approximate nose-to-ankle height when parts are cut off."""
+    nose = get_pt(lm, 0)
+    l_shoulder = get_pt(lm, 11)
+    r_shoulder = get_pt(lm, 12)
+    l_hip = get_pt(lm, 23)
+    r_hip = get_pt(lm, 24)
+    l_ankle = get_pt(lm, 27)
+    r_ankle = get_pt(lm, 28)
+
+    # 1. Determine top coordinate & top landmark type
+    if nose:
+        top_y = nose[1]
+        top_type = "NOSE"
+    elif l_shoulder and r_shoulder:
+        top_y = (l_shoulder[1] + r_shoulder[1]) / 2
+        top_type = "SHOULDER"
+    else:
+        top_y = lm[0].y
+        top_type = "NOSE"
+
+    # 2. Determine bottom coordinate & bottom landmark type
+    if l_ankle and r_ankle:
+        bottom_y = (l_ankle[1] + r_ankle[1]) / 2
+        bottom_type = "ANKLE"
+    elif l_hip and r_hip:
+        bottom_y = (l_hip[1] + r_hip[1]) / 2
+        bottom_type = "HIP"
+    else:
+        bottom_y = max(lm[27].y, lm[28].y)
+        bottom_type = "ANKLE"
+
+    raw_height = max(0.0, bottom_y - top_y)
+
+    # 3. Apply anatomical scale factor to normalize to a standing Nose-to-Ankle height
+    if top_type == "NOSE" and bottom_type == "ANKLE":
+        scale_factor = 1.0
+    elif top_type == "NOSE" and bottom_type == "HIP":
+        scale_factor = 2.0
+    elif top_type == "SHOULDER" and bottom_type == "ANKLE":
+        scale_factor = 1.15
+    elif top_type == "SHOULDER" and bottom_type == "HIP":
+        scale_factor = 2.76
+    else:
+        scale_factor = 1.0
+
+    return raw_height * scale_factor
+
+
+
 # ═══════════════════════════════════════════════════════
 #  SESSION ERROR LOGGER
 # ═══════════════════════════════════════════════════════
@@ -1436,17 +1520,29 @@ VOICE_FILE_MAP = {
     "swing":                 "011_o not swing arm, Keep hands in straight position without swinging..mp3",
 }
 
+_current_audio_process = None
+_process_lock = threading.Lock()
+
+def terminate_current_audio():
+    """Terminate the currently active audio playback process immediately."""
+    global _current_audio_process
+    with _process_lock:
+        if _current_audio_process is not None:
+            try:
+                _current_audio_process.terminate()
+                _current_audio_process.wait(timeout=1)
+            except Exception:
+                pass
+            _current_audio_process = None
+
 def _play_mp3_windows(file_path_str):
     """
-    Play an MP3 on Windows using PowerShell + System.Windows.Media.MediaPlayer
-    (PresentationCore assembly — present on all Windows 8+ systems, no install needed).
-
-    Open() is async, so we sleep 2 s before calling Play() to let the media
-    pipeline buffer the file.  Then we sleep the full estimated clip length
-    (≤ 8 s for any of the voice files) before closing, so the audio completes
-    before the subprocess exits.
+    Play an MP3 on Windows using PowerShell + System.Windows.Media.MediaPlayer.
+    Uses Popen to track and allow termination of the process.
     """
+    global _current_audio_process
     uri = "file:///" + file_path_str.replace("\\", "/").replace(" ", "%20")
+    uri = uri.replace("'", "''")
     ps_cmd = (
         "Add-Type -AssemblyName PresentationCore;"
         "$m=New-Object System.Windows.Media.MediaPlayer;"
@@ -1457,16 +1553,28 @@ def _play_mp3_windows(file_path_str):
         "$m.Close()"
     )
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-c", ps_cmd],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=15
-        )
-        if result.returncode != 0:
-            err = result.stderr.decode(errors="replace").strip()
-            print(f"⚠️ PowerShell audio failed (rc={result.returncode}): {err[:200]}")
+        terminate_current_audio()
+        with _process_lock:
+            proc = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-c", ps_cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE
+            )
+            _current_audio_process = proc
+
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+            if proc.returncode != 0 and proc.returncode is not None:
+                err = stderr.decode(errors="replace").strip()
+                print(f"⚠️ PowerShell audio failed (rc={proc.returncode}): {err[:200]}")
+                return False
+        except subprocess.TimeoutExpired:
+            terminate_current_audio()
             return False
+
+        with _process_lock:
+            if _current_audio_process == proc:
+                _current_audio_process = None
         return True
     except Exception as exc:
         print(f"⚠️ _play_mp3_windows exception: {exc}")
@@ -1477,28 +1585,38 @@ def _play_mp3_linux(file_path_str):
     """
     Play an MP3 on Linux / Raspberry Pi.
     Tries mpg123 first (fastest, lightest), then mpg321, then sox's 'play'.
-    Install on RPi:  sudo apt-get install -y mpg123
+    Uses Popen to track and allow termination of the process.
     """
+    global _current_audio_process
     for cmd in [
         ["mpg123", "-q", file_path_str],
         ["mpg321", "-q", file_path_str],
         ["play",   "-q", file_path_str],
     ]:
         try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=20
-            )
-            if result.returncode == 0:
-                return True
-            # Non-zero exit — log stderr so we can see why
-            err_text = result.stderr.decode(errors="replace").strip()
-            if err_text:
-                print(f"⚠️ {cmd[0]} returned {result.returncode}: {err_text[:120]}")
-        except FileNotFoundError:
-            continue          # this player isn't installed — try next
+            terminate_current_audio()
+            with _process_lock:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE
+                )
+                _current_audio_process = proc
+
+            try:
+                stdout, stderr = proc.communicate(timeout=20)
+                if proc.returncode == 0:
+                    with _process_lock:
+                        if _current_audio_process == proc:
+                            _current_audio_process = None
+                    return True
+                err_text = stderr.decode(errors="replace").strip()
+                if err_text:
+                    print(f"⚠️ {cmd[0]} returned {proc.returncode}: {err_text[:120]}")
+            except subprocess.TimeoutExpired:
+                terminate_current_audio()
+            except FileNotFoundError:
+                continue
         except Exception as exc:
             print(f"⚠️ {cmd[0]} error: {exc}")
             continue
@@ -1508,16 +1626,22 @@ def _play_mp3_linux(file_path_str):
 # Semaphore: allow only one audio clip to play at a time so they don't overlap.
 _audio_lock = threading.Semaphore(1)
 
-def _play_mp3_background(file_path_str):
+def _play_mp3_background(file_path_str, force=False):
     """
     Play the file in a background thread.
     Uses a non-daemon thread with a reasonable lifetime so the OS doesn't kill
     it mid-playback when the exercise loop finishes.
     A semaphore prevents two clips from playing simultaneously.
+    If force is True, terminates any current playback and waits for the lock.
     """
     def run():
-        if not _audio_lock.acquire(blocking=False):
-            return   # another clip is already playing — skip this one
+        if force:
+            terminate_current_audio()
+            # Wait for lock to be released by the terminated thread
+            _audio_lock.acquire(blocking=True)
+        else:
+            if not _audio_lock.acquire(blocking=False):
+                return   # another clip is already playing — skip this one
         try:
             if os.name == 'nt':
                 _play_mp3_windows(file_path_str)
@@ -1530,6 +1654,25 @@ def _play_mp3_background(file_path_str):
 
     t = threading.Thread(target=run, daemon=False)
     t.start()
+
+
+def play_audio_track(track_number):
+    """
+    Play one of the special state transition audio tracks (e.g. 13, 14, 15, 16) with override priority.
+    """
+    track_files = {
+        13: "013_please_rest_for_a_while.mp3",
+        14: "014_lets_start_the_workout.mp3",
+        15: "015_lets_resume_the_workout.mp3",
+        16: "016_an_obstacle_is_detected.mp3"
+    }
+    filename = track_files.get(track_number)
+    if filename:
+        file_path = PROJECT_DIR / "voice" / filename
+        if file_path.exists():
+            _play_mp3_background(str(file_path), force=True)
+        else:
+            print(f"⚠️ Voice file not found: {file_path}")
 
 
 def play_voice_command(err_msg):
@@ -1587,6 +1730,8 @@ def log_session_error(err_msg, cooldown=3.0):
 
 
 def save_session_to_firestore(summary):
+    global _session_id
+    _session_id = None  # Reset so the next exercise starts a fresh session
     if 'db' not in globals() or db is None:
         print("⚠️ Cannot save to Firestore: Database not initialized.")
         return
@@ -1672,125 +1817,59 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
     lost_person_since = None
     lm = results.pose_landmarks[0]
 
-    # Thresholds tailored for a camera height of 2.5 feet above the ground:
-    if exercise_name in ("BICEP_CURLS", "SQUATS"):
-        # Frontal view (standing)
-        l_shoulder = get_pt(lm, 11)
-        r_shoulder = get_pt(lm, 12)
+    # Calculate horizontal centering (h_zone)
+    l_shoulder = get_pt(lm, 11)
+    r_shoulder = get_pt(lm, 12)
+    l_hip = get_pt(lm, 23)
+    r_hip = get_pt(lm, 24)
+    nose = get_pt(lm, 0)
 
-        if l_shoulder and r_shoulder:
-            shoulder_width = abs(l_shoulder[0] - r_shoulder[0])
-            shoulder_center = (l_shoulder[0] + r_shoulder[0]) / 2
+    if l_shoulder and r_shoulder:
+        person_center = (l_shoulder[0] + r_shoulder[0]) / 2
+    elif l_hip and r_hip:
+        person_center = (l_hip[0] + r_hip[0]) / 2
+    elif nose:
+        person_center = nose[0]
+    else:
+        person_center = lm[0].x
 
-            # Curls need shoulders & arms/wrists in frame
-            if exercise_name == "BICEP_CURLS":
-                too_close = 0.22  # Larger means closer
-                too_far = 0.14
-            # Squats need full body from shoulders down to ankles in frame
-            else:  # SQUATS
-                too_close = 0.20
-                too_far = 0.12
+    if person_center < CENTER_ZONE_LEFT:
+        h_zone = "LEFT"
+        last_person_side = "LEFT"
+    elif person_center > CENTER_ZONE_RIGHT:
+        h_zone = "RIGHT"
+        last_person_side = "RIGHT"
+    else:
+        h_zone = "CENTER"
+        last_person_side = None
 
-            # Distance zone
-            if shoulder_width > too_close:
-                d_zone = "CLOSE"
-            elif shoulder_width < too_far:
-                d_zone = "FAR"
-            else:
-                d_zone = "GOOD"
+    # Calculate distance using vertical body height
+    body_height = get_body_height(lm)
+    
+    too_close = 0.85
+    too_far = 0.20
 
-            # Horizontal zone
-            if shoulder_center < CENTER_ZONE_LEFT:
-                h_zone = "LEFT"
-                last_person_side = "LEFT"
-            elif shoulder_center > CENTER_ZONE_RIGHT:
-                h_zone = "RIGHT"
-                last_person_side = "RIGHT"
-            else:
-                h_zone = "CENTER"
-                last_person_side = None
+    if body_height > too_close:
+        d_zone = "CLOSE"
+    elif body_height < too_far:
+        d_zone = "FAR"
+    else:
+        d_zone = "GOOD"
 
-            # 8-direction mapping
-            matrix = {
-                ("FAR",   "LEFT"):   "FWD_LEFT",
-                ("FAR",   "CENTER"): "FORWARD",
-                ("FAR",   "RIGHT"):  "FWD_RIGHT",
-                ("GOOD",  "LEFT"):   "LEFT",
-                ("GOOD",  "CENTER"): "STOP",
-                ("GOOD",  "RIGHT"):  "RIGHT",
-                ("CLOSE", "LEFT"):   "BWD_LEFT",
-                ("CLOSE", "CENTER"): "BACKWARD",
-                ("CLOSE", "RIGHT"):  "BWD_RIGHT",
-            }
-            command = matrix.get((d_zone, h_zone), "STOP")
-            send_command(command)
-        else:
-            send_command("STOP")
-
-    elif exercise_name in ("PUSH_UPS", "PLANK"):
-        # Side view (lying)
-        # We need to detect best side profile shoulder and ankle
-        left_shoulder = get_pt(lm, 11)
-        left_ankle = get_pt(lm, 27)
-        right_shoulder = get_pt(lm, 12)
-        right_ankle = get_pt(lm, 28)
-
-        shoulder, ankle = None, None
-        left_ok = left_shoulder and left_ankle
-        right_ok = right_shoulder and right_ankle
-
-        if left_ok and right_ok:
-            left_vis = lm[11].visibility + lm[27].visibility
-            right_vis = lm[12].visibility + lm[28].visibility
-            if left_vis > right_vis:
-                shoulder, ankle = left_shoulder, left_ankle
-            else:
-                shoulder, ankle = right_shoulder, right_ankle
-        elif left_ok:
-            shoulder, ankle = left_shoulder, left_ankle
-        elif right_ok:
-            shoulder, ankle = right_shoulder, right_ankle
-
-        if shoulder and ankle:
-            # Horizontal span of the body in normalized x coordinates
-            body_length = abs(shoulder[0] - ankle[0])
-            body_center = (shoulder[0] + ankle[0]) / 2
-
-            too_close = 0.60
-            too_far = 0.40
-
-            if body_length > too_close:
-                d_zone = "CLOSE"
-            elif body_length < too_far:
-                d_zone = "FAR"
-            else:
-                d_zone = "GOOD"
-
-            if body_center < CENTER_ZONE_LEFT:
-                h_zone = "LEFT"
-                last_person_side = "LEFT"
-            elif body_center > CENTER_ZONE_RIGHT:
-                h_zone = "RIGHT"
-                last_person_side = "RIGHT"
-            else:
-                h_zone = "CENTER"
-                last_person_side = None
-
-            matrix = {
-                ("FAR",   "LEFT"):   "FWD_LEFT",
-                ("FAR",   "CENTER"): "FORWARD",
-                ("FAR",   "RIGHT"):  "FWD_RIGHT",
-                ("GOOD",  "LEFT"):   "LEFT",
-                ("GOOD",  "CENTER"): "STOP",
-                ("GOOD",  "RIGHT"):  "RIGHT",
-                ("CLOSE", "LEFT"):   "BWD_LEFT",
-                ("CLOSE", "CENTER"): "BACKWARD",
-                ("CLOSE", "RIGHT"):  "BWD_RIGHT",
-            }
-            command = matrix.get((d_zone, h_zone), "STOP")
-            send_command(command)
-        else:
-            send_command("STOP")
+    # 8-direction mapping
+    matrix = {
+        ("FAR",   "LEFT"):   "FWD_LEFT",
+        ("FAR",   "CENTER"): "FORWARD",
+        ("FAR",   "RIGHT"):  "FWD_RIGHT",
+        ("GOOD",  "LEFT"):   "LEFT",
+        ("GOOD",  "CENTER"): "STOP",
+        ("GOOD",  "RIGHT"):  "RIGHT",
+        ("CLOSE", "LEFT"):   "BWD_LEFT",
+        ("CLOSE", "CENTER"): "BACKWARD",
+        ("CLOSE", "RIGHT"):  "BWD_RIGHT",
+    }
+    command = matrix.get((d_zone, h_zone), "STOP")
+    send_command(command)
 
 
 # ═══════════════════════════════════════════════════════
@@ -1930,7 +2009,11 @@ def run_bicep_curls(ui=None):
             # --- Rest Timer Check ---
             if is_mid_workout_rest and rest_start_time is not None:
                 elapsed_rest = time.time() - rest_start_time
+                if ui is not None and hasattr(ui, 'set_count_warning_label'):
+                    remaining = max(0, int(30.0 - elapsed_rest))
+                    ui.set_count_warning_label.configure(text=f"Rest for a While. Resuming in {remaining}s.", fg="#96D75F")
                 if elapsed_rest > 30.0:
+                    play_audio_track(15)
                     is_mid_workout_rest = False
                     is_resting = False
                     if ui is not None:
@@ -1951,6 +2034,7 @@ def run_bicep_curls(ui=None):
                 if home_clicked:
                     break
                 if start_exercise.is_set():
+                    play_audio_track(14)
                     send_command("STOP")
                     waiting_for_start = False
                     start_exercise.clear()
@@ -1958,9 +2042,12 @@ def run_bicep_curls(ui=None):
                     if _session_id is None:
                         try:
                             publish_session_start("bicep_curls")
-                            publish_robot_state("ACTIVE", exercise="bicep_curls")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="bicep_curls")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -2083,6 +2170,7 @@ def run_bicep_curls(ui=None):
                             pass
                         set_finished = True
                         if current_set == 2:
+                            play_audio_track(13)
                             is_mid_workout_rest = True
                             is_resting = True
                             if ui is not None:
@@ -2481,7 +2569,11 @@ def run_pushups(ui=None):
             # --- Rest Timer Check ---
             if is_mid_workout_rest and rest_start_time is not None:
                 elapsed_rest = time.time() - rest_start_time
+                if ui is not None and hasattr(ui, 'set_count_warning_label'):
+                    remaining = max(0, int(30.0 - elapsed_rest))
+                    ui.set_count_warning_label.configure(text=f"Rest for a While. Resuming in {remaining}s.", fg="#96D75F")
                 if elapsed_rest > 30.0:
+                    play_audio_track(15)
                     is_mid_workout_rest = False
                     is_resting = False
                     if ui is not None:
@@ -2501,6 +2593,7 @@ def run_pushups(ui=None):
                 if home_clicked:
                     break
                 if start_exercise.is_set():
+                    play_audio_track(14)
                     send_command("STOP")
                     waiting_for_start = False
                     start_exercise.clear()
@@ -2509,9 +2602,12 @@ def run_pushups(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("pushups")
-                            publish_robot_state("ACTIVE", exercise="pushups")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="pushups")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -2686,6 +2782,7 @@ def run_pushups(ui=None):
                                             pass
                                         set_finished = True
                                         if current_set == 2:
+                                            play_audio_track(13)
                                             is_mid_workout_rest = True
                                             is_resting = True
                                             if ui is not None:
@@ -2709,6 +2806,7 @@ def run_pushups(ui=None):
                                 except Exception:
                                     pass
                                 if current_set == 2:
+                                    play_audio_track(13)
                                     is_mid_workout_rest = True
                                     is_resting = True
                                     if ui is not None:
@@ -2959,7 +3057,11 @@ def run_squats(ui=None):
             # --- Rest Timer Check ---
             if is_mid_workout_rest and rest_start_time is not None:
                 elapsed_rest = time.time() - rest_start_time
+                if ui is not None and hasattr(ui, 'set_count_warning_label'):
+                    remaining = max(0, int(30.0 - elapsed_rest))
+                    ui.set_count_warning_label.configure(text=f"Rest for a While. Resuming in {remaining}s.", fg="#96D75F")
                 if elapsed_rest > 30.0:
+                    play_audio_track(15)
                     is_mid_workout_rest = False
                     is_resting = False
                     if ui is not None:
@@ -2979,6 +3081,7 @@ def run_squats(ui=None):
                 if home_clicked:
                     break
                 if start_exercise.is_set():
+                    play_audio_track(14)
                     send_command("STOP")
                     waiting_for_start = False
                     start_exercise.clear()
@@ -2987,9 +3090,12 @@ def run_squats(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("squats")
-                            publish_robot_state("ACTIVE", exercise="squats")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="squats")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -3242,6 +3348,7 @@ def run_squats(ui=None):
                                         set_started = False
                                         last_rep_time = None
                                         if current_set == 2:
+                                            play_audio_track(13)
                                             is_mid_workout_rest = True
                                             is_resting = True
                                             if ui is not None:
@@ -3337,6 +3444,7 @@ def run_squats(ui=None):
                     set_started = False
                     last_rep_time = None
                     if current_set == 2:
+                        play_audio_track(13)
                         is_mid_workout_rest = True
                         is_resting = True
                         if ui is not None:
@@ -3588,7 +3696,11 @@ def run_plank(ui=None):
             # --- Rest Timer Check ---
             if is_mid_workout_rest and rest_start_time is not None:
                 elapsed_rest = time.time() - rest_start_time
+                if ui is not None and hasattr(ui, 'set_count_warning_label'):
+                    remaining = max(0, int(30.0 - elapsed_rest))
+                    ui.set_count_warning_label.configure(text=f"Rest for a While. Resuming in {remaining}s.", fg="#96D75F")
                 if elapsed_rest > 30.0:
+                    play_audio_track(15)
                     is_mid_workout_rest = False
                     is_resting = False
                     if ui is not None:
@@ -3608,6 +3720,7 @@ def run_plank(ui=None):
                 if home_clicked:
                     break
                 if start_exercise.is_set():
+                    play_audio_track(14)
                     send_command("STOP")
                     waiting_for_start = False
                     start_exercise.clear()
@@ -3616,9 +3729,12 @@ def run_plank(ui=None):
                         robot_status = "TRACKING"
                         try:
                             publish_session_start("plank")
-                            publish_robot_state("ACTIVE", exercise="plank")
                         except Exception:
                             pass
+                    try:
+                        publish_robot_state("ACTIVE", exercise="plank")
+                    except Exception:
+                        pass
                 else:
                     # Follow the person but don't count reps or check form yet
                     robot_status = "TRACKING"
@@ -3790,6 +3906,7 @@ def run_plank(ui=None):
                                         current_set_time = 0.0
                                         print(f"\n✅ Plank Set completed! Total sets: {current_set - 1}")
                                         if current_set == 3:
+                                            play_audio_track(13)
                                             is_mid_workout_rest = True
                                             is_resting = True
                                             if ui is not None:
@@ -4087,7 +4204,7 @@ def main():
     command        = "STOP"
     state          = "STARTING"
     person_x       = None
-    shoulder_width = None
+    body_height    = None
     d_zone         = "GOOD"
     h_zone         = "CENTER"
     last_results   = None
@@ -4117,74 +4234,48 @@ def main():
             results      = landmarker.detect_for_video(mp_image, timestamp_ms)
             last_results = results
 
-            person_x       = None
-            shoulder_width = None
+            person_x    = None
+            body_height = None
 
             if (results.pose_landmarks and
                     len(results.pose_landmarks) > 0):
                 lm        = results.pose_landmarks[0]
-                l_shoulder = lm[11]
-                r_shoulder = lm[12]
-                l_hip      = lm[23]
-                r_hip      = lm[24]
+                l_shoulder = get_pt(lm, 11)
+                r_shoulder = get_pt(lm, 12)
+                l_hip = get_pt(lm, 23)
+                r_hip = get_pt(lm, 24)
+                nose = get_pt(lm, 0)
 
-                shoulder_ok = (
-                    l_shoulder.visibility > 0.2 and
-                    r_shoulder.visibility > 0.2
+                if l_hip and r_hip:
+                    person_x = (l_hip[0] + r_hip[0]) / 2
+                elif l_shoulder and r_shoulder:
+                    person_x = (l_shoulder[0] + r_shoulder[0]) / 2
+                elif nose:
+                    person_x = nose[0]
+                else:
+                    person_x = lm[0].x
+
+                lost_since = None
+                body_height = get_body_height(lm)
+
+                command, state, d_zone, h_zone = calculate_command(
+                    person_x,
+                    body_height
                 )
 
-                hip_ok = (
-                    l_hip.visibility > 0.2 and
-                    r_hip.visibility > 0.2
-                )
+                send_command(command)
 
-                if shoulder_ok:
-
-                    shoulder_center = (
-                        l_shoulder.x + r_shoulder.x
-                    ) / 2
-
-                    shoulder_width = abs(
-                        l_shoulder.x - r_shoulder.x
-                    )
-
-                    # Full body available
-                    if hip_ok:
-
-                        hip_center = (
-                            l_hip.x + r_hip.x
-                        ) / 2
-
-                        person_x = (
-                            shoulder_center * 0.6 +
-                            hip_center * 0.4
-                        )
-
-                    # Too close → hips missing
+                # Publish high-level robot state for the web dashboard (real)
+                robot_status = "TRACKING"
+                try:
+                    if person_x is not None and command not in ("STOP", "SEARCH"):
+                        publish_robot_state("FOLLOWING", command)
+                    elif command == "SEARCH":
+                        publish_robot_state("SEARCHING", command)
                     else:
-
-                        person_x = shoulder_center
-
-                    lost_since = None
-
-                    command, state, d_zone, h_zone = calculate_command(
-                        person_x,
-                        shoulder_width
-                    )
-
-                    send_command(command)
-
-                    # Publish high-level robot state for the web dashboard (real)
-                    robot_status = "TRACKING"
-                    try:
-                        if person_x is not None and command not in ("STOP", "SEARCH"):
-                            publish_robot_state("FOLLOWING", command)
-                        elif command == "SEARCH":
-                            publish_robot_state("SEARCHING", command)
-                        else:
-                            publish_robot_state("STOPPED", command)
-                    except Exception:
-                        pass
+                        publish_robot_state("STOPPED", command)
+                except Exception:
+                    pass
             else:
                 # No person
                 now = time.time()
@@ -4214,7 +4305,7 @@ def main():
             draw_skeleton(display, last_results)
 
         draw_frame(display, command, state, person_x,
-                   shoulder_width, fps, d_zone, h_zone)
+                   body_height, fps, d_zone, h_zone)
         draw_home_button(display)
 
         if SHOW_WINDOW:
@@ -4753,7 +4844,13 @@ class FitnessRobotUI(tk.Tk):
         if not last_session_summary:
             self.show_home_screen()
             return
-            
+
+        # Publish READY so the web app unlocks exercise selection immediately
+        try:
+            publish_robot_state("READY")
+        except Exception:
+            pass
+
         summary = last_session_summary
         last_session_summary = None  # Reset
         
@@ -4846,7 +4943,18 @@ class FitnessRobotUI(tk.Tk):
                 subprocess.run(["shutdown", "/r", "/t", "0"])
 
     def quit_app(self):
+        try:
+            terminate_current_audio()
+        except Exception:
+            pass
+        global ser
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
         self.destroy()
+        os._exit(0)
 
 
 if __name__ == "__main__":
