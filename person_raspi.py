@@ -102,13 +102,13 @@ PALM_STOP_REQUIRED_FRAMES = 12
 PALM_STOP_MIN_HAND_SIZE = 0.12
 
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
-CENTER_ZONE_LEFT  = 0.3
-CENTER_ZONE_RIGHT = 0.7
+CENTER_ZONE_LEFT  = 0.25
+CENTER_ZONE_RIGHT = 0.75
 TOO_CLOSE = 0.11
 TOO_FAR   = 0.08
 
 # ─── Timing ───
-COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
+COMMAND_COOLDOWN    = 0.75    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
