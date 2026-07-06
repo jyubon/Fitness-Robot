@@ -769,8 +769,8 @@ def calculate_command(person_x, body_height):
         h_zone = "CENTER"
 
     # Distance zone based on body height
-    too_close = 0.85
-    too_far = 0.20
+    too_close = 0.75
+    too_far = 0.50
 
     if body_height > too_close:
         d_zone = "CLOSE"
@@ -1036,8 +1036,8 @@ def draw_frame(frame, command, state, person_x,
         bar_y     = h - 22
         bar_h     = 14
         
-        too_close = 0.85
-        too_far = 0.20
+        too_close = 0.75
+        too_far = 0.50
         bar_max = too_close + 0.15 # 1.00
         
         bar_pct   = min(body_height / bar_max, 1.0)
@@ -1215,7 +1215,7 @@ def is_open_palm_stop(hand_results, min_hand_size=PALM_STOP_MIN_HAND_SIZE):
             dist_index_middle > hand_size * 0.12 and
             dist_middle_ring > hand_size * 0.12 and
             dist_ring_pinky > hand_size * 0.12 and
-            dist_thumb_index > hand_size * 0.20
+            dist_thumb_index > hand_size * 0.50
         )
 
         if extended >= 4 and thumb_extended and is_palm_facing and fingers_spread:
@@ -1846,8 +1846,8 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
     # Calculate distance using vertical body height
     body_height = get_body_height(lm)
     
-    too_close = 0.85
-    too_far = 0.20
+    too_close = 0.75
+    too_far = 0.50
 
     if body_height > too_close:
         d_zone = "CLOSE"
