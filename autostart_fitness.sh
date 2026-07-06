@@ -31,21 +31,22 @@ echo "Autostart desktop entry updated at: ${DESKTOP_FILE}"
 echo "It is configured to run: bash ${SCRIPT_DIR}/autostart_fitness.sh"
 echo "-------------------------------------------"
 
-# 2. Path to your Raspberry Pi virtual environment directory (update if needed)
-if [ -d "./project_env" ]; then
-    echo "Activating virtual environment at ./project_env..."
-    source "./project_env/bin/activate"
-elif [ -d "../project_env" ]; then
-    echo "Activating virtual environment at ../project_env..."
-    source "../project_env/bin/activate"
-elif [ -d "../dp311_env" ]; then
-    echo "Activating virtual environment at ../dp311_env..."
-    source "../dp311_env/bin/activate"
-elif [ -d "./venv" ]; then
-    echo "Activating virtual environment at ./venv..."
-    source "./venv/bin/activate"
+# 2. Activate virtual environment — check common locations
+VENV_ACTIVATED=0
+
+for VENV_PATH in "./project_env" "../project_env" "../dp311_env" "./venv"; do
+    if [ -d "${VENV_PATH}" ]; then
+        echo "Activating virtual environment at ${VENV_PATH}..."
+        source "${VENV_PATH}/bin/activate"
+        VENV_ACTIVATED=1
+        break
+    fi
+done
+
+if [ "${VENV_ACTIVATED}" -eq 0 ]; then
+    echo "WARNING: No virtual environment found. Running with system Python."
 fi
 
-# Run the python application
+# 3. Run the python application
 echo "Starting person_raspi.py..."
-python3 person_raspi.py
+python3 "${SCRIPT_DIR}/person_raspi.py"

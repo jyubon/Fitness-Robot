@@ -1,0 +1,20 @@
+# EditorConfig: https://editorconfig.org
+root = true
+
+# Default: Windows-style for most files edited on Windows
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# Shell scripts MUST use LF (Unix line endings) to run on Linux/RPi
+[*.sh]
+end_of_line = lf
+
+# Python files
+[*.py]
+indent_size = 4
+end_of_line = lf
