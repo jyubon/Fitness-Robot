@@ -102,13 +102,13 @@ PALM_STOP_REQUIRED_FRAMES = 12
 PALM_STOP_MIN_HAND_SIZE = 0.12
 
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
-CENTER_ZONE_LEFT  = 0.3
-CENTER_ZONE_RIGHT = 0.7
+CENTER_ZONE_LEFT  = 0.25
+CENTER_ZONE_RIGHT = 0.75
 TOO_CLOSE = 0.11
 TOO_FAR   = 0.08
 
 # ─── Timing ───
-COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
+COMMAND_COOLDOWN    = 0.75    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
@@ -1882,7 +1882,13 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
         ("CLOSE", "RIGHT"):  "BWD_RIGHT",
     }
     command = matrix.get((d_zone, h_zone), "STOP")
-    send_command(command)
+
+    # During exercise detection (after start command), robot must NOT move.
+    # Keep the robot stationary regardless of position offsets.
+    if in_exercise_mode:
+        send_command("STOP")
+    else:
+        send_command(command)
 
 
 # ═══════════════════════════════════════════════════════
