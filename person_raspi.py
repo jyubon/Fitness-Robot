@@ -1869,7 +1869,13 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
         ("CLOSE", "RIGHT"):  "BWD_RIGHT",
     }
     command = matrix.get((d_zone, h_zone), "STOP")
-    send_command(command)
+
+    # During exercise detection (after start command), robot must NOT move.
+    # Keep the robot stationary regardless of position offsets.
+    if in_exercise_mode:
+        send_command("STOP")
+    else:
+        send_command(command)
 
 
 # ═══════════════════════════════════════════════════════
