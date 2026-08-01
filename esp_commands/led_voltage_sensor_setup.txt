@@ -1,0 +1,2 @@
+Signal_pin = 3
+LED_pins = 36,37,38

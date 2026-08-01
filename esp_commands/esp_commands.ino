@@ -37,6 +37,20 @@ HardwareSerial piSerial(1);
 #define ECHO_REAR 2
 
 // ============================================================
+// Voltage Sensor & RGB LED Pins
+// ============================================================
+#define VOLTAGE_PIN 3
+
+#define RGB_RED_PIN 36
+#define RGB_GREEN_PIN 37
+#define RGB_BLUE_PIN 38
+
+// Voltage Divider Ratio (Default 5.0 for standard 25V divider module: 30k/7.5k)
+#define VOLTAGE_DIVIDER_RATIO 5.0f
+#define ADC_REF_VOLTAGE 3.3f
+#define ADC_RESOLUTION 4095.0f
+
+// ============================================================
 // Motor Driver Pins (L298N / TB6612)
 // Mecanum Wheels in X-Configuration
 // ============================================================
@@ -59,10 +73,15 @@ HardwareSerial piSerial(1);
 // ============================================================
 // LEDC PWM Configuration
 // ============================================================
-#define FL_PWM_CH FL_ENA
-#define FR_PWM_CH FR_ENA
-#define RL_PWM_CH RL_ENA
-#define RR_PWM_CH RR_ENA
+#define FL_PWM_CH 0
+#define FR_PWM_CH 1
+#define RL_PWM_CH 2
+#define RR_PWM_CH 3
+
+#define RGB_RED_CH 4
+#define RGB_GREEN_CH 5
+#define RGB_BLUE_CH 6
+
 #define PWM_FREQ 1000
 #define PWM_RES 8
 
@@ -85,12 +104,18 @@ const char *sensorNames[] = {"FRONT", "LEFT", "RIGHT", "REAR"};
 int trigPins[] = {TRIG_FRONT, TRIG_LEFT, TRIG_RIGHT, TRIG_REAR};
 int echoPins[] = {ECHO_FRONT, ECHO_LEFT, ECHO_RIGHT, ECHO_REAR};
 
+float currentVoltage = 0.0f;
+
 // ============================================================
-// State Variables
+// State Variables & Declarations
 // ============================================================
 String currentCommand = "";
 String lastCommand = "";
 unsigned long lastCmdTime = 0;
+
+void setRGBColor(uint8_t red, uint8_t green, uint8_t blue);
+float readVoltage();
+void updateVoltageLED(float v);
 
 // ============================================================
 // SETUP
@@ -156,6 +181,14 @@ void setup() {
     digitalWrite(trigPins[i], LOW);
   }
 
+  // --- Voltage Sensor & RGB LED Pins ---
+  pinMode(VOLTAGE_PIN, INPUT);
+  analogReadResolution(12);
+
+  pinMode(RGB_RED_PIN, OUTPUT);
+  pinMode(RGB_GREEN_PIN, OUTPUT);
+  pinMode(RGB_BLUE_PIN, OUTPUT);
+
   // --- Motor Pins ---
   pinMode(FL_IN1, OUTPUT);
   pinMode(FL_IN2, OUTPUT);
@@ -169,8 +202,9 @@ void setup() {
   // --- LEDC PWM ---
   initPWM();
 
-  // --- Stop Motors ---
+  // --- Stop Motors & Turn Off LED ---
   stopAllMotors();
+  setRGBColor(0, 0, 0);
 
   Serial.println("================================");
   Serial.println("ESP32-S3 Mecanum Robot Ready (OTA Enabled)");
@@ -181,10 +215,28 @@ void setup() {
 // PWM INIT
 // ============================================================
 void initPWM() {
-  ledcAttach(FL_ENA, PWM_FREQ, PWM_RES);
-  ledcAttach(FR_ENA, PWM_FREQ, PWM_RES);
-  ledcAttach(RL_ENA, PWM_FREQ, PWM_RES);
-  ledcAttach(RR_ENA, PWM_FREQ, PWM_RES);
+  // Motor PWM Setup
+  ledcSetup(FL_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(FL_ENA, FL_PWM_CH);
+
+  ledcSetup(FR_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(FR_ENA, FR_PWM_CH);
+
+  ledcSetup(RL_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RL_ENA, RL_PWM_CH);
+
+  ledcSetup(RR_PWM_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RR_ENA, RR_PWM_CH);
+
+  // RGB LED PWM Setup
+  ledcSetup(RGB_RED_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RGB_RED_PIN, RGB_RED_CH);
+
+  ledcSetup(RGB_GREEN_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RGB_GREEN_PIN, RGB_GREEN_CH);
+
+  ledcSetup(RGB_BLUE_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(RGB_BLUE_PIN, RGB_BLUE_CH);
 }
 
 // ============================================================
@@ -292,6 +344,41 @@ void executeMovement(String cmd) {
 }
 
 // ============================================================
+// VOLTAGE SENSOR & RGB LED CONTROL
+// ============================================================
+void setRGBColor(uint8_t red, uint8_t green, uint8_t blue) {
+  ledcWrite(RGB_RED_CH, red);
+  ledcWrite(RGB_GREEN_CH, green);
+  ledcWrite(RGB_BLUE_CH, blue);
+}
+
+float readVoltage() {
+  int sum = 0;
+  const int samples = 10;
+  for (int i = 0; i < samples; i++) {
+    sum += analogRead(VOLTAGE_PIN);
+    delayMicroseconds(50);
+  }
+  float rawAdc = (float)sum / (float)samples;
+  float pinVoltage = (rawAdc / ADC_RESOLUTION) * ADC_REF_VOLTAGE;
+  currentVoltage = pinVoltage * VOLTAGE_DIVIDER_RATIO;
+  return currentVoltage;
+}
+
+void updateVoltageLED(float v) {
+  if (v < 10.0f) {
+    // Red when V < 10V
+    setRGBColor(255, 0, 0);
+  } else if (v >= 10.0f && v < 11.0f) {
+    // Orange when 10V <= V < 11V
+    setRGBColor(255, 64, 0);
+  } else {
+    // Green when V >= 11V
+    setRGBColor(0, 255, 0);
+  }
+}
+
+// ============================================================
 // SENSOR READING
 // ============================================================
 float readDistance(int trigPin, int echoPin) {
@@ -372,6 +459,8 @@ void sendDistances() {
     piSerial.print(":");
     piSerial.print(distances[i]);
   }
+  piSerial.print(",VOLT:");
+  piSerial.print(currentVoltage, 2);
   piSerial.println();
 }
 
@@ -419,6 +508,10 @@ void loop() {
 
   // --- Read Ultrasonic Sensors ---
   readAllSensors();
+
+  // --- Read Voltage Sensor & Update RGB LED ---
+  readVoltage();
+  updateVoltageLED(currentVoltage);
 
   // --- Check Obstacle Safety during movement ---
   if (currentCommand != "STOP" && !isSafeToMove(currentCommand)) {

@@ -423,6 +423,57 @@
     letter-spacing: 2px;
   }
 
+  /* Battery Indicator */
+  .battery-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg3);
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border2);
+  }
+
+  .battery-icon {
+    display: flex;
+    align-items: center;
+    position: relative;
+    top: 1px;
+  }
+
+  .battery-body {
+    width: 24px;
+    height: 12px;
+    border: 2px solid var(--text2);
+    border-radius: 3px;
+    padding: 1px;
+    position: relative;
+    display: flex;
+  }
+
+  .battery-level-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 1px;
+    transition: width 0.3s ease, background 0.3s ease;
+  }
+
+  .battery-cap {
+    width: 2px;
+    height: 6px;
+    background: var(--text2);
+    border-radius: 0 2px 2px 0;
+    margin-left: 1px;
+  }
+
+  .battery-voltage-text {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    font-family: var(--mono);
+    min-width: 44px;
+  }
+
   /* Metrics row */
   .metrics-row {
     display: grid;
@@ -928,6 +979,15 @@
               <span>🚀</span>
               <span>START DETECTING</span>
             </button>
+            <div class="battery-indicator" id="battery-indicator" title="Robot Battery Level">
+              <div class="battery-icon">
+                <div class="battery-body">
+                  <div class="battery-level-fill" id="battery-level-fill" style="width: 100%; background: var(--accent);"></div>
+                </div>
+                <div class="battery-cap"></div>
+              </div>
+              <span class="battery-voltage-text" id="battery-voltage-text">-- V</span>
+            </div>
             <div class="robot-status-badge">
               <div class="status-dot"></div>
               <span id="header-state">ROBOT ONLINE</span>
@@ -1311,6 +1371,57 @@ function initApp() {
   renderFeed();
   startLiveSim();
   initSparkline();
+  connectWebSocket();
+}
+
+// ════════════════════════════════════════════════
+//  WEBSOCKET & TELEMETRY
+// ════════════════════════════════════════════════
+let ws;
+function connectWebSocket() {
+  const host = window.location.hostname || 'localhost';
+  ws = new WebSocket('ws://' + host + ':8001');
+  
+  ws.onopen = () => console.log("WebSocket connected to Pi!");
+  
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'battery_voltage') {
+        updateBatteryUI(data.payload.voltage);
+      }
+    } catch (e) {
+      console.error("WS error", e);
+    }
+  };
+  
+  ws.onclose = () => {
+    setTimeout(connectWebSocket, 3000); // Auto-reconnect
+  };
+}
+
+function updateBatteryUI(voltage) {
+  const vText = document.getElementById('battery-voltage-text');
+  const vFill = document.getElementById('battery-level-fill');
+  if(!vText || !vFill) return;
+  
+  vText.textContent = voltage.toFixed(1) + ' V';
+  
+  // 3S LiPo: 12.6V = 100%, 9.0V = 0%
+  let percent = ((voltage - 9.0) / (12.6 - 9.0)) * 100;
+  percent = Math.max(0, Math.min(100, percent));
+  vFill.style.width = percent + '%';
+  
+  if (voltage < 10.0) {
+    vFill.style.background = 'var(--red)';
+    vText.style.color = 'var(--red)';
+  } else if (voltage < 11.0) {
+    vFill.style.background = 'var(--amber)';
+    vText.style.color = 'var(--amber)';
+  } else {
+    vFill.style.background = 'var(--accent)';
+    vText.style.color = 'var(--text)';
+  }
 }
 
 // ════════════════════════════════════════════════

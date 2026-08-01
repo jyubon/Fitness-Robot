@@ -695,6 +695,19 @@ def _serial_read_worker():
                         pass
                     # Play voice track 016
                     play_audio_track(16)
+                
+                # Parse Battery Voltage if present (e.g. DIST:FRONT:999.00,VOLT:11.85)
+                if ",VOLT:" in line or "VOLT:" in line:
+                    try:
+                        # Extract the VOLT portion from the comma-separated string
+                        parts = line.split(",")
+                        for part in parts:
+                            if part.startswith("VOLT:"):
+                                voltage = float(part.split(":")[1])
+                                # Broadcast to dashboard
+                                local_stream_server.broadcast_telemetry("battery_voltage", {"voltage": voltage})
+                    except Exception:
+                        pass
         except Exception:
             pass
         time.sleep(0.1)
