@@ -704,8 +704,16 @@ def _serial_read_worker():
                         for part in parts:
                             if part.startswith("VOLT:"):
                                 voltage = float(part.split(":")[1])
-                                # Broadcast to dashboard
+                                # Broadcast to dashboard locally via WebSocket
                                 local_stream_server.broadcast_telemetry("battery_voltage", {"voltage": voltage})
+                                
+                                # Throttle Firebase publishes to once every 10 seconds to avoid quota issues
+                                now_ts = time.time()
+                                if not hasattr(_serial_read_worker, "last_volt_ts"):
+                                    _serial_read_worker.last_volt_ts = 0
+                                if now_ts - _serial_read_worker.last_volt_ts > 10.0:
+                                    publish_event("battery_voltage", {"voltage": voltage})
+                                    _serial_read_worker.last_volt_ts = now_ts
                     except Exception:
                         pass
         except Exception:
