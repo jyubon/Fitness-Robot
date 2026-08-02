@@ -34,6 +34,17 @@
                   class="px-3 py-1 text-xs rounded-full border border-white/20 hover:bg-white/5">Logout</button>
         </div>
 
+        <!-- Battery Indicator (hidden until logged in) -->
+        <div class="battery-indicator hidden" id="batteryIndicator" title="Robot Battery Level">
+          <div class="battery-icon">
+            <div class="battery-body">
+              <div class="battery-level-fill" id="batteryLevelFill" style="width: 100%;"></div>
+            </div>
+            <div class="battery-cap"></div>
+          </div>
+          <span class="battery-voltage-text" id="batteryVoltageText">-- V</span>
+        </div>
+
         <!-- Global Force Stop - always prominent when logged in -->
         <button id="forceStopBtn"
                 onclick="sendForceStop()"

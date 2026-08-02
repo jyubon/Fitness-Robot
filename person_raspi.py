@@ -102,13 +102,13 @@ PALM_STOP_REQUIRED_FRAMES = 12
 PALM_STOP_MIN_HAND_SIZE = 0.12
 
 # ─── Following Thresholds (YOUR CALIBRATED VALUES) ───
-CENTER_ZONE_LEFT  = 0.3
-CENTER_ZONE_RIGHT = 0.7
+CENTER_ZONE_LEFT  = 0.25
+CENTER_ZONE_RIGHT = 0.75
 TOO_CLOSE = 0.11
 TOO_FAR   = 0.08
 
 # ─── Timing ───
-COMMAND_COOLDOWN    = 0.1    # Min seconds between sending same command
+COMMAND_COOLDOWN    = 0.75    # Min seconds between sending same command
 LOST_PERSON_TIMEOUT = 1.5   # Seconds before searching
 
 # ─── Display ───
@@ -695,6 +695,27 @@ def _serial_read_worker():
                         pass
                     # Play voice track 016
                     play_audio_track(16)
+                
+                # Parse Battery Voltage if present (e.g. DIST:FRONT:999.00,VOLT:11.85)
+                if ",VOLT:" in line or "VOLT:" in line:
+                    try:
+                        # Extract the VOLT portion from the comma-separated string
+                        parts = line.split(",")
+                        for part in parts:
+                            if part.startswith("VOLT:"):
+                                voltage = float(part.split(":")[1])
+                                # Broadcast to dashboard locally via WebSocket
+                                local_stream_server.broadcast_telemetry("battery_voltage", {"voltage": voltage})
+                                
+                                # Throttle Firebase publishes to once every 10 seconds to avoid quota issues
+                                now_ts = time.time()
+                                if not hasattr(_serial_read_worker, "last_volt_ts"):
+                                    _serial_read_worker.last_volt_ts = 0
+                                if now_ts - _serial_read_worker.last_volt_ts > 10.0:
+                                    publish_event("battery_voltage", {"voltage": voltage})
+                                    _serial_read_worker.last_volt_ts = now_ts
+                    except Exception:
+                        pass
         except Exception:
             pass
         time.sleep(0.1)
@@ -1869,7 +1890,13 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False):
         ("CLOSE", "RIGHT"):  "BWD_RIGHT",
     }
     command = matrix.get((d_zone, h_zone), "STOP")
-    send_command(command)
+
+    # During exercise detection (after start command), robot must NOT move.
+    # Keep the robot stationary regardless of position offsets.
+    if in_exercise_mode:
+        send_command("STOP")
+    else:
+        send_command(command)
 
 
 # ═══════════════════════════════════════════════════════

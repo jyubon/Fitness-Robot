@@ -106,6 +106,7 @@ async function logout() {
   document.getElementById('authView').classList.remove('hidden');
   document.getElementById('userInfo').classList.add('hidden');
   document.getElementById('forceStopBtn').classList.add('hidden');
+  document.getElementById('batteryIndicator').classList.add('hidden');
 }
 
 async function ensureUserDocument(user) {
@@ -139,6 +140,8 @@ function showAppView(email) {
   document.getElementById('userEmail').textContent = email || 'You';
 
   document.getElementById('forceStopBtn').classList.remove('hidden');
+  document.getElementById('batteryIndicator').classList.remove('hidden');
+  document.getElementById('batteryIndicator').classList.add('flex');
   showTab('live');
   startCameraStreamIfNeeded();
 }
@@ -312,6 +315,26 @@ function handleTelemetryMessage(msg) {
 
   if (type === 'form_error' || type === 'encouragement') {
     appendLog(payload.message || JSON.stringify(payload), true);
+    return;
+  }
+
+  if (type === 'battery_voltage') {
+    const v = parseFloat(payload.voltage);
+    if (!isNaN(v)) {
+      document.getElementById('batteryVoltageText').textContent = v.toFixed(2) + ' V';
+      const fill = document.getElementById('batteryLevelFill');
+      let percent = ((v - 10.0) / (12.6 - 10.0)) * 100;
+      percent = Math.max(0, Math.min(100, percent));
+      fill.style.width = percent + '%';
+      
+      if (percent < 20) {
+        fill.style.background = '#ef4444'; // red
+      } else if (percent < 40) {
+        fill.style.background = '#f59e0b'; // amber
+      } else {
+        fill.style.background = '#10b981'; // emerald
+      }
+    }
     return;
   }
 
