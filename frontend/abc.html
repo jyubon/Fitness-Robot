@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Fitness Robot • AI Training System</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- Libraries -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="abc.css">
+</head>
+
+<body class="min-h-screen text-slate-100 antialiased selection:bg-cyan-500 selection:text-black">
+
+  <!-- ========================================================================= -->
+  <!-- HEADER -->
+  <!-- ========================================================================= -->
+  <header class="app-header top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 h-full flex items-center justify-between">
+
+      <!-- Logo & Brand (On one line, seamlessly in background) -->
+      <div class="flex items-center gap-2.5 sm:gap-3">
+        <div
+          class="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-tr from-cyan-500 via-emerald-400 to-teal-300 p-[1.5px] shadow-lg shadow-cyan-500/20 flex-shrink-0">
+          <div class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center">
+            <span
+              class="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400 font-extrabold text-sm sm:text-base tracking-tighter">FR</span>
+          </div>
+        </div>
+        <div class="font-bold text-base sm:text-lg tracking-tight flex items-center gap-2">
+          <span>Fitness Robot</span>
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="System Online"></span>
+        </div>
+      </div>
+
+      <!-- Controls & Status (Right corner) -->
+      <div class="flex items-center gap-2.5 sm:gap-3">
+        <!-- Hidden fallbacks for JS email/voltage text lookups -->
+        <span id="userEmail" class="hidden"></span>
+        <span id="batteryVoltageText" class="hidden"></span>
+
+        <!-- Desktop Force Stop Button (shown only when in fitness section) -->
+        <button id="forceStopBtn" onclick="sendForceStop()"
+          class="hidden px-4 py-1.5 sm:px-5 sm:py-2 rounded-xl sm:rounded-2xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 active:scale-95 font-bold text-xs sm:text-sm flex items-center gap-1.5 shadow-lg shadow-red-950/60 transition-all border border-red-400/30">
+          <span>⛔</span>
+          <span class="hidden xs:inline">FORCE STOP</span>
+        </button>
+
+        <!-- Vertical Battery Indicator (no values, right corner of menu) -->
+        <div class="battery-indicator-vertical hidden" id="batteryIndicator" title="Robot Battery Level">
+          <div class="battery-v-cap"></div>
+          <div class="battery-v-body">
+            <div class="battery-v-level-fill" id="batteryLevelFill" style="height: 100%;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ========================================================================= -->
+  <!-- MAIN CONTENT CONTAINER -->
+  <!-- ========================================================================= -->
+  <main class="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6">
+
+    <!-- AUTH VIEW (Sign In / Register) -->
+    <div id="authView" class="max-w-md mx-auto my-6 sm:my-12 px-2 animate-fade-in">
+      <div class="glass p-6 sm:p-8 rounded-3xl relative overflow-hidden">
+        <div class="absolute -top-24 -right-24 w-48 h-48 bg-cyan-500/15 rounded-full blur-3xl pointer-events-none">
+        </div>
+        <div class="absolute -bottom-24 -left-24 w-48 h-48 bg-emerald-500/15 rounded-full blur-3xl pointer-events-none">
+        </div>
+
+        <div class="text-center mb-6">
+          <div
+            class="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-400 to-emerald-400 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-cyan-500/20">
+            <span class="text-black font-extrabold text-xl">🤖</span>
+          </div>
+          <h1 class="text-2xl font-bold tracking-tight">Fitness Robot Access</h1>
+          <p class="text-white/50 text-xs sm:text-sm mt-1">Connect your dashboard to telemetry &amp; live video</p>
+        </div>
+
+        <!-- Sign In Form -->
+        <div class="space-y-3">
+          <div>
+            <label class="text-xs font-semibold text-white/70 block mb-1">Email Address</label>
+            <input id="loginEmail" type="email" placeholder="coach@fitness.com"
+              class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-400/80 transition-colors">
+          </div>
+          <div>
+            <label class="text-xs font-semibold text-white/70 block mb-1">Password</label>
+            <input id="loginPassword" type="password" placeholder="••••••••"
+              class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-400/80 transition-colors">
+          </div>
+          <button onclick="login()"
+            class="w-full py-3.5 rounded-xl bg-gradient-to-r from-cyan-400 to-emerald-400 text-black font-bold text-sm shadow-lg shadow-cyan-500/20 active:scale-[0.98] transition-transform">
+            Sign In to Robot
+          </button>
+        </div>
+
+        <!-- Divider -->
+        <div class="relative my-6 text-center">
+          <div class="absolute inset-0 flex items-center">
+            <div class="w-full border-t border-white/10"></div>
+          </div>
+          <span class="relative px-3 bg-[#0d101b] text-white/40 text-xs uppercase font-medium tracking-wider">or
+            register new</span>
+        </div>
+
+        <!-- Register Form -->
+        <div class="space-y-3">
+          <div>
+            <input id="regEmail" type="email" placeholder="New account email"
+              class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-400/80 transition-colors">
+          </div>
+          <div>
+            <input id="regPassword" type="password" placeholder="Password (min 6 characters)"
+              class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-400/80 transition-colors">
+          </div>
+          <button onclick="register()"
+            class="w-full py-3 rounded-xl border border-white/20 hover:bg-white/5 active:scale-[0.98] text-xs font-semibold text-white/90 transition-all">
+            Create Account
+          </button>
+        </div>
+
+        <!-- Error Container -->
+        <div id="authError"
+          class="mt-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs hidden text-center">
+        </div>
+      </div>
+
+      <div class="text-center text-[11px] text-white/40 mt-4 font-medium">
+        Powered by Raspberry Pi • ESP32 • Web Bluetooth • Computer Vision
+      </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- APP VIEW (Authenticated) -->
+    <!-- ========================================================================= -->
+    <div id="appView" class="hidden animate-fade-in">
+
+      <!-- Navigation & Action Bar (Desktop Segmented Bar + Start Exercise) -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+
+        <!-- Desktop Tabs -->
+        <div class="desktop-tabs-container">
+          <button onclick="showTab('live')" id="tab-live" data-tab-target="live" class="tab-btn active">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6">
+              </path>
+            </svg>
+            <span>Home</span>
+          </button>
+
+          <button onclick="showTab('steps')" id="tab-steps" data-tab-target="steps" class="tab-btn">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M6 4v16M18 4v16M2 8v8a1 1 0 001 1h1a1 1 0 001-1V8a1 1 0 00-1-1H3a1 1 0 00-1 1zm16 0v8a1 1 0 001 1h1a1 1 0 001-1V8a1 1 0 00-1-1h-1a1 1 0 00-1 1zM6 12h12">
+              </path>
+            </svg>
+            <span>Fitness</span>
+          </button>
+
+          <button onclick="showTab('analytics')" id="tab-analytics" data-tab-target="analytics" class="tab-btn">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+            </svg>
+            <span>Profile</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- ===================================================================== -->
+      <!-- TAB 1: LIVE TELEMETRY VIEW -->
+      <!-- ===================================================================== -->
+      <div id="liveView" class="space-y-4">
+
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
+
+          <!-- FIRST CARD: GREETING & DAILY MOTIVATION (xl:col-span-7) -->
+          <div
+            class="xl:col-span-7 glass glass-card rounded-3xl p-5 sm:p-6 flex flex-col justify-between relative overflow-hidden">
+            <!-- Ambient Glow Backgrounds -->
+            <div class="absolute -top-16 -right-16 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none">
+            </div>
+            <div
+              class="absolute -bottom-16 -left-16 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none">
+            </div>
+
+            <div class="relative z-10">
+              <!-- Header Pill: Time of Day Badge & Date -->
+              <div class="flex items-center justify-between mb-4">
+                <div
+                  class="flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-semibold text-white/80">
+                  <span id="homeGreetingIcon" class="text-base">👋</span>
+                  <span id="homeTimeOfDayBadge"
+                    class="uppercase tracking-wider text-[11px] text-cyan-400 font-bold">Today's Brief</span>
+                </div>
+                <div id="homeCurrentDateText" class="text-xs font-mono text-white/50"></div>
+              </div>
+
+              <!-- Main Greeting Heading & Subtitle -->
+              <div class="space-y-1.5 mt-2">
+                <h1 id="homeGreetingText" class="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-tight">
+                  Welcome Back!
+                </h1>
+                <p id="homeGreetingSub" class="text-xs sm:text-sm text-white/60 leading-relaxed max-w-xl">
+                  Ready to achieve your daily fitness goals? Your autonomous companion is standing by.
+                </p>
+              </div>
+
+              <!-- 2 Status Cards: AI VISION COACH and SMARTWATCH -->
+              <div class="grid grid-cols-2 gap-3 mt-6">
+                <!-- AI VISION COACH CARD -->
+                <div class="p-3.5 sm:p-4 rounded-2xl bg-black/35 border border-white/10 flex flex-col justify-between">
+                  <div class="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-white/50">AI VISION
+                    COACH</div>
+                  <div class="mt-2 flex items-center gap-2">
+                    <span id="robotStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                    <span id="robotStatusText"
+                      class="text-sm sm:text-base font-extrabold tracking-wide text-red-400">OFFLINE</span>
+                  </div>
+                  <div class="text-[10px] text-white/40 mt-1">Robot Guide</div>
+                </div>
+
+                <!-- SMARTWATCH CARD -->
+                <div class="p-3.5 sm:p-4 rounded-2xl bg-black/35 border border-white/10 flex flex-col justify-between">
+                  <div class="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-white/50">SMARTWATCH
+                  </div>
+                  <div class="mt-2 flex items-center gap-2">
+                    <span id="watchStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                    <span id="watchStatusText"
+                      class="text-sm sm:text-base font-extrabold tracking-wide text-red-400">OFFLINE</span>
+                  </div>
+                  <div class="text-[10px] text-white/40 mt-1">BLE wristband</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SMARTWATCH SNAPSHOT SECTION (xl:col-span-5) - Center Aligned, No Time -->
+          <div class="xl:col-span-5 flex flex-col justify-stretch">
+            <!-- Hidden telemetry elements preserved for background listener compatibility -->
+            <div class="hidden" aria-hidden="true">
+              <span id="robotState" data-state="STOPPED">STOPPED</span>
+              <span id="currentWorkout">—</span>
+              <span id="currentSet">—</span>
+              <span id="currentReps">—</span>
+              <span id="repsDetail"></span>
+              <span id="plankTime">—</span>
+              <span id="watchLastSync"></span>
+              <span id="homeHeroRoutine">—</span>
+            </div>
+
+            <div
+              class="glass glass-card rounded-3xl p-6 sm:p-7 flex flex-col items-center justify-center text-center h-full">
+              <div class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">SMARTWATCH STEPS TODAY</div>
+              <div class="mt-3 flex items-baseline justify-center gap-2">
+                <div id="watchSteps" class="text-4xl sm:text-5xl font-black tabular-nums text-white leading-none">—
+                </div>
+              </div>
+              <div class="text-xs font-semibold text-white/40 mt-1">steps synced</div>
+              <div id="watchExtra" class="text-xs text-white/50 mt-2 text-center"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- REMOTE CONTROL: EXERCISE MODE SWITCHER -->
+        <div class="glass glass-card rounded-3xl p-5">
+          <div class="flex items-center justify-between mb-3 px-1">
+            <div>
+              <div class="text-xs font-extrabold uppercase tracking-widest text-cyan-400">Target Routine</div>
+              <h2 class="text-base font-bold text-white mt-0.5">Select Exercise Mode</h2>
+            </div>
+            <div class="text-[11px] text-white/40 hidden sm:block">Transmitted to Pi Robot</div>
+          </div>
+
+          <div class="mode-grid">
+            <button onclick="switchMode('bicep_curls')" class="mode-btn group">
+              <div class="mode-icon">💪</div>
+              <div class="mode-text-wrapper">
+                <div class="mode-title group-hover:text-cyan-400 transition-colors">Bicep Curls</div>
+                <div class="mode-desc">Left &amp; Right arm tracking</div>
+              </div>
+            </button>
+
+            <button onclick="switchMode('pushups')" class="mode-btn group">
+              <div class="mode-icon">🧘</div>
+              <div class="mode-text-wrapper">
+                <div class="mode-title group-hover:text-cyan-400 transition-colors">Push-ups</div>
+                <div class="mode-desc">Chest depth &amp; spine alignment</div>
+              </div>
+            </button>
+
+            <button onclick="switchMode('squats')" class="mode-btn group">
+              <div class="mode-icon">🏋️</div>
+              <div class="mode-text-wrapper">
+                <div class="mode-title group-hover:text-cyan-400 transition-colors">Squats</div>
+                <div class="mode-desc">Hip crease &amp; knee tracking</div>
+              </div>
+            </button>
+
+            <button onclick="switchMode('plank')" class="mode-btn group">
+              <div class="mode-icon">⏱️</div>
+              <div class="mode-text-wrapper">
+                <div class="mode-title group-hover:text-cyan-400 transition-colors">Plank</div>
+                <div class="mode-desc">Core elevation &amp; timer</div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <!-- REAL-TIME FORM & ENCOURAGEMENT LOG -->
+        <div class="glass glass-card rounded-3xl p-5">
+          <div class="flex items-center justify-between mb-3 px-1">
+            <div class="flex items-center gap-2">
+              <div class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></div>
+              <div class="font-bold text-sm">Encouragement &amp; Form Feedback</div>
+              <span class="text-white/40 text-xs hidden sm:inline">(Live Coach Feed)</span>
+            </div>
+            <button onclick="clearLog()"
+              class="text-xs px-3 py-1 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 active:scale-95 transition-all">
+              Clear Log
+            </button>
+          </div>
+
+          <div id="formLog"
+            class="h-44 sm:h-48 overflow-y-auto bg-black/40 rounded-2xl p-3.5 text-xs font-mono space-y-1.5 border border-white/10">
+            <div class="text-white/30 italic">Ready for live telemetry messages from the robot...</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ===================================================================== -->
+      <!-- TAB 2: FITNESS (With Sub-Tabs: Exercises & Steps) -->
+      <!-- ===================================================================== -->
+      <div id="stepsView" class="hidden space-y-4">
+
+        <!-- 1. TOP CONFIGURATION FOR BOTH VIDEO AND WRISTBAND -->
+        <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+          <div class="flex items-center justify-between mb-3 px-1">
+            <div class="flex items-center gap-2">
+              <span class="text-cyan-400">⚙️</span>
+              <span class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-white">Hardware &amp; Stream
+                Configuration</span>
+            </div>
+            <button onclick="toggleConfigDrawer()" id="configToggleBtn"
+              class="text-xs px-2.5 py-1 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-white/70 flex items-center gap-1 transition-all">
+              <span id="configToggleText">Hide Settings</span>
+              <span id="configToggleArrow">▴</span>
+            </button>
+          </div>
+
+          <div id="configDrawer" class="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+            <!-- Video Stream Config -->
+            <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📹 Video Stream URL</span>
+                <span class="text-[10px] text-white/40">MJPEG Camera</span>
+              </div>
+              <div class="flex gap-2">
+                <input id="cameraUrl" type="text" placeholder="http://fitness.local:8081/stream"
+                  class="flex-1 bg-black/50 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-cyan-400">
+                <button onclick="setCameraStream()"
+                  class="px-3.5 py-2 rounded-xl bg-cyan-500 text-black font-bold text-xs hover:bg-cyan-400 active:scale-95 transition-all">
+                  Update
+                </button>
+              </div>
+              <div class="flex flex-wrap gap-1.5 pt-0.5">
+                <span class="text-[10px] text-white/40 self-center">Presets:</span>
+                <button onclick="setCameraPreset('http://fitness.local:8081/stream')"
+                  class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">fitness.local</button>
+                <button onclick="setCameraPreset('http://192.168.1.100:8081/stream')"
+                  class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">192.168.1.100</button>
+                <button onclick="setCameraPreset('http://localhost:8081/stream')"
+                  class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">localhost</button>
+              </div>
+            </div>
+
+            <!-- Wristband BLE Config -->
+            <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2 flex flex-col justify-between">
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[11px] font-bold uppercase tracking-wider text-emerald-400">⌚ ESP32 Wristband</span>
+                  <span id="stepStatusBadge" class="step-status disconnected">Disconnected</span>
+                </div>
+                <button id="stepConnectBtn" onclick="toggleStepConnection()"
+                  class="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
+                  Connect to Tracker
+                </button>
+              </div>
+              <div class="grid grid-cols-4 gap-1.5 pt-1">
+                <button class="step-action-btn !py-1 !text-[10px]" onclick="syncStepTime()" title="Sync Time">🕒
+                  Sync</button>
+                <button class="step-action-btn !py-1 !text-[10px]" onclick="requestStepData()" title="Get Data">📥
+                  Get</button>
+                <button class="step-action-btn !py-1 !text-[10px]" onclick="resetStepCount()" title="Reset Count">🔄
+                  Reset</button>
+                <button class="step-action-btn !py-1 !text-[10px]" onclick="exportStepData()" title="Export CSV">📊
+                  CSV</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. FITNESS SUB-TAB SELECTION -->
+        <div class="fitness-subtabs-bar">
+          <button id="btnSubtabExercises" onclick="switchFitnessSubtab('exercises')"
+            class="subtab-btn subtab-btn-active">
+            <span>🏋️</span>
+            <span>Exercises</span>
+          </button>
+          <button id="btnSubtabSteps" onclick="switchFitnessSubtab('steps')" class="subtab-btn">
+            <span>👟</span>
+            <span>Steps</span>
+          </button>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- SUB-TAB 1: EXERCISES VIEW -->
+        <!-- ================================================================= -->
+        <div id="subtabExercisesView" class="space-y-4">
+
+          <!-- 1. Robot Camera and Vision -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="flex items-center justify-between mb-3 px-1">
+              <div class="flex items-center gap-2 font-bold text-sm sm:text-base">
+                <span class="text-cyan-400">📹</span>
+                <span>Robot Camera &amp; Vision</span>
+              </div>
+              <button onclick="toggleCameraFullscreen()" title="Fullscreen Feed"
+                class="p-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-white/80 transition-all">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4">
+                  </path>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Video Stream Container -->
+            <div id="cameraContainer" class="camera-container">
+              <img id="cameraFeed" class="hidden" alt="Robot camera feed">
+              <div id="cameraPlaceholder" class="text-center p-6 text-white/60">
+                <div
+                  class="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-3 text-2xl">
+                  📹
+                </div>
+                <div class="text-sm font-semibold text-white/90">Camera Feed Idle</div>
+                <div class="text-xs text-white/40 mt-1 max-w-xs mx-auto">
+                  Starts automatically when exercise detection begins or stream is set.
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-3 flex items-center justify-between text-[11px] text-white/40 px-1 font-medium">
+              <span>Pi Camera Module V3 • 60 FPS Pose Tracking</span>
+              <span class="text-emerald-400/80">● CV Active</span>
+            </div>
+          </div>
+
+          <!-- 2. 4 Exercise Selection Buttons -->
+          <div class="glass glass-card rounded-3xl p-5">
+            <div class="text-xs font-extrabold uppercase tracking-widest text-cyan-400 mb-1">Target Routine</div>
+            <h2 class="text-base font-bold text-white mb-3">Select Exercise Mode</h2>
+            <div class="mode-grid">
+              <button onclick="switchMode('bicep_curls')" class="mode-btn group">
+                <div class="mode-icon">💪</div>
+                <div class="mode-text-wrapper">
+                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Bicep Curls</div>
+                  <div class="mode-desc">Left &amp; Right arm tracking</div>
+                </div>
+              </button>
+
+              <button onclick="switchMode('pushups')" class="mode-btn group">
+                <div class="mode-icon">🧘</div>
+                <div class="mode-text-wrapper">
+                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Push-ups</div>
+                  <div class="mode-desc">Chest depth &amp; spine alignment</div>
+                </div>
+              </button>
+
+              <button onclick="switchMode('squats')" class="mode-btn group">
+                <div class="mode-icon">🏋️</div>
+                <div class="mode-text-wrapper">
+                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Squats</div>
+                  <div class="mode-desc">Hip crease &amp; knee tracking</div>
+                </div>
+              </button>
+
+              <button onclick="switchMode('plank')" class="mode-btn group">
+                <div class="mode-icon">⏱️</div>
+                <div class="mode-text-wrapper">
+                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Plank</div>
+                  <div class="mode-desc">Core elevation &amp; timer</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- 3. Two Buttons Start and Stop Side by Side -->
+          <div class="grid grid-cols-2 gap-3">
+            <!-- Start Detecting Button -->
+            <button id="startExerciseBtn" onclick="sendStartExercise()"
+              class="w-full py-3.5 sm:py-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs sm:text-base flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-[0.98] transition-transform">
+              <span class="text-base sm:text-lg">🚀</span>
+              <span>START DETECTING</span>
+            </button>
+
+            <!-- Stop / Emergency Stop Button -->
+            <button id="fitnessStopBtn" onclick="sendForceStop()"
+              class="w-full py-3.5 sm:py-4 rounded-2xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 active:scale-[0.98] font-bold text-xs sm:text-base flex items-center justify-center gap-2 shadow-lg shadow-red-950/60 transition-all border border-red-400/30 text-white">
+              <span class="text-base sm:text-lg">⛔</span>
+              <span>EMERGENCY STOP</span>
+            </button>
+          </div>
+
+          <!-- 4. Current Workout Card -->
+          <div class="glass glass-card rounded-3xl p-5 sm:p-6">
+            <!-- State Header -->
+            <div class="flex items-center justify-between pb-3 border-b border-white/10">
+              <div class="text-[11px] font-bold uppercase tracking-wider text-white/50">ROBOT STATUS</div>
+              <div id="robotState" class="px-3 py-1 rounded-full text-xs font-bold" data-state="STOPPED">STOPPED</div>
+            </div>
+
+            <!-- Exercise Name Badge -->
+            <div class="mt-4">
+              <div class="text-[10px] font-bold uppercase tracking-widest text-cyan-400">Current Routine</div>
+              <div id="currentWorkout" class="text-2xl sm:text-3xl font-extrabold tracking-tight mt-0.5 text-white">—
+              </div>
+            </div>
+
+            <!-- Set & Reps Dual Card -->
+            <div class="grid grid-cols-2 gap-3 mt-4">
+              <div class="p-3.5 rounded-2xl bg-black/30 border border-white/10">
+                <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">CURRENT SET</div>
+                <div id="currentSet" class="text-4xl sm:text-5xl font-black tabular-nums text-white mt-1">—</div>
+              </div>
+              <div class="p-3.5 rounded-2xl bg-black/30 border border-white/10">
+                <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">COMPLETED REPS</div>
+                <div id="currentReps" class="text-4xl sm:text-5xl font-black tabular-nums text-emerald-400 mt-1">—</div>
+                <div id="repsDetail" class="text-xs text-white/50 font-mono mt-0.5"></div>
+              </div>
+            </div>
+
+            <!-- Plank Hold Timer Box -->
+            <div class="mt-3 p-3.5 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-between">
+              <div>
+                <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">PLANK HOLD TIME</div>
+                <div id="plankTime" class="font-mono text-3xl font-bold tabular-nums text-cyan-400 mt-0.5">—</div>
+              </div>
+              <div class="text-3xl opacity-30">⏱️</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- SUB-TAB 2: STEPS VIEW -->
+        <!-- ================================================================= -->
+        <div id="subtabStepsView" class="hidden space-y-4">
+
+          <!-- Step Count, Calories, Distance, Active Min Card -->
+          <section class="glass glass-card rounded-3xl p-5 sm:p-6">
+            <!-- Circular/Dial Metric Box -->
+            <div class="rounded-3xl bg-black/35 border border-white/10 p-6 sm:p-8 text-center relative overflow-hidden">
+              <div class="text-6xl sm:text-7xl font-black leading-none tabular-nums text-white" id="stepCount">0</div>
+              <div class="text-sm font-semibold text-white/50 mt-2">steps today</div>
+
+              <!-- Progress Bar -->
+              <div class="h-2.5 rounded-full bg-white/10 overflow-hidden mt-6 max-w-md mx-auto">
+                <div id="stepProgressBar"
+                  class="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-500"
+                  style="width: 0%"></div>
+              </div>
+              <div id="stepGoalText" class="text-xs font-medium text-white/50 mt-2">0% of 10,000 goal</div>
+            </div>
+
+            <!-- 3 Bottom Metrics: Calories, Distance, Active Min -->
+            <div class="grid grid-cols-3 gap-2.5 sm:gap-3 mt-4">
+              <div class="step-metric">
+                <div id="stepCalories" class="step-metric-value text-amber-400">0</div>
+                <div class="step-metric-label">Calories</div>
+              </div>
+              <div class="step-metric">
+                <div id="stepDistance" class="step-metric-value text-cyan-400">0.00</div>
+                <div class="step-metric-label">Distance (km)</div>
+              </div>
+              <div class="step-metric">
+                <div id="stepActiveMin" class="step-metric-value text-emerald-400">0</div>
+                <div class="step-metric-label">Active Min</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Step History & Bluetooth Log Columns -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <!-- 30-Day Step History -->
+            <div class="glass glass-card rounded-3xl p-5">
+              <div class="flex items-center justify-between mb-3">
+                <div class="font-bold text-sm">Step History</div>
+                <div class="text-[11px] text-white/40">Last 30 days</div>
+              </div>
+              <div id="stepHistoryList" class="space-y-2 text-sm max-h-[260px] overflow-auto pr-1">
+                <div class="text-white/40 text-xs">No historical data recorded yet.</div>
+              </div>
+            </div>
+
+            <!-- Bluetooth Diagnostics Log -->
+            <div class="glass glass-card rounded-3xl p-5">
+              <div class="flex items-center justify-between mb-3">
+                <div class="font-bold text-sm">Bluetooth Log</div>
+                <button onclick="clearStepLog()"
+                  class="text-xs px-2.5 py-1 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition-all">Clear</button>
+              </div>
+              <div id="stepLogContainer"
+                class="h-[260px] overflow-y-auto bg-black/40 rounded-2xl p-3 text-xs font-mono space-y-1 border border-white/10">
+                <div class="text-white/30">Ready to pair with wearable device...</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- ===================================================================== -->
+      <!-- TAB 3: USER PROFILE & PERFORMANCE -->
+      <!-- ===================================================================== -->
+      <div id="analyticsView" class="hidden space-y-4">
+
+        <!-- Profile Header Card (Name, then Email) -->
+        <div class="glass glass-card rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div class="flex items-center gap-4">
+            <div
+              class="w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-400 to-emerald-400 p-[2px] shadow-lg shadow-cyan-500/20 flex-shrink-0">
+              <div
+                class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center font-bold text-lg text-cyan-400"
+                id="profileAvatar">
+                FR
+              </div>
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <h2 id="profileName" class="text-xl sm:text-2xl font-black text-white tracking-tight">Athlete User
+                </h2>
+                <button onclick="editProfileName()" title="Edit Name"
+                  class="text-xs text-white/40 hover:text-cyan-400 transition-colors p-1">
+                  ✏️
+                </button>
+                <!-- <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">ACTIVE</span> -->
+              </div>
+              <div id="profileEmail" class="text-xs text-white/60 font-mono mt-0.5">coach@fitness.com</div>
+            </div>
+          </div>
+
+          <button onclick="logout()"
+            class="self-start sm:self-auto px-4 py-2 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 active:scale-95 text-xs font-semibold text-white/80 transition-all flex items-center gap-2">
+            <span>🚪</span>
+            <span>Sign Out</span>
+          </button>
+        </div>
+
+        <!-- WEEKLY SESSION HISTORY & DATE SELECTOR (Brought to Top) -->
+        <div
+          class="text-xs font-bold uppercase tracking-wider text-white/40 mb-2 px-1 flex items-center justify-between">
+          <span id="kpiSectionTitle">Performance Metrics</span>
+        </div>
+
+        <div class="glass glass-card rounded-3xl p-5 space-y-3.5">
+          <!-- First date in full format with 2 arrow symbols beside the date name -->
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
+            <div class="flex items-center gap-2 sm:gap-3">
+              <button onclick="changeSelectedDate(-1)"
+                class="w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/15 active:scale-95 flex items-center justify-center text-base font-bold text-white transition-all"
+                title="Previous Day">
+                ‹
+              </button>
+              <div>
+                <div id="selectedDateFullText" class="text-base sm:text-lg font-extrabold text-white tracking-tight">
+                  Today
+                </div>
+                <div class="text-[11px] text-white/40">Workouts &amp; metrics for selected date</div>
+              </div>
+              <button onclick="changeSelectedDate(1)"
+                class="w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/15 active:scale-95 flex items-center justify-center text-base font-bold text-white transition-all"
+                title="Next Day">
+                ›
+              </button>
+            </div>
+
+            <div class="flex items-center gap-2 self-end sm:self-auto">
+              <button onclick="selectToday()"
+                class="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs font-semibold text-cyan-400 active:scale-95 transition-all">
+                Today
+              </button>
+              <button onclick="generateDemoData()"
+                class="px-3 py-1.5 rounded-xl bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/30 text-xs font-semibold active:scale-95 transition-all">
+                Demo Data
+              </button>
+            </div>
+          </div>
+
+          <!-- Week format: Day name, Under that date in number format -->
+          <div>
+            <div class="text-[10px] font-bold uppercase tracking-wider text-white/40 mb-2">WEEK SCHEDULE</div>
+            <div id="weekDaysStrip" class="grid grid-cols-7 gap-1.5 sm:gap-2"></div>
+          </div>
+        </div>
+
+        <!-- 4 EXERCISE / KPI BLOCKS (Change based on selected date) -->
+        <div>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+              <div class="text-[10px] font-bold uppercase tracking-wider text-cyan-400">Total Reps</div>
+              <div id="kpiTotalReps" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
+              <div class="text-[10px] text-white/40 mt-1" id="kpiRepsBreakdown">Curls • Pushups • Squats</div>
+            </div>
+
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+              <div class="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Plank Time</div>
+              <div id="kpiPlankTime" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
+              <div class="text-[10px] text-white/40 mt-1" id="kpiPlankSub">Core Elevation Hold</div>
+            </div>
+
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+              <div class="text-[10px] font-bold uppercase tracking-wider text-amber-400">Steps Walked</div>
+              <div id="kpiSteps" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
+              <div class="text-[10px] text-white/40 mt-1" id="kpiStepsSub">Smart Watch Synced</div>
+            </div>
+
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+              <div class="text-[10px] font-bold uppercase tracking-wider text-purple-400">Form Accuracy</div>
+              <div id="kpiForm" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
+              <div class="text-[10px] text-white/40 mt-1" id="kpiFormSub">Pose Precision Score</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CHARTS GRID (Change based on selected date) -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+          <!-- Reps Breakdown Chart -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="text-sm font-bold mb-3 flex items-center justify-between">
+              <span>Exercise Breakdown</span>
+              <span class="text-xs text-cyan-400 font-mono" id="chartRepsDateBadge">Selected Date</span>
+            </div>
+            <div class="relative w-full h-[220px]">
+              <canvas id="repsChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Active Time Chart -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="text-sm font-bold mb-3 flex items-center justify-between">
+              <span>Workout vs Total Time</span>
+              <span class="text-xs text-white/40">Minutes</span>
+            </div>
+            <div class="relative w-full h-[220px]">
+              <canvas id="timeChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Form Quality Breakdown -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="text-sm font-bold mb-3 flex items-center justify-between">
+              <span>Form Quality Ratio</span>
+              <span class="text-xs text-emerald-400 font-mono" id="chartFormDateBadge">Selected Date</span>
+            </div>
+            <div class="relative w-full h-[220px]">
+              <canvas id="formChart"></canvas>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ========================================================================= -->
+  <!-- MOBILE FLOATING EMERGENCY FORCE STOP (Visible on small screens) -->
+  <!-- ========================================================================= -->
+  <button id="mobileForceStopBtn" onclick="sendForceStop()" class="mobile-fab-force-stop hidden"
+    title="Emergency Robot Force Stop">
+    <span>⛔</span>
+    <span>EMERGENCY STOP</span>
+  </button>
+
+  <!-- ========================================================================= -->
+  <!-- MOBILE BOTTOM NAVIGATION (Visible on small screens) -->
+  <!-- ========================================================================= -->
+  <nav id="mobileNavBar" class="mobile-nav-bar hidden">
+    <button onclick="showTab('live')" id="mob-tab-live" data-tab-target="live" class="mobile-nav-item active">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6">
+        </path>
+      </svg>
+      <span>Home</span>
+    </button>
+
+    <button onclick="showTab('steps')" id="mob-tab-steps" data-tab-target="steps" class="mobile-nav-item">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M6 4v16M18 4v16M2 8v8a1 1 0 001 1h1a1 1 0 001-1V8a1 1 0 00-1-1H3a1 1 0 00-1 1zm16 0v8a1 1 0 001 1h1a1 1 0 001-1V8a1 1 0 00-1-1h-1a1 1 0 00-1 1zM6 12h12">
+        </path>
+      </svg>
+      <span>Fitness</span>
+    </button>
+
+    <button onclick="showTab('analytics')" id="mob-tab-analytics" data-tab-target="analytics" class="mobile-nav-item">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+      </svg>
+      <span>Profile</span>
+    </button>
+  </nav>
+
+  <!-- Script linked to abc.js -->
+  <script src="abc.js"></script>
+</body>
+
+</html>
