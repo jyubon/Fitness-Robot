@@ -18,6 +18,13 @@ from robot_control import send_command, ser
 from ui_overlays import bgr_to_hex
 import local_stream_server
 
+try:
+    from voice_control import get_voice_state, stop_voice_listener, VoiceState
+except ImportError:
+    get_voice_state = None
+    stop_voice_listener = None
+    VoiceState = None
+
 # Global state for session summary
 last_session_summary = None
 
@@ -293,6 +300,15 @@ class FitnessRobotUI(tk.Tk):
             )
             btn.grid(row=0, column=i, sticky="ew", padx=5)
 
+        self.voice_status_label = tk.Label(
+            self.main_container,
+            text="🎤 Voice: Standby",
+            font=("Helvetica", 9, "bold"),
+            fg="#96D75F",
+            bg="#1E1E24"
+        )
+        self.voice_status_label.pack(side="bottom", pady=(2, 2))
+
     def run_exercise(self, exercise_name, func):
         self.exercise_active = True
         self.home_clicked = False
@@ -337,6 +353,25 @@ class FitnessRobotUI(tk.Tk):
                         print("[GUI] Ignored remote switch mode because an exercise is active.")
                     else:
                         self.launch_by_name(cmd_val)
+
+            # Update voice status indicator on UI
+            if get_voice_state is not None and hasattr(self, 'voice_status_label'):
+                try:
+                    if self.voice_status_label.winfo_exists():
+                        st, msg, last_txt, last_cmd = get_voice_state()
+                        if st == VoiceState.LISTENING:
+                            self.voice_status_label.configure(text="🎙️ Listening... (3s delay)", fg="#FF9500")
+                        elif st == VoiceState.PROCESSING:
+                            self.voice_status_label.configure(text="🧠 Processing command...", fg="#00C7BE")
+                        elif st == VoiceState.EXECUTING:
+                            self.voice_status_label.configure(text=f"✅ Voice: {last_cmd}", fg="#34C759")
+                        elif st == VoiceState.DISABLED:
+                            self.voice_status_label.configure(text="🎤 Voice: Disabled", fg="#8E8E93")
+                        else:
+                            self.voice_status_label.configure(text="🎤 Voice: Standby", fg="#96D75F")
+                except Exception:
+                    pass
+
             self.after(200, self.check_remote_commands)
         except (tk.TclError, Exception):
             pass
@@ -604,6 +639,11 @@ class FitnessRobotUI(tk.Tk):
             terminate_current_audio()
         except Exception:
             pass
+        if stop_voice_listener is not None:
+            try:
+                stop_voice_listener()
+            except Exception:
+                pass
         if ser is not None:
             try:
                 ser.close()

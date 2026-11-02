@@ -108,3 +108,27 @@ DIRECTION_MATRIX = {
     ("CLOSE", "CENTER"): "BACKWARD",
     ("CLOSE", "RIGHT"):  "BWD_RIGHT",
 }
+
+# ─── Vosk Offline Voice Recognition ───
+VOSK_MODEL_DIR_NAME = "vosk-model-small-en-us-0.15"
+_env_model_path = os.getenv("VOSK_MODEL_PATH")
+if _env_model_path and Path(_env_model_path).exists():
+    VOSK_MODEL_PATH = str(Path(_env_model_path).resolve())
+else:
+    _candidates = [
+        PROJECT_DIR / VOSK_MODEL_DIR_NAME,
+        PROJECT_DIR / "model",
+        PROJECT_DIR.parent / "Voice Commands" / "Vosk" / VOSK_MODEL_DIR_NAME,
+        PROJECT_DIR.parent.parent / "Voice Commands" / "Vosk" / VOSK_MODEL_DIR_NAME,
+    ]
+    VOSK_MODEL_PATH = str(PROJECT_DIR / VOSK_MODEL_DIR_NAME)
+    for _c in _candidates:
+        if _c.exists():
+            VOSK_MODEL_PATH = str(_c.resolve())
+            break
+
+VOICE_COMMANDS_ENABLED = True
+VOICE_SAMPLE_RATE = 16000
+VOICE_PROCESSING_DELAY = 3.0  # Seconds to wait when someone is speaking before processing
+VOICE_MIC_DEVICE = None       # Default microphone
+

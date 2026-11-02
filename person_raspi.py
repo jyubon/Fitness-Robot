@@ -84,6 +84,13 @@ from audio_manager import (
     terminate_current_audio,
 )
 
+# ─── Vosk Voice Control ───
+from voice_control import (
+    start_voice_listener,
+    stop_voice_listener,
+    get_voice_state,
+)
+
 # ─── Robot Control (ESP32 Serial) ───
 from robot_control import (
     ser,
@@ -192,6 +199,7 @@ def main():
 
     def shutdown(sig, frame):
         print("\n🛑 Stopping...")
+        stop_voice_listener()
         send_command("STOP")
         time.sleep(0.2)
         cap.release()
@@ -354,6 +362,12 @@ if __name__ == "__main__":
         print(f"Failed to start local servers: {e}")
 
     publish_robot_state("READY")
+
+    # Start Vosk background voice listener
+    try:
+        start_voice_listener()
+    except Exception as e:
+        print(f"Failed to start voice listener: {e}")
 
     # Wire GUI callbacks
     callbacks = {
