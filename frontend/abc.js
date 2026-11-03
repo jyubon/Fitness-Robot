@@ -568,6 +568,7 @@ function syncExerciseUI(exercise) {
   }
 
   updateModeButtons(exercise);
+  updateExerciseButtonStates();
 }
 
 // ---------- Tabs ----------
@@ -734,15 +735,25 @@ function handleTelemetryMessage(msg) {
       pill.textContent = state;
       pill.setAttribute('data-state', state);
     }
+    const prevState = robotState;
     robotState = state;
 
     if (payload.exercise) {
       currentExercise = payload.exercise;
       syncExerciseUI(currentExercise);
-    } else if (state === 'READY') {
-      currentExercise = null;
+    } else if (state === 'READY' || state === 'STOPPED') {
+      const select = document.getElementById('fitnessExerciseSelect');
+      if (select && select.value) {
+        currentExercise = select.value;
+      }
       syncExerciseUI(currentExercise);
     }
+
+    if (state === 'FOLLOWING' && prevState !== 'FOLLOWING') {
+      appendExerciseLog(`🤖 Robot is in FOLLOWING mode for ${formatExercise(currentExercise)}. Get in position and press START.`);
+    }
+
+    updateExerciseButtonStates();
     return;
   }
 
@@ -991,24 +1002,123 @@ function connectLocalWebSocket(piIp) {
   };
 }
 
+function updateExerciseButtonStates() {
+  const startBtn = document.getElementById('startExerciseBtn');
+  const stopBtn = document.getElementById('fitnessStopBtn');
+  const upperState = (robotState || '').toUpperCase();
+  const select = document.getElementById('fitnessExerciseSelect');
+  const hasExercise = Boolean(currentExercise || select?.value);
+  const isFollowing = (upperState === 'FOLLOWING' || upperState === 'LOADING');
+  const isStarted = (upperState === 'ACTIVE' || isFollowing);
+
+  if (startBtn) {
+    if (hasExercise && isFollowing) {
+      startBtn.classList.remove('opacity-50', 'opacity-60', 'cursor-not-allowed');
+      startBtn.classList.add('opacity-100', 'cursor-pointer');
+      startBtn.title = `Start detecting ${formatExercise(currentExercise || select?.value)}`;
+    } else if (upperState === 'ACTIVE') {
+      startBtn.classList.remove('opacity-100', 'cursor-pointer');
+      startBtn.classList.add('opacity-50', 'cursor-not-allowed');
+      startBtn.title = 'Exercise is already active and running';
+    } else {
+      startBtn.classList.remove('opacity-100', 'cursor-pointer');
+      startBtn.classList.add('opacity-60', 'cursor-pointer');
+      startBtn.title = 'Robot must be in FOLLOWING mode to start';
+    }
+  }
+
+  if (stopBtn) {
+    if (isStarted) {
+      stopBtn.classList.remove('opacity-50', 'opacity-60');
+      stopBtn.classList.add('opacity-100', 'cursor-pointer');
+      stopBtn.title = 'Stop current exercise';
+    } else {
+      stopBtn.classList.remove('opacity-100');
+      stopBtn.classList.add('opacity-60', 'cursor-pointer');
+      stopBtn.title = 'No exercise currently running';
+    }
+  }
+}
+
 async function sendForceStop() {
-  await sendControlCommand({ action: 'force_stop' }, 'Force Stop sent to robot');
+  const upperState = (robotState || '').toUpperCase();
+  const isStarted = (upperState === 'ACTIVE' || upperState === 'FOLLOWING' || upperState === 'LOADING');
+
+  if (!isStarted) {
+    appendExerciseLog(`⚠️ Exercise is not running (Robot state: ${upperState || 'STOPPED'}).`, true);
+    // Still send force_stop command to ensure any motor movement is stopped
+    await sendControlCommand({ action: 'force_stop' }, 'Stop signal sent to robot');
+    return;
+  }
+
+  appendExerciseLog(`⛔ Stopping exercise (${formatExercise(currentExercise)})...`);
+
+  robotState = 'STOPPED';
+  const pill = document.getElementById('robotState');
+  if (pill) {
+    pill.textContent = 'STOPPED';
+    pill.setAttribute('data-state', 'STOPPED');
+  }
+  updateExerciseButtonStates();
+
+  await sendControlCommand({ action: 'force_stop' }, 'Exercise stopped');
 }
 
 async function sendStartExercise() {
+  const select = document.getElementById('fitnessExerciseSelect');
+  const selectedExercise = currentExercise || (select ? select.value : null);
+
+  // 1. Must have an exercise selected
+  if (!selectedExercise) {
+    appendExerciseLog("⚠️ Please select an exercise first before starting.", true);
+    return;
+  }
+
+  // 2. Robot must be in following mode
+  const upperState = (robotState || '').toUpperCase();
+  const isFollowing = (upperState === 'FOLLOWING' || upperState === 'LOADING');
+
+  if (!isFollowing) {
+    if (upperState === 'ACTIVE') {
+      appendExerciseLog("⚠️ Exercise is already running.", true);
+      return;
+    }
+    if (upperState === 'OFFLINE') {
+      appendExerciseLog("⚠️ Robot is offline. Connect robot to start exercise.", true);
+      return;
+    }
+    appendExerciseLog(`⚠️ Robot is in ${upperState || 'STOPPED'} mode. Robot must be in FOLLOWING mode to start the exercise.`, true);
+    return;
+  }
+
+  // 3. Exercise selected and robot in following mode -> Start exercise!
   toggleCameraView(true);
-  if (currentExercise === 'bicep_curls') {
+  if (selectedExercise === 'bicep_curls') {
     bicepHasBaseline = false;
     bicepLeftInSet = 0;
     bicepRightInSet = 0;
     updateBicepArmUI(0, 0, bicepCurrentSet);
   }
-  await sendControlCommand({ action: 'start_exercise' }, 'Start detecting exercise signal sent to robot');
+
+  appendExerciseLog(`🚀 Starting ${formatExercise(selectedExercise)}! Detecting form and counting reps...`);
+
+  robotState = 'ACTIVE';
+  const pill = document.getElementById('robotState');
+  if (pill) {
+    pill.textContent = 'ACTIVE';
+    pill.setAttribute('data-state', 'ACTIVE');
+  }
+  updateExerciseButtonStates();
+
+  await sendControlCommand({
+    action: 'start_exercise',
+    exercise: selectedExercise
+  }, `Started ${formatExercise(selectedExercise)}`);
 }
 
 async function switchMode(mode) {
-  if (robotState === 'ACTIVE' || robotState === 'LOADING') {
-    appendExerciseLog("⚠️ Exercise is currently active. Selection disabled.", true);
+  if (robotState === 'ACTIVE') {
+    appendExerciseLog("⚠️ Exercise is currently active. Stop current exercise first before switching.", true);
     const select = document.getElementById('fitnessExerciseSelect');
     if (select && currentExercise) select.value = currentExercise;
     return;
@@ -1021,6 +1131,7 @@ async function switchMode(mode) {
     bicepRightInSet = 0;
   }
   syncExerciseUI(currentExercise);
+  updateExerciseButtonStates();
 
   const mapping = {
     bicep_curls: 'BICEP_CURLS',
@@ -1032,7 +1143,7 @@ async function switchMode(mode) {
   await sendControlCommand({
     action: 'switch_mode',
     mode: mapping[mode] || mode.toUpperCase()
-  }, `Requested mode: ${mode}`);
+  }, `Selected ${formatExercise(mode)}. Robot entering FOLLOWING mode...`);
 }
 
 function updateModeButtons(exerciseName) {

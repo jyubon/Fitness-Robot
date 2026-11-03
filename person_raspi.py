@@ -1997,7 +1997,7 @@ def run_bicep_curls(ui=None):
 
     print("🏋️ Bicep Curl Counter Active! Press Q to quit.")
 
-    publish_robot_state("LOADING", exercise="bicep_curls")
+    publish_robot_state("FOLLOWING", exercise="bicep_curls")
     landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -2557,7 +2557,7 @@ def run_pushups(ui=None):
         cv2.setMouseCallback('Push-ups', on_mouse_click)
     print("💪 Push-up Counter Active! Press Q to quit.")
 
-    publish_robot_state("LOADING", exercise="pushups")
+    publish_robot_state("FOLLOWING", exercise="pushups")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -3045,7 +3045,7 @@ def run_squats(ui=None):
 
     print("🦵 Squat Counter Active! Press Q to quit.")
 
-    publish_robot_state("LOADING", exercise="squats")
+    publish_robot_state("FOLLOWING", exercise="squats")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -3685,7 +3685,7 @@ def run_plank(ui=None):
         cv2.setMouseCallback('Plank', on_mouse_click)
     print("🧘 Plank Timer Active! Press Q to quit.")
 
-    publish_robot_state("LOADING", exercise="plank")
+    publish_robot_state("FOLLOWING", exercise="plank")
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     hand_landmarker = create_hand_landmarker()
     timestamp_ms = 0
@@ -4670,6 +4670,10 @@ class FitnessRobotUI(tk.Tk):
             return
         finally:
             self.exercise_active = False
+            try:
+                publish_robot_state("STOPPED")
+            except Exception:
+                pass
             try:
                 local_stream_server.update_frame(None)
             except Exception:
