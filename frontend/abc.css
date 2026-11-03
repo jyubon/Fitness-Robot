@@ -74,10 +74,51 @@ body {
 /* Header styling - Fades softly into background without hard separation */
 .app-header {
   height: 64px;
+  position: sticky;
+  top: 0;
   background: linear-gradient(180deg, rgba(7, 8, 14, 0.95) 0%, rgba(7, 8, 14, 0.75) 55%, rgba(7, 8, 14, 0) 100%);
   border: none !important;
   box-shadow: none !important;
   pointer-events: auto;
+  z-index: 50;
+}
+
+/* Hardware & Stream Config Popup (Dropdown from spanner button) */
+.config-menu-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 16px;
+  width: min(calc(100vw - 32px), 420px);
+  max-height: calc(100vh - 84px);
+  overflow-y: auto;
+  z-index: 100;
+  background: rgba(10, 13, 23, 0.95);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 24px;
+  padding: 16px;
+  box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.85), 0 0 35px rgba(6, 182, 212, 0.15);
+  animation: popupSlideDown 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes popupSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Camera Trigger Active Glow */
+.camera-btn-active {
+  background: rgba(6, 182, 212, 0.2) !important;
+  border-color: rgba(6, 182, 212, 0.6) !important;
+  color: #38bdf8 !important;
+  box-shadow: 0 0 16px rgba(6, 182, 212, 0.35);
 }
 
 /* Fitness Sub-tabs */
@@ -404,18 +445,16 @@ body {
 
 .mode-btn:hover {
   background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: rgba(6, 182, 212, 0.35);
   transform: translateY(-1px);
 }
 
-.mode-btn:active {
+.mode-btn:active,
+.mode-btn.selecting-highlight {
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(16, 185, 129, 0.25) 100%) !important;
+  border-color: rgba(6, 182, 212, 0.6) !important;
+  box-shadow: 0 0 20px rgba(6, 182, 212, 0.3) !important;
   transform: scale(0.97);
-}
-
-.mode-btn.active-mode {
-  background: linear-gradient(135deg, rgba(6, 182, 212, 0.15) 0%, rgba(16, 185, 129, 0.15) 100%);
-  border-color: rgba(6, 182, 212, 0.45);
-  box-shadow: 0 4px 16px -2px rgba(6, 182, 212, 0.2);
 }
 
 .mode-btn .mode-icon {

@@ -62,12 +62,79 @@
           <span class="hidden xs:inline">FORCE STOP</span>
         </button>
 
+        <!-- Hardware & Stream Config Button (Spanner Key Icon, to the left of battery indicator) -->
+        <button id="configMenuBtn" onclick="toggleConfigDrawer()" title="Hardware &amp; Stream Configuration"
+          class="hidden p-2 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 transition-all text-cyan-400 border border-white/10 flex items-center justify-center">
+          <svg class="w-4 h-4 sm:w-5 sm:h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path
+              d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+          </svg>
+        </button>
+
         <!-- Vertical Battery Indicator (no values, right corner of menu) -->
         <div class="battery-indicator-vertical hidden" id="batteryIndicator" title="Robot Battery Level">
           <div class="battery-v-cap"></div>
           <div class="battery-v-body">
             <div class="battery-v-level-fill" id="batteryLevelFill" style="height: 100%;"></div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hardware & Stream Config Dropdown Popup (Triggered by Spanner Key Icon) -->
+    <div id="configDrawer" class="hidden config-menu-popup">
+      <div class="flex items-center justify-between pb-3 mb-3 border-b border-white/10 px-1">
+        <div class="flex items-center gap-2">
+          <span class="text-cyan-400 text-sm">🔧</span>
+          <span class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-white">Hardware &amp; Stream
+            Config</span>
+        </div>
+        <button onclick="toggleConfigDrawer()"
+          class="text-white/40 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
+          title="Close Settings">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="space-y-3.5">
+        <!-- Video Stream Config -->
+        <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📹 Video Stream URL</span>
+            <span class="text-[10px] text-white/40">MJPEG Camera</span>
+          </div>
+          <div class="flex gap-2">
+            <input id="cameraUrl" type="text" placeholder="http://fitness.local:8081/stream"
+              class="flex-1 bg-black/50 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-cyan-400 text-white">
+            <button onclick="setCameraStream()"
+              class="px-3.5 py-2 rounded-xl bg-cyan-500 text-black font-bold text-xs hover:bg-cyan-400 active:scale-95 transition-all">
+              Update
+            </button>
+          </div>
+          <div class="flex flex-wrap gap-1.5 pt-0.5">
+            <span class="text-[10px] text-white/40 self-center">Presets:</span>
+            <button onclick="setCameraPreset('http://fitness.local:8081/stream')"
+              class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">fitness.local</button>
+            <button onclick="setCameraPreset('http://192.168.1.100:8081/stream')"
+              class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">192.168.1.100</button>
+            <button onclick="setCameraPreset('http://localhost:8081/stream')"
+              class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">localhost</button>
+          </div>
+        </div>
+
+        <!-- Wristband BLE Config -->
+        <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
+          <div class="flex items-center justify-between mb-1">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-emerald-400">⌚ ESP32 Wristband</span>
+            <span id="stepStatusBadge" class="step-status disconnected">Disconnected</span>
+          </div>
+          <button id="stepConnectBtn" onclick="toggleStepConnection()"
+            class="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
+            Connect to Tracker
+          </button>
         </div>
       </div>
     </div>
@@ -231,7 +298,7 @@
                 <!-- AI VISION COACH CARD -->
                 <div class="p-3.5 sm:p-4 rounded-2xl bg-black/35 border border-white/10 flex flex-col justify-between">
                   <div class="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-white/50">AI VISION
-                    COACH</div>
+                    ROBOT</div>
                   <div class="mt-2 flex items-center gap-2">
                     <span id="robotStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
                     <span id="robotStatusText"
@@ -259,12 +326,6 @@
           <div class="xl:col-span-5 flex flex-col justify-stretch">
             <!-- Hidden telemetry elements preserved for background listener compatibility -->
             <div class="hidden" aria-hidden="true">
-              <span id="robotState" data-state="STOPPED">STOPPED</span>
-              <span id="currentWorkout">—</span>
-              <span id="currentSet">—</span>
-              <span id="currentReps">—</span>
-              <span id="repsDetail"></span>
-              <span id="plankTime">—</span>
               <span id="watchLastSync"></span>
               <span id="homeHeroRoutine">—</span>
             </div>
@@ -293,7 +354,7 @@
           </div>
 
           <div class="mode-grid">
-            <button onclick="switchMode('bicep_curls')" class="mode-btn group">
+            <button onclick="selectExerciseFromHome('bicep_curls', this)" class="mode-btn group">
               <div class="mode-icon">💪</div>
               <div class="mode-text-wrapper">
                 <div class="mode-title group-hover:text-cyan-400 transition-colors">Bicep Curls</div>
@@ -301,7 +362,7 @@
               </div>
             </button>
 
-            <button onclick="switchMode('pushups')" class="mode-btn group">
+            <button onclick="selectExerciseFromHome('pushups', this)" class="mode-btn group">
               <div class="mode-icon">🧘</div>
               <div class="mode-text-wrapper">
                 <div class="mode-title group-hover:text-cyan-400 transition-colors">Push-ups</div>
@@ -309,7 +370,7 @@
               </div>
             </button>
 
-            <button onclick="switchMode('squats')" class="mode-btn group">
+            <button onclick="selectExerciseFromHome('squats', this)" class="mode-btn group">
               <div class="mode-icon">🏋️</div>
               <div class="mode-text-wrapper">
                 <div class="mode-title group-hover:text-cyan-400 transition-colors">Squats</div>
@@ -317,7 +378,7 @@
               </div>
             </button>
 
-            <button onclick="switchMode('plank')" class="mode-btn group">
+            <button onclick="selectExerciseFromHome('plank', this)" class="mode-btn group">
               <div class="mode-icon">⏱️</div>
               <div class="mode-text-wrapper">
                 <div class="mode-title group-hover:text-cyan-400 transition-colors">Plank</div>
@@ -327,23 +388,23 @@
           </div>
         </div>
 
-        <!-- REAL-TIME FORM & ENCOURAGEMENT LOG -->
+        <!-- INITIAL CONFIGURATION & SYSTEM LOG -->
         <div class="glass glass-card rounded-3xl p-5">
           <div class="flex items-center justify-between mb-3 px-1">
             <div class="flex items-center gap-2">
-              <div class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></div>
-              <div class="font-bold text-sm">Encouragement &amp; Form Feedback</div>
-              <span class="text-white/40 text-xs hidden sm:inline">(Live Coach Feed)</span>
+              <div class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse"></div>
+              <div class="font-bold text-sm">System &amp; Configuration Log</div>
+              <span class="text-white/40 text-xs hidden sm:inline">(Initialization)</span>
             </div>
-            <button onclick="clearLog()"
+            <button onclick="clearSystemLog()"
               class="text-xs px-3 py-1 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 active:scale-95 transition-all">
-              Clear Log
+              Clear
             </button>
           </div>
 
-          <div id="formLog"
-            class="h-44 sm:h-48 overflow-y-auto bg-black/40 rounded-2xl p-3.5 text-xs font-mono space-y-1.5 border border-white/10">
-            <div class="text-white/30 italic">Ready for live telemetry messages from the robot...</div>
+          <div id="systemLog"
+            class="h-40 sm:h-44 overflow-y-auto bg-black/40 rounded-2xl p-3.5 text-xs font-mono space-y-1.5 border border-white/10">
+            <div class="text-white/30 italic">System &amp; Configuration Log initialized.</div>
           </div>
         </div>
 
@@ -354,74 +415,7 @@
       <!-- ===================================================================== -->
       <div id="stepsView" class="hidden space-y-4">
 
-        <!-- 1. TOP CONFIGURATION FOR BOTH VIDEO AND WRISTBAND -->
-        <div class="glass glass-card rounded-3xl p-4 sm:p-5">
-          <div class="flex items-center justify-between mb-3 px-1">
-            <div class="flex items-center gap-2">
-              <span class="text-cyan-400">⚙️</span>
-              <span class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-white">Hardware &amp; Stream
-                Configuration</span>
-            </div>
-            <button onclick="toggleConfigDrawer()" id="configToggleBtn"
-              class="text-xs px-2.5 py-1 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 text-white/70 flex items-center gap-1 transition-all">
-              <span id="configToggleText">Hide Settings</span>
-              <span id="configToggleArrow">▴</span>
-            </button>
-          </div>
-
-          <div id="configDrawer" class="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-            <!-- Video Stream Config -->
-            <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
-              <div class="flex items-center justify-between">
-                <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📹 Video Stream URL</span>
-                <span class="text-[10px] text-white/40">MJPEG Camera</span>
-              </div>
-              <div class="flex gap-2">
-                <input id="cameraUrl" type="text" placeholder="http://fitness.local:8081/stream"
-                  class="flex-1 bg-black/50 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-cyan-400">
-                <button onclick="setCameraStream()"
-                  class="px-3.5 py-2 rounded-xl bg-cyan-500 text-black font-bold text-xs hover:bg-cyan-400 active:scale-95 transition-all">
-                  Update
-                </button>
-              </div>
-              <div class="flex flex-wrap gap-1.5 pt-0.5">
-                <span class="text-[10px] text-white/40 self-center">Presets:</span>
-                <button onclick="setCameraPreset('http://fitness.local:8081/stream')"
-                  class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">fitness.local</button>
-                <button onclick="setCameraPreset('http://192.168.1.100:8081/stream')"
-                  class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">192.168.1.100</button>
-                <button onclick="setCameraPreset('http://localhost:8081/stream')"
-                  class="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-white/70">localhost</button>
-              </div>
-            </div>
-
-            <!-- Wristband BLE Config -->
-            <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2 flex flex-col justify-between">
-              <div>
-                <div class="flex items-center justify-between mb-2">
-                  <span class="text-[11px] font-bold uppercase tracking-wider text-emerald-400">⌚ ESP32 Wristband</span>
-                  <span id="stepStatusBadge" class="step-status disconnected">Disconnected</span>
-                </div>
-                <button id="stepConnectBtn" onclick="toggleStepConnection()"
-                  class="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
-                  Connect to Tracker
-                </button>
-              </div>
-              <div class="grid grid-cols-4 gap-1.5 pt-1">
-                <button class="step-action-btn !py-1 !text-[10px]" onclick="syncStepTime()" title="Sync Time">🕒
-                  Sync</button>
-                <button class="step-action-btn !py-1 !text-[10px]" onclick="requestStepData()" title="Get Data">📥
-                  Get</button>
-                <button class="step-action-btn !py-1 !text-[10px]" onclick="resetStepCount()" title="Reset Count">🔄
-                  Reset</button>
-                <button class="step-action-btn !py-1 !text-[10px]" onclick="exportStepData()" title="Export CSV">📊
-                  CSV</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 2. FITNESS SUB-TAB SELECTION -->
+        <!-- 1. FITNESS SUB-TAB SELECTION -->
         <div class="fitness-subtabs-bar">
           <button id="btnSubtabExercises" onclick="switchFitnessSubtab('exercises')"
             class="subtab-btn subtab-btn-active">
@@ -439,21 +433,43 @@
         <!-- ================================================================= -->
         <div id="subtabExercisesView" class="space-y-4">
 
-          <!-- 1. Robot Camera and Vision -->
+          <!-- 1. Separate Robot Status Card (Above Target Routine) -->
           <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-10 h-10 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-xl">
+                  🤖
+                </div>
+                <div>
+                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide">AI Vision Robot</h3>
+                </div>
+              </div>
+              <div id="robotState" class="px-3 py-1 rounded-full text-xs font-bold" data-state="STOPPED">STOPPED</div>
+            </div>
+          </div>
+
+          <!-- 2. Robot Camera and Vision (Appears above dropdown when camera is turned on) -->
+          <div id="cameraViewCard" class="hidden glass glass-card rounded-3xl p-4 sm:p-5">
             <div class="flex items-center justify-between mb-3 px-1">
               <div class="flex items-center gap-2 font-bold text-sm sm:text-base">
                 <span class="text-cyan-400">📹</span>
                 <span>Robot Camera &amp; Vision</span>
               </div>
-              <button onclick="toggleCameraFullscreen()" title="Fullscreen Feed"
-                class="p-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-white/80 transition-all">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4">
-                  </path>
-                </svg>
-              </button>
+              <div class="flex items-center gap-2">
+                <button onclick="toggleCameraView()" title="Turn off camera view"
+                  class="p-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-white/80 transition-all">
+                  ✕
+                </button>
+                <button onclick="toggleCameraFullscreen()" title="Fullscreen Feed"
+                  class="p-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs text-white/80 transition-all">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4">
+                    </path>
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <!-- Video Stream Container -->
@@ -477,46 +493,35 @@
             </div>
           </div>
 
-          <!-- 2. 4 Exercise Selection Buttons -->
-          <div class="glass glass-card rounded-3xl p-5">
-            <div class="text-xs font-extrabold uppercase tracking-widest text-cyan-400 mb-1">Target Routine</div>
-            <h2 class="text-base font-bold text-white mb-3">Select Exercise Mode</h2>
-            <div class="mode-grid">
-              <button onclick="switchMode('bicep_curls')" class="mode-btn group">
-                <div class="mode-icon">💪</div>
-                <div class="mode-text-wrapper">
-                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Bicep Curls</div>
-                  <div class="mode-desc">Left &amp; Right arm tracking</div>
-                </div>
+          <!-- 3. Camera Trigger Button (Left) & Exercise Mode Dropdown -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="text-xs font-extrabold uppercase tracking-widest text-cyan-400 mb-2">Target Routine</div>
+            <div class="flex items-center gap-2.5">
+              <!-- Camera Trigger Button -->
+              <button id="cameraToggleBtn" onclick="toggleCameraView()" title="Turn Camera On / Off"
+                class="h-12 w-12 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/15 flex items-center justify-center text-lg text-white/80 hover:text-cyan-400 active:scale-95 transition-all flex-shrink-0 shadow-md">
+                <span id="cameraToggleIcon">📹</span>
               </button>
 
-              <button onclick="switchMode('pushups')" class="mode-btn group">
-                <div class="mode-icon">🧘</div>
-                <div class="mode-text-wrapper">
-                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Push-ups</div>
-                  <div class="mode-desc">Chest depth &amp; spine alignment</div>
+              <!-- Exercise Mode Dropdown (Replaces target routine buttons) -->
+              <div class="relative flex-1">
+                <select id="fitnessExerciseSelect" onchange="onExerciseSelectChange(this.value)"
+                  class="w-full h-12 bg-black/40 hover:bg-black/50 border border-white/15 focus:border-cyan-400 rounded-2xl px-4 py-2.5 text-sm sm:text-base font-bold text-white focus:outline-none appearance-none cursor-pointer transition-all shadow-md pr-10">
+                  <option value="bicep_curls" class="bg-[#0f1422] text-white">💪 Bicep Curls</option>
+                  <option value="pushups" class="bg-[#0f1422] text-white">🧘 Push-ups</option>
+                  <option value="squats" class="bg-[#0f1422] text-white">🏋️ Squats</option>
+                  <option value="plank" class="bg-[#0f1422] text-white">⏱️ Plank</option>
+                </select>
+                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3.5 text-white/50">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                  </svg>
                 </div>
-              </button>
-
-              <button onclick="switchMode('squats')" class="mode-btn group">
-                <div class="mode-icon">🏋️</div>
-                <div class="mode-text-wrapper">
-                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Squats</div>
-                  <div class="mode-desc">Hip crease &amp; knee tracking</div>
-                </div>
-              </button>
-
-              <button onclick="switchMode('plank')" class="mode-btn group">
-                <div class="mode-icon">⏱️</div>
-                <div class="mode-text-wrapper">
-                  <div class="mode-title group-hover:text-cyan-400 transition-colors">Plank</div>
-                  <div class="mode-desc">Core elevation &amp; timer</div>
-                </div>
-              </button>
+              </div>
             </div>
           </div>
 
-          <!-- 3. Two Buttons Start and Stop Side by Side -->
+          <!-- 4. Two Buttons Start and Stop Side by Side -->
           <div class="grid grid-cols-2 gap-3">
             <!-- Start Detecting Button -->
             <button id="startExerciseBtn" onclick="sendStartExercise()"
@@ -533,23 +538,17 @@
             </button>
           </div>
 
-          <!-- 4. Current Workout Card -->
+          <!-- 5. Current Workout Details Card -->
           <div class="glass glass-card rounded-3xl p-5 sm:p-6">
-            <!-- State Header -->
-            <div class="flex items-center justify-between pb-3 border-b border-white/10">
-              <div class="text-[11px] font-bold uppercase tracking-wider text-white/50">ROBOT STATUS</div>
-              <div id="robotState" class="px-3 py-1 rounded-full text-xs font-bold" data-state="STOPPED">STOPPED</div>
-            </div>
-
             <!-- Exercise Name Badge -->
-            <div class="mt-4">
+            <div>
               <div class="text-[10px] font-bold uppercase tracking-widest text-cyan-400">Current Routine</div>
               <div id="currentWorkout" class="text-2xl sm:text-3xl font-extrabold tracking-tight mt-0.5 text-white">—
               </div>
             </div>
 
             <!-- Set & Reps Dual Card -->
-            <div class="grid grid-cols-2 gap-3 mt-4">
+            <div id="repsAndSetsBox" class="grid grid-cols-2 gap-3 mt-4">
               <div class="p-3.5 rounded-2xl bg-black/30 border border-white/10">
                 <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">CURRENT SET</div>
                 <div id="currentSet" class="text-4xl sm:text-5xl font-black tabular-nums text-white mt-1">—</div>
@@ -561,13 +560,34 @@
               </div>
             </div>
 
-            <!-- Plank Hold Timer Box -->
-            <div class="mt-3 p-3.5 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-between">
+            <!-- Plank Hold Timer Box (Appears when plank is selected; hidden in other times) -->
+            <div id="plankTimeBox"
+              class="hidden mt-3 p-3.5 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-between">
               <div>
                 <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">PLANK HOLD TIME</div>
                 <div id="plankTime" class="font-mono text-3xl font-bold tabular-nums text-cyan-400 mt-0.5">—</div>
               </div>
               <div class="text-3xl opacity-30">⏱️</div>
+            </div>
+          </div>
+
+          <!-- 6. Robot Exercise Log (Live exercise-related logs) -->
+          <div class="glass glass-card rounded-3xl p-5">
+            <div class="flex items-center justify-between mb-3 px-1">
+              <div class="flex items-center gap-2">
+                <div class="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></div>
+                <div class="font-bold text-sm">Robot &amp; Exercise Log</div>
+                <span class="text-white/40 text-xs hidden sm:inline">(Live Coach Feed)</span>
+              </div>
+              <button onclick="clearExerciseLog()"
+                class="text-xs px-3 py-1 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 active:scale-95 transition-all">
+                Clear
+              </button>
+            </div>
+
+            <div id="exerciseLog"
+              class="h-44 sm:h-48 overflow-y-auto bg-black/40 rounded-2xl p-3.5 text-xs font-mono space-y-1.5 border border-white/10">
+              <div class="text-white/30 italic">Ready for exercise tracking and form feedback...</div>
             </div>
           </div>
 
@@ -577,6 +597,26 @@
         <!-- SUB-TAB 2: STEPS VIEW -->
         <!-- ================================================================= -->
         <div id="subtabStepsView" class="hidden space-y-4">
+
+          <!-- 1. Smartwatch Status Card -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-xl">
+                  ⌚
+                </div>
+                <div>
+                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide">Smartwatch</h3>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 border border-white/10">
+                <span id="fitnessWatchStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                <span id="fitnessWatchStatusText"
+                  class="text-xs sm:text-sm font-extrabold tracking-wide text-red-400">OFFLINE</span>
+              </div>
+            </div>
+          </div>
 
           <!-- Step Count, Calories, Distance, Active Min Card -->
           <section class="glass glass-card rounded-3xl p-5 sm:p-6">
@@ -647,104 +687,131 @@
       <!-- ===================================================================== -->
       <div id="analyticsView" class="hidden space-y-4">
 
-        <!-- Profile Header Card (Name, then Email) -->
-        <div class="glass glass-card rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div class="flex items-center gap-4">
+        <!-- 1. Profile Header Card -->
+        <div class="glass glass-card rounded-3xl p-5 relative">
+          <!-- Edit button on top right corner with white icon -->
+          <div class="absolute top-4 right-4 flex items-center gap-2">
+            <button onclick="editProfileName()" title="Edit Name"
+              class="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 text-white flex items-center justify-center transition-all active:scale-95"
+              aria-label="Edit Name">
+              <svg class="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Profile Photo on Left, Rest on Right, Side by Side -->
+          <div class="flex items-center gap-4 sm:gap-5 pr-14 sm:pr-16">
+            <!-- Left: Profile Photo -->
             <div
-              class="w-14 h-14 rounded-2xl bg-gradient-to-tr from-cyan-400 to-emerald-400 p-[2px] shadow-lg shadow-cyan-500/20 flex-shrink-0">
+              class="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-cyan-400 to-emerald-400 p-[2px] shadow-lg shadow-cyan-500/20 flex-shrink-0">
               <div
-                class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center font-bold text-lg text-cyan-400"
+                class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center font-black text-lg sm:text-xl text-cyan-400"
                 id="profileAvatar">
                 FR
               </div>
             </div>
-            <div>
-              <div class="flex items-center gap-2">
-                <h2 id="profileName" class="text-xl sm:text-2xl font-black text-white tracking-tight">Athlete User
-                </h2>
-                <button onclick="editProfileName()" title="Edit Name"
-                  class="text-xs text-white/40 hover:text-cyan-400 transition-colors p-1">
-                  ✏️
-                </button>
-                <!-- <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-bold">ACTIVE</span> -->
+
+            <!-- Right: Details -->
+            <div class="flex-1 min-w-0">
+              <h2 id="profileName" class="text-lg sm:text-2xl font-black text-white tracking-tight truncate">Athlete
+                User</h2>
+              <div id="profileEmail" class="text-xs text-white/60 font-mono mt-0.5 truncate">coach@fitness.com</div>
+              <div class="flex items-center gap-2 mt-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span class="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Active Member</span>
               </div>
-              <div id="profileEmail" class="text-xs text-white/60 font-mono mt-0.5">coach@fitness.com</div>
             </div>
           </div>
-
-          <button onclick="logout()"
-            class="self-start sm:self-auto px-4 py-2 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 active:scale-95 text-xs font-semibold text-white/80 transition-all flex items-center gap-2">
-            <span>🚪</span>
-            <span>Sign Out</span>
-          </button>
         </div>
 
-        <!-- WEEKLY SESSION HISTORY & DATE SELECTOR (Brought to Top) -->
+        <!-- 2. Performance Metrics Header -->
         <div
-          class="text-xs font-bold uppercase tracking-wider text-white/40 mb-2 px-1 flex items-center justify-between">
+          class="text-xs font-bold uppercase tracking-wider text-white/40 mb-1 px-1 flex items-center justify-between">
           <span id="kpiSectionTitle">Performance Metrics</span>
         </div>
 
-        <div class="glass glass-card rounded-3xl p-5 space-y-3.5">
-          <!-- First date in full format with 2 arrow symbols beside the date name -->
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
-            <div class="flex items-center gap-2 sm:gap-3">
-              <button onclick="changeSelectedDate(-1)"
-                class="w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/15 active:scale-95 flex items-center justify-center text-base font-bold text-white transition-all"
-                title="Previous Day">
-                ‹
-              </button>
-              <div>
-                <div id="selectedDateFullText" class="text-base sm:text-lg font-extrabold text-white tracking-tight">
-                  Today
-                </div>
-                <div class="text-[11px] text-white/40">Workouts &amp; metrics for selected date</div>
-              </div>
-              <button onclick="changeSelectedDate(1)"
-                class="w-8 h-8 rounded-xl bg-white/5 border border-white/10 hover:bg-white/15 active:scale-95 flex items-center justify-center text-base font-bold text-white transition-all"
-                title="Next Day">
-                ›
-              </button>
+        <!-- 3. Date Card -->
+        <div class="glass glass-card rounded-3xl p-5 space-y-4">
+          <!-- Top Row: Unboxed arrows & Boxed Date with Calendar Icon -->
+          <div class="flex items-center justify-between">
+            <!-- Left Arrow (Unboxed) -->
+            <button id="prevDateBtn" onclick="changeSelectedDate(-1)"
+              class="p-2 text-white/70 hover:text-white transition-colors active:scale-95 disabled:opacity-20 disabled:pointer-events-none"
+              title="Previous Day">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+
+            <!-- Boxed Date: Calendar Icon on Left, Date on Right -->
+            <div
+              class="flex items-center gap-2.5 px-4 sm:px-6 py-2.5 rounded-2xl bg-black/40 border border-white/15 shadow-inner">
+              <span class="text-base text-cyan-400">📅</span>
+              <span id="selectedDateFullText"
+                class="text-sm sm:text-base font-extrabold text-white tracking-tight">Today</span>
             </div>
 
-            <div class="flex items-center gap-2 self-end sm:self-auto">
-              <button onclick="selectToday()"
-                class="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-xs font-semibold text-cyan-400 active:scale-95 transition-all">
-                Today
-              </button>
-              <button onclick="generateDemoData()"
-                class="px-3 py-1.5 rounded-xl bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/30 text-xs font-semibold active:scale-95 transition-all">
-                Demo Data
-              </button>
-            </div>
+            <!-- Right Arrow (Unboxed) -->
+            <button id="nextDateBtn" onclick="changeSelectedDate(1)"
+              class="p-2 text-white/70 hover:text-white transition-colors active:scale-95 disabled:opacity-20 disabled:pointer-events-none"
+              title="Next Day">
+              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
           </div>
 
-          <!-- Week format: Day name, Under that date in number format -->
+          <!-- Below it: Day names (No line separation above) -->
           <div>
-            <div class="text-[10px] font-bold uppercase tracking-wider text-white/40 mb-2">WEEK SCHEDULE</div>
             <div id="weekDaysStrip" class="grid grid-cols-7 gap-1.5 sm:gap-2"></div>
+          </div>
+
+          <!-- Separator Line, then Today and Week buttons -->
+          <div class="border-t border-white/10 pt-3.5">
+            <div class="grid grid-cols-2 gap-2.5 max-w-xs mx-auto">
+              <button id="viewModeTodayBtn" onclick="setViewMode('today')"
+                class="py-2.5 rounded-2xl border border-cyan-400/50 bg-cyan-500/15 text-cyan-400 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center">
+                Today
+              </button>
+              <button id="viewModeWeekBtn" onclick="setViewMode('week')"
+                class="py-2.5 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center">
+                This Week
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- 4 EXERCISE / KPI BLOCKS (Change based on selected date) -->
+        <!-- 4. Synced Steps Metric Card (Above Reps KPI blocks) -->
+        <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-[10px] font-bold uppercase tracking-wider text-amber-400">Steps Synced</div>
+              <div id="profileStepsCount" class="text-2xl sm:text-3xl font-black text-white tabular-nums mt-0.5">—</div>
+            </div>
+            <div class="text-right">
+              <div class="text-2xl">👟</div>
+              <div id="profileStepsPeriod" class="text-xs font-semibold text-white/50">Today</div>
+              <div id="profileStepsSub" class="text-[11px] text-white/40 mt-0.5">Smartwatch</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. KPI BLOCKS (Reps, Plank, Form Accuracy) -->
         <div>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
             <div class="glass glass-card rounded-3xl p-4 sm:p-5">
               <div class="text-[10px] font-bold uppercase tracking-wider text-cyan-400">Total Reps</div>
               <div id="kpiTotalReps" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
-              <div class="text-[10px] text-white/40 mt-1" id="kpiRepsBreakdown">Curls • Pushups • Squats</div>
+              <div class="text-[10px] text-white/40 mt-1" id="kpiRepsBreakdown">Bicep Curls • Pushups • Squats</div>
             </div>
 
             <div class="glass glass-card rounded-3xl p-4 sm:p-5">
               <div class="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Plank Time</div>
               <div id="kpiPlankTime" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
               <div class="text-[10px] text-white/40 mt-1" id="kpiPlankSub">Core Elevation Hold</div>
-            </div>
-
-            <div class="glass glass-card rounded-3xl p-4 sm:p-5">
-              <div class="text-[10px] font-bold uppercase tracking-wider text-amber-400">Steps Walked</div>
-              <div id="kpiSteps" class="text-3xl sm:text-4xl font-black mt-1.5 tabular-nums text-white">—</div>
-              <div class="text-[10px] text-white/40 mt-1" id="kpiStepsSub">Smart Watch Synced</div>
             </div>
 
             <div class="glass glass-card rounded-3xl p-4 sm:p-5">
@@ -755,13 +822,12 @@
           </div>
         </div>
 
-        <!-- CHARTS GRID (Change based on selected date) -->
+        <!-- 6. CHARTS GRID -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
           <!-- Reps Breakdown Chart -->
           <div class="glass glass-card rounded-3xl p-4 sm:p-5">
             <div class="text-sm font-bold mb-3 flex items-center justify-between">
-              <span>Exercise Breakdown</span>
+              <span>Exercise Statistics</span>
               <span class="text-xs text-cyan-400 font-mono" id="chartRepsDateBadge">Selected Date</span>
             </div>
             <div class="relative w-full h-[220px]">
@@ -790,22 +856,102 @@
               <canvas id="formChart"></canvas>
             </div>
           </div>
+        </div>
 
+        <!-- 7. Clear History & Share Snapshot Buttons Side by Side -->
+        <div class="grid grid-cols-2 gap-3 pt-1">
+          <button id="clearHistoryBtn" onclick="clearWorkoutHistory()"
+            class="py-3 px-4 rounded-2xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-xs sm:text-sm font-bold text-red-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16">
+              </path>
+            </svg>
+            <span>Clear History</span>
+          </button>
+
+          <button id="shareSnapshotBtn" onclick="shareWorkoutSnapshot()"
+            class="py-3 px-4 rounded-2xl bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-xs sm:text-sm font-bold text-cyan-300">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z">
+              </path>
+            </svg>
+            <span>Share Snapshot</span>
+          </button>
+        </div>
+
+        <!-- 8. Sign Out Button (Below Clear History & Share Snapshot) -->
+        <div class="pt-2">
+          <button onclick="logout()"
+            class="w-full py-3.5 px-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/15 active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-xs sm:text-sm font-bold text-white/80 hover:text-white">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            <span>Sign Out</span>
+          </button>
+        </div>
+
+        <!-- 9. Delete Account Button (Below Sign Out) -->
+        <div class="pt-2 pb-6">
+          <button onclick="deleteAccount()"
+            class="w-full py-3 px-4 rounded-2xl bg-red-600/15 hover:bg-red-600/25 border border-red-500/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 text-xs sm:text-sm font-bold text-red-400 hover:text-red-300">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            <span>Delete Account</span>
+          </button>
         </div>
 
       </div>
-
     </div>
+
   </main>
 
   <!-- ========================================================================= -->
-  <!-- MOBILE FLOATING EMERGENCY FORCE STOP (Visible on small screens) -->
+  <!-- WORKOUT SNAPSHOT MODAL (Image / PDF Export) -->
   <!-- ========================================================================= -->
-  <button id="mobileForceStopBtn" onclick="sendForceStop()" class="mobile-fab-force-stop hidden"
-    title="Emergency Robot Force Stop">
-    <span>⛔</span>
-    <span>EMERGENCY STOP</span>
-  </button>
+  <div id="snapshotModal" class="hidden fixed inset-0 z-[150] flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+    <div class="relative w-full max-w-md bg-[#0a0d18] border border-white/15 rounded-3xl p-5 sm:p-6 shadow-2xl flex flex-col max-h-[92vh]">
+      <!-- Header -->
+      <div class="flex items-center justify-between pb-3 mb-3 border-b border-white/10">
+        <div class="flex items-center gap-2.5">
+          <span class="text-xl">📸</span>
+          <div>
+            <h3 class="text-sm sm:text-base font-extrabold text-white">Workout Snapshot</h3>
+            <p class="text-[11px] text-white/50">Export as Image or PDF</p>
+          </div>
+        </div>
+        <button onclick="closeSnapshotModal()" class="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition-all" title="Close">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Preview Image -->
+      <div class="flex-1 overflow-y-auto rounded-2xl bg-black/60 border border-white/10 p-2 flex items-center justify-center min-h-[220px]">
+        <img id="snapshotPreviewImg" class="max-w-full max-h-[46vh] rounded-xl object-contain shadow-md" alt="Workout Snapshot Preview" />
+      </div>
+
+      <!-- Actions -->
+      <div class="grid grid-cols-2 gap-2.5 mt-4">
+        <button id="snapshotShareImgBtn" onclick="triggerSnapshotImageShare()"
+          class="py-3 px-3.5 rounded-2xl bg-gradient-to-r from-cyan-400 to-emerald-400 text-black font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 active:scale-95 transition-all">
+          <span>🖼️</span>
+          <span>Share Image</span>
+        </button>
+
+        <button id="snapshotPdfBtn" onclick="triggerSnapshotPdfExport()"
+          class="py-3 px-3.5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 active:scale-95 transition-all">
+          <span>📄</span>
+          <span>Save as PDF</span>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- ========================================================================= -->
   <!-- MOBILE BOTTOM NAVIGATION (Visible on small screens) -->

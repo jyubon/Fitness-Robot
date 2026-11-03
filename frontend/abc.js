@@ -109,13 +109,73 @@ async function logout() {
   document.getElementById('authView').classList.remove('hidden');
   const userChip = document.getElementById('userInfo');
   if (userChip) userChip.classList.add('hidden');
-  document.getElementById('forceStopBtn').classList.add('hidden');
-  document.getElementById('batteryIndicator').classList.add('hidden');
+  const forceStop = document.getElementById('forceStopBtn');
+  if (forceStop) forceStop.classList.add('hidden');
+  const batt = document.getElementById('batteryIndicator');
+  if (batt) batt.classList.add('hidden');
+  const cfgBtn = document.getElementById('configMenuBtn');
+  if (cfgBtn) cfgBtn.classList.add('hidden');
+  const cfgDrawer = document.getElementById('configDrawer');
+  if (cfgDrawer) cfgDrawer.classList.add('hidden');
 
   const mobileNav = document.getElementById('mobileNavBar');
   if (mobileNav) mobileNav.classList.add('hidden');
-  const mobileStop = document.getElementById('mobileForceStopBtn');
-  if (mobileStop) mobileStop.classList.add('hidden');
+}
+
+async function deleteAccount() {
+  if (!auth || !auth.currentUser) {
+    alert('No active user logged in.');
+    return;
+  }
+  const confirmation = confirm('Are you sure you want to delete your account? All your workout history, profile details, and smartwatch logs will be permanently erased. This cannot be undone.');
+  if (!confirmation) return;
+
+  const doubleCheck = prompt('To confirm permanent deletion, type DELETE:');
+  if (doubleCheck !== 'DELETE') {
+    alert('Account deletion cancelled: confirmation input did not match "DELETE".');
+    return;
+  }
+
+  const user = auth.currentUser;
+  const uid = user.uid;
+
+  try {
+    if (db) {
+      const subcollections = ['daily_aggregates', 'sessions', 'watch_data', 'control_commands'];
+      for (const coll of subcollections) {
+        try {
+          const snap = await db.collection('users').doc(uid).collection(coll).get();
+          if (!snap.empty) {
+            const batch = db.batch();
+            snap.forEach(doc => batch.delete(doc.ref));
+            await batch.commit();
+          }
+        } catch (subErr) {
+          console.warn(`Could not delete collection ${coll}:`, subErr);
+        }
+      }
+
+      try {
+        await db.collection('users').doc(uid).delete();
+      } catch (docErr) {
+        console.warn('Could not delete user document:', docErr);
+      }
+    }
+
+    localStorage.removeItem('fitness_robot_profile_name');
+    localStorage.removeItem('fitness_robot_profile_avatar');
+
+    await user.delete();
+    alert('Your account has been deleted permanently.');
+    await logout();
+  } catch (err) {
+    console.error('Delete account failed:', err);
+    if (err.code === 'auth/requires-recent-login') {
+      alert('Security requirement: Please sign out, log back in, and then delete your account.');
+    } else {
+      alert('Error deleting account: ' + (err.message || err));
+    }
+  }
 }
 
 async function ensureUserDocument(user) {
@@ -169,6 +229,9 @@ function showAppView(email) {
   const batteryInd = document.getElementById('batteryIndicator');
   if (batteryInd) batteryInd.classList.remove('hidden');
 
+  const configBtn = document.getElementById('configMenuBtn');
+  if (configBtn) configBtn.classList.remove('hidden');
+
   const mobileNav = document.getElementById('mobileNavBar');
   if (mobileNav) mobileNav.classList.remove('hidden');
 
@@ -196,15 +259,29 @@ function setRobotConnectionStatus(isOnline) {
 function setWatchConnectionStatus(isOnline) {
   const dot = document.getElementById('watchStatusDot');
   const text = document.getElementById('watchStatusText');
-  if (!text) return;
-  if (isOnline) {
-    text.textContent = 'ONLINE';
-    text.className = 'text-sm sm:text-base font-extrabold tracking-wide text-emerald-400';
-    if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
-  } else {
-    text.textContent = 'OFFLINE';
-    text.className = 'text-sm sm:text-base font-extrabold tracking-wide text-red-400';
-    if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-red-400';
+  const fDot = document.getElementById('fitnessWatchStatusDot');
+  const fText = document.getElementById('fitnessWatchStatusText');
+  const drawerBtn = document.getElementById('stepConnectBtn');
+
+  [{ dot, text }, { dot: fDot, text: fText }].forEach(item => {
+    if (!item.text) return;
+    if (isOnline) {
+      item.text.textContent = 'ONLINE';
+      item.text.className = item.text.id === 'fitnessWatchStatusText'
+        ? 'text-xs sm:text-sm font-extrabold tracking-wide text-emerald-400'
+        : 'text-sm sm:text-base font-extrabold tracking-wide text-emerald-400';
+      if (item.dot) item.dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
+    } else {
+      item.text.textContent = 'OFFLINE';
+      item.text.className = item.text.id === 'fitnessWatchStatusText'
+        ? 'text-xs sm:text-sm font-extrabold tracking-wide text-red-400'
+        : 'text-sm sm:text-base font-extrabold tracking-wide text-red-400';
+      if (item.dot) item.dot.className = 'w-2.5 h-2.5 rounded-full bg-red-400';
+    }
+  });
+
+  if (drawerBtn) {
+    drawerBtn.textContent = isOnline ? 'Disconnect' : 'Connect to Tracker';
   }
 }
 
@@ -305,6 +382,7 @@ function firebaseAuthMessage(error) {
 // ---------- Fitness Sub-tabs & Configuration Drawer ----------
 
 let currentFitnessSubtab = 'exercises';
+let isCameraActive = false;
 
 function switchFitnessSubtab(subtab) {
   currentFitnessSubtab = subtab;
@@ -324,7 +402,9 @@ function switchFitnessSubtab(subtab) {
       btnSteps.classList.remove('subtab-btn-active');
       btnSteps.classList.add('text-white/60');
     }
-    startCameraStreamIfNeeded();
+    if (isCameraActive) {
+      startCameraStreamIfNeeded();
+    }
   } else {
     if (exercisesView) exercisesView.classList.add('hidden');
     if (stepsView) stepsView.classList.remove('hidden');
@@ -342,13 +422,71 @@ function switchFitnessSubtab(subtab) {
 
 function toggleConfigDrawer() {
   const drawer = document.getElementById('configDrawer');
-  const txt = document.getElementById('configToggleText');
-  const arrow = document.getElementById('configToggleArrow');
   if (!drawer) return;
   drawer.classList.toggle('hidden');
-  const isHidden = drawer.classList.contains('hidden');
-  if (txt) txt.textContent = isHidden ? 'Show Settings' : 'Hide Settings';
-  if (arrow) arrow.textContent = isHidden ? '▾' : '▴';
+}
+
+function toggleCameraView(forceState) {
+  const card = document.getElementById('cameraViewCard');
+  const btn = document.getElementById('cameraToggleBtn');
+  if (!card) return;
+
+  if (typeof forceState === 'boolean') {
+    isCameraActive = forceState;
+  } else {
+    isCameraActive = card.classList.contains('hidden');
+  }
+
+  if (isCameraActive) {
+    card.classList.remove('hidden');
+    if (btn) btn.classList.add('camera-btn-active');
+    startCameraStreamIfNeeded();
+  } else {
+    card.classList.add('hidden');
+    if (btn) btn.classList.remove('camera-btn-active');
+  }
+}
+
+function onExerciseSelectChange(value) {
+  switchMode(value);
+}
+
+function selectExerciseFromHome(mode, btn) {
+  if (btn) {
+    btn.classList.add('selecting-highlight');
+    setTimeout(() => {
+      btn.classList.remove('selecting-highlight');
+    }, 250);
+  }
+  showTab('steps');
+  switchFitnessSubtab('exercises');
+  switchMode(mode);
+}
+
+function syncExerciseUI(exercise) {
+  if (!exercise) return;
+  const currentWorkoutEl = document.getElementById('currentWorkout');
+  if (currentWorkoutEl) currentWorkoutEl.textContent = formatExercise(exercise);
+
+  const heroRoutine = document.getElementById('homeHeroRoutine');
+  if (heroRoutine) heroRoutine.textContent = formatExercise(exercise);
+
+  const select = document.getElementById('fitnessExerciseSelect');
+  if (select && select.value !== exercise) {
+    select.value = exercise;
+  }
+
+  // Show plank time when plank is selected; in other times keep only reps and sets
+  const plankBox = document.getElementById('plankTimeBox');
+  if (plankBox) {
+    if (exercise === 'plank') {
+      plankBox.classList.remove('hidden');
+    } else {
+      plankBox.classList.add('hidden');
+    }
+  }
+
+  updateModeButtons(exercise);
 }
 
 // ---------- Tabs ----------
@@ -362,7 +500,8 @@ function showTab(tab) {
   const btnAnalytics = document.getElementById('tab-analytics');
   const btnStart = document.getElementById('startExerciseBtn');
   const forceStopBtn = document.getElementById('forceStopBtn');
-  const mobileStopBtn = document.getElementById('mobileForceStopBtn');
+  const configMenuBtn = document.getElementById('configMenuBtn');
+  const configDrawer = document.getElementById('configDrawer');
 
   // Both Start Detecting Button and Emergency Stop button only appear in Fitness section ('steps')
   if (btnStart) {
@@ -373,13 +512,22 @@ function showTab(tab) {
     }
   }
 
-  // Emergency stop buttons (desktop header & mobile floating) only appear in Fitness section ('steps')
-  if (tab === 'steps') {
-    if (forceStopBtn) forceStopBtn.classList.remove('hidden');
-    if (mobileStopBtn) mobileStopBtn.classList.remove('hidden');
-  } else {
-    if (forceStopBtn) forceStopBtn.classList.add('hidden');
-    if (mobileStopBtn) mobileStopBtn.classList.add('hidden');
+  // Emergency stop button only appears in Fitness section ('steps')
+  if (forceStopBtn) {
+    if (tab === 'steps') {
+      forceStopBtn.classList.remove('hidden');
+    } else {
+      forceStopBtn.classList.add('hidden');
+    }
+  }
+
+  // Configuration button in menu is enabled for all tabs
+  if (configMenuBtn) {
+    configMenuBtn.classList.remove('hidden');
+  }
+  // Dismiss open config popup when navigating tabs
+  if (configDrawer) {
+    configDrawer.classList.add('hidden');
   }
 
   // Sync all tab buttons (both desktop and mobile bottom nav)
@@ -449,7 +597,7 @@ function connectRealtime() {
           handleTelemetryMessage(msg);
         }
       });
-    }, (error) => appendLog(`Telemetry listener failed: ${error.message}`, true));
+    }, (error) => appendSystemLog(`Telemetry listener failed: ${error.message}`, true));
 
   const today = dateKey(new Date());
   watchUnsubscribe = db.collection('users').doc(currentUserId)
@@ -459,7 +607,7 @@ function connectRealtime() {
       if (doc.exists) handleTelemetryMessage({ type: 'watch_steps', ...doc.data() });
     });
 
-  appendLog('Connected to Firebase telemetry');
+  appendSystemLog('Connected to Firebase telemetry');
 }
 
 function disconnectRealtime() {
@@ -476,14 +624,15 @@ function handleTelemetryMessage(msg) {
   if (type === 'session_start') {
     currentSessionId = msg.session_id || payload.session_id || msg.id;
     currentExercise = msg.exercise_type || payload.exercise_type;
-    document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
-    updateModeButtons(currentExercise);
-    appendLog(`Session started: ${formatExercise(currentExercise)}`);
+    syncExerciseUI(currentExercise);
+    appendExerciseLog(`Session started: ${formatExercise(currentExercise)}`);
     return;
   }
 
   if (type === 'session_end') {
-    appendLog(`Session ended. Active: ${Number(payload.active_duration_s || 0).toFixed(1)}s`);
+    const activeSec = Number(payload.active_duration_s || 0);
+    appendExerciseLog(`Session ended. Active: ${activeSec.toFixed(1)}s`);
+    recordLiveSessionEnd(activeSec);
     currentSessionId = null;
     return;
   }
@@ -491,48 +640,61 @@ function handleTelemetryMessage(msg) {
   if (type === 'robot_state') {
     const pill = document.getElementById('robotState');
     const state = (payload.state || 'STOPPED').toUpperCase();
-    pill.textContent = state;
-    pill.setAttribute('data-state', state);
+    if (pill) {
+      pill.textContent = state;
+      pill.setAttribute('data-state', state);
+    }
     robotState = state;
 
     if (payload.exercise) {
       currentExercise = payload.exercise;
-      document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
-      updateModeButtons(currentExercise);
+      syncExerciseUI(currentExercise);
     } else if (state === 'READY') {
       currentExercise = null;
-      document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
-      updateModeButtons(null);
+      syncExerciseUI(currentExercise);
     }
     return;
   }
 
   if (type === 'rep') {
     currentExercise = payload.exercise || currentExercise;
-    document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
+    syncExerciseUI(currentExercise);
 
     if (payload.set !== undefined) {
-      document.getElementById('currentSet').textContent = payload.set;
+      const setEl = document.getElementById('currentSet');
+      if (setEl) setEl.textContent = payload.set;
     }
 
     if (payload.exercise === 'bicep_curls' && (payload.left !== undefined || payload.right !== undefined)) {
-      document.getElementById('currentReps').textContent = Math.min(payload.left || 0, payload.right || 0);
-      document.getElementById('repsDetail').textContent = `L:${payload.left ?? 0}  R:${payload.right ?? 0}`;
+      const repsEl = document.getElementById('currentReps');
+      const detailEl = document.getElementById('repsDetail');
+      if (repsEl) repsEl.textContent = Math.min(payload.left || 0, payload.right || 0);
+      if (detailEl) detailEl.textContent = `L:${payload.left ?? 0}  R:${payload.right ?? 0}`;
+      recordLiveRep(currentExercise, payload.count, payload.left, payload.right);
     } else {
-      document.getElementById('currentReps').textContent = payload.count ?? payload.reps ?? payload.total ?? 0;
-      document.getElementById('repsDetail').textContent = '';
+      const repCount = payload.count ?? payload.reps ?? payload.total ?? 0;
+      const repsEl = document.getElementById('currentReps');
+      const detailEl = document.getElementById('repsDetail');
+      if (repsEl) repsEl.textContent = repCount;
+      if (detailEl) detailEl.textContent = '';
+      recordLiveRep(currentExercise, repCount);
     }
     return;
   }
 
   if (type === 'plank_time' || type === 'plank') {
     const val = payload.value ?? payload.plank_timer ?? 0;
-    document.getElementById('plankTime').textContent = formatSeconds(val);
+    const plankEl = document.getElementById('plankTime');
+    if (plankEl) plankEl.textContent = formatSeconds(val);
+    recordLivePlank(val);
     return;
   }
 
   if (type === 'form_error' || type === 'encouragement') {
-    appendLog(payload.message || JSON.stringify(payload), true);
+    appendExerciseLog(payload.message || JSON.stringify(payload), true);
+    if (type === 'form_error') {
+      recordLiveFormError();
+    }
     return;
   }
 
@@ -578,19 +740,21 @@ function handleTelemetryMessage(msg) {
   }
 
   if (type === 'set_complete') {
-    appendLog(`Set ${payload.set} complete (${payload.reps ?? '?'} reps)`);
+    appendExerciseLog(`Set ${payload.set} complete (${payload.reps ?? '?'} reps)`);
     return;
   }
 
   if (['pause', 'resume', 'robot_command'].includes(type)) {
-    appendLog(`${type}: ${JSON.stringify(payload)}`);
+    appendExerciseLog(`${type}: ${JSON.stringify(payload)}`);
   }
 }
 
-function appendLog(text, isForm = false) {
-  const container = document.getElementById('formLog');
+// System & Configuration Log (Home Tab)
+function appendSystemLog(text, isError = false) {
+  const container = document.getElementById('systemLog');
+  if (!container) return;
   const entry = document.createElement('div');
-  entry.className = isForm ? 'text-amber-300' : 'text-emerald-300/80';
+  entry.className = isError ? 'text-amber-300 font-semibold' : 'text-emerald-300/80';
   entry.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
   container.appendChild(entry);
   container.scrollTop = container.scrollHeight;
@@ -600,8 +764,39 @@ function appendLog(text, isForm = false) {
   }
 }
 
+function clearSystemLog() {
+  const container = document.getElementById('systemLog');
+  if (container) container.innerHTML = '';
+}
+
+// Robot & Exercise Log (Fitness Tab -> Exercises Subtab)
+function appendExerciseLog(text, isFlaw = false) {
+  const container = document.getElementById('exerciseLog');
+  if (!container) return;
+  const entry = document.createElement('div');
+  entry.className = isFlaw ? 'text-amber-300 font-semibold' : 'text-emerald-300/80';
+  entry.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+  container.appendChild(entry);
+  container.scrollTop = container.scrollHeight;
+
+  while (container.children.length > 60) {
+    container.removeChild(container.firstChild);
+  }
+}
+
+function clearExerciseLog() {
+  const container = document.getElementById('exerciseLog');
+  if (container) container.innerHTML = '';
+}
+
+// Compatibility Aliases
+function appendLog(text, isForm = false) {
+  appendExerciseLog(text, isForm);
+}
+
 function clearLog() {
-  document.getElementById('formLog').innerHTML = '';
+  clearExerciseLog();
+  clearSystemLog();
 }
 
 // ---------- Control ----------
@@ -622,7 +817,7 @@ function connectLocalWebSocket(piIp) {
 
   localControlSocket.onopen = () => {
     console.log("✅ Local WebSocket control channel connected");
-    appendLog("Connected to local robot control channel");
+    appendSystemLog("Connected to local robot control channel");
     setRobotConnectionStatus(true);
     const pill = document.getElementById('robotState');
     if (pill) {
@@ -646,7 +841,7 @@ function connectLocalWebSocket(piIp) {
 
   localControlSocket.onclose = () => {
     console.log("❌ Local WebSocket control channel closed");
-    appendLog("Disconnected from local robot control channel", true);
+    appendSystemLog("Disconnected from local robot control channel", true);
     localControlSocket = null;
     setRobotConnectionStatus(false);
     const pill = document.getElementById('robotState');
@@ -662,20 +857,20 @@ async function sendForceStop() {
 }
 
 async function sendStartExercise() {
+  toggleCameraView(true);
   await sendControlCommand({ action: 'start_exercise' }, 'Start detecting exercise signal sent to robot');
 }
 
 async function switchMode(mode) {
   if (robotState === 'ACTIVE' || robotState === 'LOADING') {
-    appendLog("⚠️ Exercise is currently active. Selection disabled.", true);
+    appendExerciseLog("⚠️ Exercise is currently active. Selection disabled.", true);
+    const select = document.getElementById('fitnessExerciseSelect');
+    if (select && currentExercise) select.value = currentExercise;
     return;
   }
 
   currentExercise = mode;
-  document.getElementById('currentWorkout').textContent = formatExercise(currentExercise);
-  const heroRoutine = document.getElementById('homeHeroRoutine');
-  if (heroRoutine) heroRoutine.textContent = formatExercise(currentExercise);
-  updateModeButtons(currentExercise);
+  syncExerciseUI(currentExercise);
 
   const mapping = {
     bicep_curls: 'BICEP_CURLS',
@@ -691,15 +886,9 @@ async function switchMode(mode) {
 }
 
 function updateModeButtons(exerciseName) {
-  const norm = (exerciseName || '').toLowerCase().replace(/[^a-z]/g, '');
+  // Do not keep home target routine buttons in a selected state (highlight only when selecting)
   document.querySelectorAll('.mode-btn').forEach(btn => {
-    const attr = btn.getAttribute('onclick') || '';
-    const cleanAttr = attr.toLowerCase().replace(/[^a-z]/g, '');
-    if (norm && cleanAttr.includes(norm)) {
-      btn.classList.add('active-mode');
-    } else {
-      btn.classList.remove('active-mode');
-    }
+    btn.classList.remove('active-mode');
   });
 }
 
@@ -711,7 +900,7 @@ async function sendControlCommand(command, successMessage) {
     try {
       localControlSocket.send(JSON.stringify(command));
       sentLocally = true;
-      appendLog(`${successMessage} (Direct Local Connection)`);
+      appendExerciseLog(`${successMessage} (Direct Local Connection)`);
     } catch (err) {
       console.warn("⚠️ Failed to send direct local command:", err);
     }
@@ -727,15 +916,15 @@ async function sendControlCommand(command, successMessage) {
         created_at: firebase.firestore.FieldValue.serverTimestamp()
       });
       if (!sentLocally) {
-        appendLog(successMessage);
+        appendExerciseLog(successMessage);
       }
     } catch (e) {
       if (!sentLocally) {
-        appendLog(`Failed to sync command to cloud: ${e.message}`, true);
+        appendExerciseLog(`Failed to sync command to cloud: ${e.message}`, true);
       }
     }
   } else if (!sentLocally) {
-    appendLog("⚠️ Command failed: local robot not connected and not synced with cloud", true);
+    appendExerciseLog("⚠️ Command failed: local robot not connected and not synced with cloud", true);
   }
 }
 
@@ -966,6 +1155,24 @@ let watchStepsToday = 0;
 let cachedDailyMap = new Map();
 let currentViewMode = 'today';
 
+function getSevenDaysWindow() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    d.setHours(0, 0, 0, 0);
+    days.push(d);
+  }
+  return {
+    today,
+    minDate: days[0], // 6 days ago
+    days
+  };
+}
+
 function formatOrdinalDay(day) {
   if (day > 3 && day < 21) return day + 'th';
   switch (day % 10) {
@@ -993,25 +1200,18 @@ function formatCustomDate(date) {
   if (dKey === yKey) return 'Yesterday';
 
   const dayStr = formatOrdinalDay(d.getDate());
-  const monthStr = d.toLocaleDateString('en-US', { month: 'long' });
+  const monthStr = d.toLocaleDateString('en-US', { month: 'short' });
   return `${dayStr} ${monthStr}`;
 }
 
 function changeSelectedDate(delta) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
+  const { minDate, today } = getSevenDaysWindow();
   const nextDate = new Date(selectedDate);
   nextDate.setDate(nextDate.getDate() + delta);
   nextDate.setHours(0, 0, 0, 0);
 
-  // Clamp forward: do not allow navigating past today (no circular wrap)
-  if (nextDate > today) return;
-
-  // Clamp backward: do not allow navigating beyond 35 days ago (no circular wrap)
-  const minDate = new Date(today);
-  minDate.setDate(today.getDate() - 35);
-  if (nextDate < minDate) return;
+  // Clamp within the 7-day window (no circular wrap)
+  if (nextDate > today || nextDate < minDate) return;
 
   selectedDate = nextDate;
   currentViewMode = 'today';
@@ -1027,6 +1227,7 @@ function setSelectedDate(dateStr) {
   } else {
     selectedDate = new Date(dateStr);
   }
+  selectedDate.setHours(0, 0, 0, 0);
   currentViewMode = 'today';
   updateViewModeButtons();
   updateProfileViewForSelectedDate();
@@ -1034,6 +1235,7 @@ function setSelectedDate(dateStr) {
 
 function selectToday() {
   selectedDate = new Date();
+  selectedDate.setHours(0, 0, 0, 0);
   currentViewMode = 'today';
   updateViewModeButtons();
   updateProfileViewForSelectedDate();
@@ -1059,6 +1261,10 @@ function onCalendarDatePicked(val) {
 
 function setViewMode(mode) {
   currentViewMode = mode;
+  if (mode === 'today') {
+    selectedDate = new Date();
+    selectedDate.setHours(0, 0, 0, 0);
+  }
   updateViewModeButtons();
   updateProfileViewForSelectedDate();
 }
@@ -1072,11 +1278,11 @@ function updateViewModeButtons() {
       todayBtn.className = 'py-2.5 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center';
     }
     if (weekBtn) {
-      weekBtn.className = 'py-2.5 rounded-2xl border border-cyan-400/50 bg-cyan-500/15 text-cyan-400 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center';
+      weekBtn.className = 'py-2.5 rounded-2xl border border-cyan-400/50 bg-cyan-500/20 text-cyan-300 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center shadow-lg shadow-cyan-500/10';
     }
   } else {
     if (todayBtn) {
-      todayBtn.className = 'py-2.5 rounded-2xl border border-cyan-400/50 bg-cyan-500/15 text-cyan-400 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center';
+      todayBtn.className = 'py-2.5 rounded-2xl border border-cyan-400/50 bg-cyan-500/20 text-cyan-300 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center shadow-lg shadow-cyan-500/10';
     }
     if (weekBtn) {
       weekBtn.className = 'py-2.5 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 font-bold text-xs sm:text-sm active:scale-[0.98] transition-all text-center';
@@ -1095,30 +1301,131 @@ function getExerciseIcon(exercise) {
   return map[exercise] || '⚡';
 }
 
+// Live fitness measurement recording into statistics
+function recordLiveRep(exercise, count, left, right) {
+  if (!exercise) return;
+  const todayStr = dateKey(new Date());
+  let dayData = cachedDailyMap.get(todayStr);
+  if (!dayData) {
+    dayData = emptyDaily(todayStr);
+    cachedDailyMap.set(todayStr, dayData);
+  }
+  if (!dayData.reps) dayData.reps = {};
+
+  let repNum = Number(count || 1);
+  if (exercise === 'bicep_curls' && (left !== undefined || right !== undefined)) {
+    repNum = Math.min(Number(left || 0), Number(right || 0));
+  }
+
+  dayData.reps[exercise] = Math.max(Number(dayData.reps[exercise] || 0), repNum);
+  dayData.form_good_count = (dayData.form_good_count || 0) + 1;
+
+  if (db && currentUserId) {
+    db.collection('users').doc(currentUserId)
+      .collection('daily_aggregates')
+      .doc(todayStr)
+      .set({
+        date: todayStr,
+        reps: dayData.reps,
+        form_good_count: dayData.form_good_count,
+        form_flaw_count: dayData.form_flaw_count || 0,
+        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true }).catch(() => {});
+  }
+
+  updateProfileViewForSelectedDate();
+}
+
+function recordLivePlank(seconds) {
+  const todayStr = dateKey(new Date());
+  let dayData = cachedDailyMap.get(todayStr);
+  if (!dayData) {
+    dayData = emptyDaily(todayStr);
+    cachedDailyMap.set(todayStr, dayData);
+  }
+  dayData.plank_time_s = Math.max(Number(dayData.plank_time_s || 0), Math.round(Number(seconds || 0)));
+
+  if (db && currentUserId) {
+    db.collection('users').doc(currentUserId)
+      .collection('daily_aggregates')
+      .doc(todayStr)
+      .set({
+        date: todayStr,
+        plank_time_s: dayData.plank_time_s,
+        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true }).catch(() => {});
+  }
+
+  updateProfileViewForSelectedDate();
+}
+
+function recordLiveFormError() {
+  const todayStr = dateKey(new Date());
+  let dayData = cachedDailyMap.get(todayStr);
+  if (!dayData) {
+    dayData = emptyDaily(todayStr);
+    cachedDailyMap.set(todayStr, dayData);
+  }
+  dayData.form_flaw_count = (dayData.form_flaw_count || 0) + 1;
+
+  if (db && currentUserId) {
+    db.collection('users').doc(currentUserId)
+      .collection('daily_aggregates')
+      .doc(todayStr)
+      .set({
+        date: todayStr,
+        form_flaw_count: dayData.form_flaw_count,
+        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true }).catch(() => {});
+  }
+
+  updateProfileViewForSelectedDate();
+}
+
+function recordLiveSessionEnd(activeSec) {
+  const todayStr = dateKey(new Date());
+  let dayData = cachedDailyMap.get(todayStr);
+  if (!dayData) {
+    dayData = emptyDaily(todayStr);
+    cachedDailyMap.set(todayStr, dayData);
+  }
+  const sec = Math.round(Number(activeSec || 0));
+  dayData.active_time_s = (dayData.active_time_s || 0) + sec;
+  dayData.total_time_s = (dayData.total_time_s || 0) + sec;
+
+  if (db && currentUserId) {
+    db.collection('users').doc(currentUserId)
+      .collection('daily_aggregates')
+      .doc(todayStr)
+      .set({
+        date: todayStr,
+        active_time_s: dayData.active_time_s,
+        total_time_s: dayData.total_time_s,
+        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true }).catch(() => {});
+  }
+
+  updateProfileViewForSelectedDate();
+}
+
 /**
  * connectAnalyticsListeners — sets up live onSnapshot listeners for
- * daily_aggregates and sessions. Charts re-render automatically whenever
- * the Pi writes new reps, a BLE watch syncs steps, or a session ends.
- * Safe to call multiple times (tears down old listeners first).
+ * daily_aggregates and sessions.
  */
 function connectAnalyticsListeners() {
   if (!db || !currentUserId) return;
-  disconnectAnalyticsListeners();   // clean up any previous listeners
+  disconnectAnalyticsListeners();
 
-  const today = new Date();
-  const fromDate = new Date(today);
-  fromDate.setDate(today.getDate() - 30); // 30 days history for calendar browsing
+  const { minDate, today } = getSevenDaysWindow();
 
   function rebuildAndRender() {
     cachedDailyMap.clear();
 
-    // Pre-populate 35 days in map
-    for (let i = 0; i < 35; i++) {
-      const day = new Date(fromDate);
-      day.setDate(fromDate.getDate() + i);
-      const k = dateKey(day);
+    const { days } = getSevenDaysWindow();
+    days.forEach(d => {
+      const k = dateKey(d);
       cachedDailyMap.set(k, emptyDaily(k));
-    }
+    });
 
     cachedAggDocs.forEach(data => {
       const k = data.date || data._docId;
@@ -1127,7 +1434,6 @@ function connectAnalyticsListeners() {
       }
     });
 
-    // Merge today's watch steps into the daily aggregate for KPI accuracy
     const todayStr = dateKey(new Date());
     if (watchStepsToday > 0) {
       const todayAgg = cachedDailyMap.get(todayStr);
@@ -1140,23 +1446,23 @@ function connectAnalyticsListeners() {
   // Listener 1: daily_aggregates (updates when Pi writes a rep or session ends)
   analyticsAggUnsubscribe = db.collection('users').doc(currentUserId)
     .collection('daily_aggregates')
-    .where('date', '>=', dateKey(fromDate))
+    .where('date', '>=', dateKey(minDate))
     .where('date', '<=', dateKey(today))
     .onSnapshot(snap => {
       cachedAggDocs = snap.docs.map(doc => ({ _docId: doc.id, ...doc.data() }));
       rebuildAndRender();
-    }, err => appendLog(`Analytics listener error: ${err.message}`, true));
+    }, err => appendSystemLog(`Analytics listener error: ${err.message}`, true));
 
   // Listener 2: sessions (updates when a session starts or ends)
   analyticsSessionUnsubscribe = db.collection('users').doc(currentUserId)
     .collection('sessions')
-    .where('started_at', '>=', fromDate)
+    .where('started_at', '>=', minDate)
     .onSnapshot(snap => {
       cachedSessionDocs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       rebuildAndRender();
-    }, err => appendLog(`Session listener error: ${err.message}`, true));
+    }, err => appendSystemLog(`Session listener error: ${err.message}`, true));
 
-  // One-shot today's watch_data for step KPI
+  // One-shot today's watch_data
   db.collection('users').doc(currentUserId)
     .collection('watch_data')
     .doc(dateKey(today))
@@ -1171,46 +1477,44 @@ function connectAnalyticsListeners() {
 }
 
 function updateProfileViewForSelectedDate() {
+  const { minDate, today, days } = getSevenDaysWindow();
   const selectedKey = dateKey(selectedDate);
-  const todayDate = new Date();
-  todayDate.setHours(0, 0, 0, 0);
-  const todayKey = dateKey(todayDate);
-  const isToday = selectedKey === todayKey;
+  const todayKey = dateKey(today);
+  const minKey = dateKey(minDate);
 
-  // Clamp & arrow state: Disable forward arrow if on today
-  const nextBtn = document.getElementById('nextDateBtn');
-  if (nextBtn) {
-    if (selectedKey >= todayKey) {
-      nextBtn.classList.add('opacity-30', 'pointer-events-none');
+  // 1. Unboxed arrows: disable prev at minDate, disable next at today (no circular wrap)
+  const prevBtn = document.getElementById('prevDateBtn');
+  if (prevBtn) {
+    if (selectedKey <= minKey) {
+      prevBtn.classList.add('opacity-20', 'pointer-events-none');
     } else {
-      nextBtn.classList.remove('opacity-30', 'pointer-events-none');
+      prevBtn.classList.remove('opacity-20', 'pointer-events-none');
     }
   }
 
-  // 1. Boxed Date: "Today", "Yesterday", or "day-th Month"
+  const nextBtn = document.getElementById('nextDateBtn');
+  if (nextBtn) {
+    if (selectedKey >= todayKey) {
+      nextBtn.classList.add('opacity-20', 'pointer-events-none');
+    } else {
+      nextBtn.classList.remove('opacity-20', 'pointer-events-none');
+    }
+  }
+
+  // 2. Boxed Date display: "Today", "Yesterday", or "n-th Month"
   const fullTextEl = document.getElementById('selectedDateFullText');
   if (fullTextEl) {
     if (currentViewMode === 'week') {
-      fullTextEl.textContent = 'This Week';
+      fullTextEl.textContent = 'Whole Week';
     } else {
       fullTextEl.textContent = formatCustomDate(selectedDate);
     }
   }
 
-  // 2. Render 7 boxes indicating day - Just use day name for that
+  // 3. Render 7 day name buttons (strictly 7 days total, non-circular)
   const stripEl = document.getElementById('weekDaysStrip');
-  const curr = new Date(selectedDate);
-  const dayOfWeek = (curr.getDay() + 6) % 7; // Monday = 0
-  const monday = new Date(curr);
-  monday.setDate(curr.getDate() - dayOfWeek);
-
-  const weekDays = [];
   let stripHtml = '';
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    weekDays.push(d);
-
+  days.forEach(d => {
     const k = dateKey(d);
     const isSel = (currentViewMode === 'today' && k === selectedKey);
     const isTod = (k === todayKey);
@@ -1221,16 +1525,15 @@ function updateProfileViewForSelectedDate() {
         ${dayName}
       </button>
     `;
-  }
+  });
   if (stripEl) stripEl.innerHTML = stripHtml;
 
-  // 3. Update the 4 exercise blocks based on selected date or week mode
+  // 4. Update the KPI blocks (Total Reps, Plank Time, Form Accuracy)
   let curls = 0, pushups = 0, squats = 0, totalReps = 0;
   let plankSec = 0, stepsTotal = 0, good = 0, flaw = 0;
 
   if (currentViewMode === 'week') {
-    // Sum stats over the entire 7 days of the week
-    weekDays.forEach(d => {
+    days.forEach(d => {
       const dData = cachedDailyMap.get(dateKey(d));
       if (dData) {
         curls += Number(dData.reps?.bicep_curls || 0);
@@ -1244,7 +1547,6 @@ function updateProfileViewForSelectedDate() {
     });
     totalReps = curls + pushups + squats;
   } else {
-    // Specific selected day
     const dayData = cachedDailyMap.get(selectedKey) || emptyDaily(selectedKey);
     curls = Number(dayData.reps?.bicep_curls || 0);
     pushups = Number(dayData.reps?.pushups || 0);
@@ -1270,6 +1572,21 @@ function updateProfileViewForSelectedDate() {
   const kpiSteps = document.getElementById('kpiSteps');
   if (kpiSteps) kpiSteps.textContent = stepsTotal.toLocaleString();
 
+  const profStepsCount = document.getElementById('profileStepsCount');
+  if (profStepsCount) profStepsCount.textContent = stepsTotal.toLocaleString();
+
+  const profStepsPeriod = document.getElementById('profileStepsPeriod');
+  if (profStepsPeriod) {
+    profStepsPeriod.textContent = (currentViewMode === 'week') ? '7-Day Total' : (selectedKey === todayKey ? 'Today' : formatCustomDate(selectedDate));
+  }
+
+  const profStepsSub = document.getElementById('profileStepsSub');
+  if (profStepsSub) {
+    const estCal = Math.round(stepsTotal * 0.04);
+    const estDist = (stepsTotal * 0.0008).toFixed(2);
+    profStepsSub.textContent = stepsTotal > 0 ? `~${estCal} kcal • ~${estDist} km` : 'ESP32 Wristband';
+  }
+
   const totalForm = good + flaw;
   const pct = totalForm > 0 ? Math.round((good / totalForm) * 100) : 100;
 
@@ -1288,16 +1605,406 @@ function updateProfileViewForSelectedDate() {
   const chartFormBadge = document.getElementById('chartFormDateBadge');
   if (chartFormBadge) chartFormBadge.textContent = badgeText;
 
-  // 4. Update charts
+  // 5. Update charts
   if (currentViewMode === 'week') {
-    renderRepsChartWeek(weekDays);
-    renderTimeChartWeek(weekDays);
+    renderRepsChartWeek(days);
+    renderTimeChartWeek(days);
   } else {
     const dayData = cachedDailyMap.get(selectedKey) || emptyDaily(selectedKey);
     renderRepsChart(dayData);
     renderTimeChart(dayData);
   }
   renderFormChart({ good, flaw });
+}
+
+// Clear History & Share Snapshot Action Handlers
+async function clearWorkoutHistory() {
+  if (!confirm("Are you sure you want to clear your workout history? This will delete all recorded reps, sessions, and daily performance logs.")) {
+    return;
+  }
+
+  cachedAggDocs = [];
+  cachedSessionDocs = [];
+  cachedDailyMap.clear();
+
+  if (db && currentUserId) {
+    try {
+      const batch = db.batch();
+      const aggSnap = await db.collection('users').doc(currentUserId).collection('daily_aggregates').get();
+      aggSnap.forEach(doc => batch.delete(doc.ref));
+
+      const sessionSnap = await db.collection('users').doc(currentUserId).collection('sessions').get();
+      sessionSnap.forEach(doc => batch.delete(doc.ref));
+
+      await batch.commit();
+      appendSystemLog("Workout history cleared from cloud.");
+    } catch (err) {
+      console.error("Error clearing history in Firestore:", err);
+      appendSystemLog(`Error clearing history: ${err.message}`, true);
+    }
+  }
+
+  const { days } = getSevenDaysWindow();
+  days.forEach(d => {
+    const k = dateKey(d);
+    cachedDailyMap.set(k, emptyDaily(k));
+  });
+
+  updateProfileViewForSelectedDate();
+  alert("Workout history has been cleared.");
+}
+
+// ---------- Workout Snapshot Image & PDF Generation ----------
+
+let currentSnapshotCanvas = null;
+let currentSnapshotBlob = null;
+
+function roundRect(ctx, x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+}
+
+function generateWorkoutSnapshotCanvas() {
+  const isWeek = currentViewMode === 'week';
+  const timeLabel = isWeek ? 'Whole Week Summary' : formatCustomDate(selectedDate);
+  const athleteName = document.getElementById('profileName')?.textContent || 'Athlete User';
+  const totalReps = document.getElementById('kpiTotalReps')?.textContent || '0';
+  const repsDetail = document.getElementById('kpiRepsBreakdown')?.textContent || 'Curls • Pushups • Squats';
+  const plank = document.getElementById('kpiPlankTime')?.textContent || '0s';
+  const form = document.getElementById('kpiForm')?.textContent || '100%';
+  const formSub = document.getElementById('kpiFormSub')?.textContent || 'Pose Precision Score';
+  const steps = document.getElementById('profileStepsCount')?.textContent || '0';
+  const stepsSub = document.getElementById('profileStepsSub')?.textContent || 'ESP32 Wristband';
+
+  const width = 1200;
+  const height = 1500;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  // 1. Dark Cyber Background
+  const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+  bgGrad.addColorStop(0, '#070913');
+  bgGrad.addColorStop(0.5, '#0a0e1c');
+  bgGrad.addColorStop(1, '#05070d');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, width, height);
+
+  // Ambient glows
+  const glow1 = ctx.createRadialGradient(200, 160, 20, 200, 160, 480);
+  glow1.addColorStop(0, 'rgba(6, 182, 212, 0.22)');
+  glow1.addColorStop(1, 'rgba(6, 182, 212, 0)');
+  ctx.fillStyle = glow1;
+  ctx.fillRect(0, 0, width, height);
+
+  const glow2 = ctx.createRadialGradient(1000, 1200, 30, 1000, 1200, 520);
+  glow2.addColorStop(0, 'rgba(16, 185, 129, 0.18)');
+  glow2.addColorStop(1, 'rgba(16, 185, 129, 0)');
+  ctx.fillStyle = glow2;
+  ctx.fillRect(0, 0, width, height);
+
+  // Outer Border
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+  ctx.lineWidth = 3;
+  roundRect(ctx, 30, 30, width - 60, height - 60, 32);
+  ctx.stroke();
+
+  // 2. Header
+  // Robot Icon Box
+  ctx.fillStyle = 'rgba(6, 182, 212, 0.15)';
+  roundRect(ctx, 70, 70, 74, 74, 22);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(6, 182, 212, 0.4)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, 70, 70, 74, 74, 22);
+  ctx.stroke();
+
+  ctx.font = '38px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🤖', 107, 107);
+
+  // Brand Titles
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 36px system-ui, -apple-system, sans-serif';
+  ctx.fillText('FITNESS ROBOT', 165, 96);
+
+  ctx.fillStyle = 'rgba(6, 182, 212, 0.9)';
+  ctx.font = '700 15px system-ui, -apple-system, sans-serif';
+  ctx.fillText('AUTONOMOUS AI VISION & WEARABLE TRACKER', 167, 128);
+
+  // Athlete & Date Badge on Right
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '800 24px system-ui, -apple-system, sans-serif';
+  ctx.fillText(athleteName, width - 75, 96);
+
+  ctx.fillStyle = '#10b981';
+  ctx.font = '600 17px system-ui, -apple-system, sans-serif';
+  ctx.fillText(`📅 ${timeLabel}`, width - 75, 128);
+
+  // Divider Line
+  const divGrad = ctx.createLinearGradient(70, 175, width - 70, 175);
+  divGrad.addColorStop(0, 'rgba(6, 182, 212, 0.6)');
+  divGrad.addColorStop(0.5, 'rgba(16, 185, 129, 0.6)');
+  divGrad.addColorStop(1, 'rgba(255, 255, 255, 0.1)');
+  ctx.fillStyle = divGrad;
+  ctx.fillRect(70, 175, width - 140, 3);
+
+  // 3. Metric Cards (2x2 Grid)
+  const cardW = 510;
+  const cardH = 200;
+  const col1X = 70;
+  const col2X = 620;
+  const row1Y = 210;
+  const row2Y = 440;
+
+  function drawMetricCard(x, y, w, h, tag, val, sub, tagColor, valColor) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+    roundRect(ctx, x, y, w, h, 24);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, w, h, 24);
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.font = '800 15px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = tagColor;
+    ctx.fillText(tag.toUpperCase(), x + 28, y + 42);
+
+    ctx.font = '900 58px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = valColor;
+    ctx.fillText(val, x + 28, y + 115);
+
+    ctx.font = '600 18px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.fillText(sub, x + 28, y + 165);
+  }
+
+  drawMetricCard(col1X, row1Y, cardW, cardH, 'Total Reps', totalReps, repsDetail, '#06b6d4', '#ffffff');
+  drawMetricCard(col2X, row1Y, cardW, cardH, 'Steps Synced', steps, stepsSub, '#f59e0b', '#ffffff');
+  drawMetricCard(col1X, row2Y, cardW, cardH, 'Plank Hold Time', plank, 'Core Elevation Hold', '#10b981', '#10b981');
+  drawMetricCard(col2X, row2Y, cardW, cardH, 'Form Accuracy', form, formSub, '#c084fc', '#c084fc');
+
+  // 4. Visual Routine & Performance Chart Area
+  const chartBoxY = 675;
+  const chartBoxH = 680;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+  roundRect(ctx, 70, chartBoxY, width - 140, chartBoxH, 28);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, 70, chartBoxY, width - 140, chartBoxH, 28);
+  ctx.stroke();
+
+  ctx.textAlign = 'left';
+  ctx.font = '800 24px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('📊 Routine & Performance Breakdown', 105, chartBoxY + 50);
+
+  ctx.font = '600 16px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(6, 182, 212, 0.8)';
+  ctx.fillText(timeLabel, 105, chartBoxY + 82);
+
+  // Render reps chart image onto canvas
+  const repsCanvas = document.getElementById('repsChart');
+  if (repsCanvas) {
+    try {
+      ctx.drawImage(repsCanvas, 100, chartBoxY + 110, width - 200, 260);
+    } catch (e) {
+      console.warn('Could not render repsCanvas onto snapshot:', e);
+    }
+  }
+
+  // Render time chart image onto canvas
+  const timeCanvas = document.getElementById('timeChart');
+  if (timeCanvas) {
+    try {
+      ctx.drawImage(timeCanvas, 100, chartBoxY + 395, width - 200, 245);
+    } catch (e) {
+      console.warn('Could not render timeCanvas onto snapshot:', e);
+    }
+  }
+
+  // 5. Verification Footer
+  const footerY = 1410;
+  ctx.textAlign = 'left';
+  ctx.font = '600 16px system-ui, -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+  ctx.fillText('Verified by Raspberry Pi CV & ESP32 Smartwatch Telemetry', 75, footerY);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+  const nowStr = new Date().toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  ctx.fillText(`Generated: ${nowStr}`, width - 75, footerY);
+
+  return canvas;
+}
+
+function openSnapshotModal(canvas, blob) {
+  currentSnapshotCanvas = canvas;
+  currentSnapshotBlob = blob;
+
+  const previewImg = document.getElementById('snapshotPreviewImg');
+  if (previewImg) {
+    previewImg.src = canvas.toDataURL('image/png');
+  }
+
+  const modal = document.getElementById('snapshotModal');
+  if (modal) {
+    modal.classList.remove('hidden');
+  }
+}
+
+function closeSnapshotModal() {
+  const modal = document.getElementById('snapshotModal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+}
+
+async function triggerSnapshotImageShare() {
+  if (!currentSnapshotCanvas) return;
+
+  const isWeek = currentViewMode === 'week';
+  const fileName = `fitness-snapshot-${isWeek ? 'week' : dateKey(selectedDate)}.png`;
+
+  if (currentSnapshotBlob) {
+    const file = new File([currentSnapshotBlob], fileName, { type: 'image/png' });
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: `Fitness Snapshot - ${isWeek ? 'Whole Week' : formatCustomDate(selectedDate)}`,
+          text: `My workout snapshot from Fitness Robot (${isWeek ? 'Whole Week' : formatCustomDate(selectedDate)})`
+        });
+        closeSnapshotModal();
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.warn('Share file aborted or failed:', err);
+      }
+    }
+  }
+
+  // Fallback: Download Image directly
+  const a = document.createElement('a');
+  a.href = currentSnapshotCanvas.toDataURL('image/png');
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function triggerSnapshotPdfExport() {
+  if (!currentSnapshotCanvas) return;
+  const dataUrl = currentSnapshotCanvas.toDataURL('image/png');
+  const isWeek = currentViewMode === 'week';
+  const timeLabel = isWeek ? 'Whole Week' : formatCustomDate(selectedDate);
+
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('Popup window blocked by browser. Please allow popups or download the PNG image instead.');
+    return;
+  }
+
+  printWindow.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Fitness Robot Snapshot - ${timeLabel}</title>
+        <style>
+          @page {
+            size: A4 portrait;
+            margin: 0;
+          }
+          * {
+            box-sizing: border-box;
+          }
+          body {
+            margin: 0;
+            padding: 0;
+            background: #070913;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          img {
+            max-width: 100%;
+            height: auto;
+            max-height: 100vh;
+            display: block;
+            margin: auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+          }
+          @media print {
+            body {
+              background: transparent !important;
+            }
+            img {
+              max-height: 100%;
+              width: 100%;
+              box-shadow: none;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <img src="${dataUrl}" alt="Workout Snapshot" onload="setTimeout(() => { window.print(); }, 250);" />
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+}
+
+async function shareWorkoutSnapshot() {
+  const canvas = generateWorkoutSnapshotCanvas();
+
+  canvas.toBlob(async (blob) => {
+    if (!blob) return;
+
+    currentSnapshotCanvas = canvas;
+    currentSnapshotBlob = blob;
+
+    const isWeek = currentViewMode === 'week';
+    const fileName = `fitness-snapshot-${isWeek ? 'week' : dateKey(selectedDate)}.png`;
+    const file = new File([blob], fileName, { type: 'image/png' });
+
+    // 1. Try native Web Share API with File (Supported on mobile devices e.g. WhatsApp, AirDrop, Messages)
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: `Fitness Snapshot - ${isWeek ? 'Whole Week' : formatCustomDate(selectedDate)}`,
+          text: `My workout snapshot from Fitness Robot (${isWeek ? 'Whole Week' : formatCustomDate(selectedDate)})`
+        });
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return; // User closed sheet
+        console.warn('Native share error, falling back to modal:', e);
+      }
+    }
+
+    // 2. Open sleek snapshot modal with Image and PDF export options
+    openSnapshotModal(canvas, blob);
+  }, 'image/png');
 }
 
 // Kept for backward compatibility (called after generateDemoData)
@@ -1930,6 +2637,12 @@ function formatDate(value) {
         disconnectRealtime();
         document.getElementById('authView').classList.remove('hidden');
         document.getElementById('appView').classList.add('hidden');
+        const configBtn = document.getElementById('configMenuBtn');
+        if (configBtn) configBtn.classList.add('hidden');
+        const batt = document.getElementById('batteryIndicator');
+        if (batt) batt.classList.add('hidden');
+        const cfgDrawer = document.getElementById('configDrawer');
+        if (cfgDrawer) cfgDrawer.classList.add('hidden');
         return;
       }
 
@@ -1952,6 +2665,17 @@ function formatDate(value) {
           else register();
         }
       });
+    }
+  });
+
+  // Close hardware config drawer when clicking outside
+  document.addEventListener('click', (e) => {
+    const drawer = document.getElementById('configDrawer');
+    const btn = document.getElementById('configMenuBtn');
+    if (drawer && !drawer.classList.contains('hidden')) {
+      if (!drawer.contains(e.target) && !btn?.contains(e.target)) {
+        drawer.classList.add('hidden');
+      }
     }
   });
 })();
