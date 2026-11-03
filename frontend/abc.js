@@ -118,6 +118,9 @@ async function logout() {
   const cfgDrawer = document.getElementById('configDrawer');
   if (cfgDrawer) cfgDrawer.classList.add('hidden');
 
+  const desktopNav = document.getElementById('desktopNavMenu');
+  if (desktopNav) desktopNav.classList.add('hidden');
+
   const mobileNav = document.getElementById('mobileNavBar');
   if (mobileNav) mobileNav.classList.add('hidden');
 }
@@ -231,6 +234,9 @@ function showAppView(email) {
 
   const configBtn = document.getElementById('configMenuBtn');
   if (configBtn) configBtn.classList.remove('hidden');
+
+  const desktopNav = document.getElementById('desktopNavMenu');
+  if (desktopNav) desktopNav.classList.remove('hidden');
 
   const mobileNav = document.getElementById('mobileNavBar');
   if (mobileNav) mobileNav.classList.remove('hidden');
@@ -2643,6 +2649,8 @@ function formatDate(value) {
         if (batt) batt.classList.add('hidden');
         const cfgDrawer = document.getElementById('configDrawer');
         if (cfgDrawer) cfgDrawer.classList.add('hidden');
+        const desktopNav = document.getElementById('desktopNavMenu');
+        if (desktopNav) desktopNav.classList.add('hidden');
         return;
       }
 
