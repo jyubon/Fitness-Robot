@@ -16,7 +16,7 @@
 #define SDA_PIN 8
 #define SCL_PIN 9
 #define LED_PIN 10
-#define BUTTON_PIN 4 // Physical start button on GPIO 4
+#define BUTTON_PIN 2 // Physical start button on GPIO 2
 
 // ==================== DEVICE CONFIG ====================
 #define DEVICE_NAME "StepTracker" // ✅ Fixed missing macro definition
@@ -87,8 +87,8 @@ unsigned long lastBLENotify = 0;
 const int BLE_NOTIFY_INTERVAL = 2000;
 
 // ==================== BUTTON ====================
-bool lastButtonState = HIGH; // INPUT_PULLUP idles HIGH
-bool buttonState = HIGH;
+bool lastButtonState = LOW; // INPUT_PULLDOWN idles LOW
+bool buttonState = LOW;
 unsigned long lastDebounceTime = 0;
 const unsigned long DEBOUNCE_DELAY = 50; // ms
 
@@ -583,9 +583,9 @@ void setup() {
     magWindow[i] = 9.8f;
 
   // Button setup
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_PIN, INPUT_PULLDOWN);
   lastButtonState = digitalRead(BUTTON_PIN);
-  Serial.println(F("Button ready on GPIO 4"));
+  Serial.println(F("Button ready on GPIO 2"));
 }
 
 // ==================== LOOP ====================
@@ -640,7 +640,7 @@ void loop() {
   if ((now - lastDebounceTime) >= DEBOUNCE_DELAY) {
     if (reading != buttonState) {
       buttonState = reading;
-      if (buttonState == LOW) { // LOW = pressed (INPUT_PULLUP)
+      if (buttonState == HIGH) { // HIGH = pressed (connected to 3.3V)
         sendStartCommand();
       }
     }

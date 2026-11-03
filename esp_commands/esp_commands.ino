@@ -42,8 +42,8 @@ HardwareSerial piSerial(1);
 #define VOLTAGE_PIN 3
 
 #define RGB_RED_PIN 36
-#define RGB_GREEN_PIN 37
-#define RGB_BLUE_PIN 38
+#define RGB_GREEN_PIN 38
+#define RGB_BLUE_PIN 37
 
 // Voltage Divider Ratio (Default 5.0 for standard 25V divider module: 30k/7.5k)
 #define VOLTAGE_DIVIDER_RATIO 5.0f
