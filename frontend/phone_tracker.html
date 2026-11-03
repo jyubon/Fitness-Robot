@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Fitness Robot • Phone Step Counter</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- Libraries -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+
+  <!-- Pedometer Sensor Engine -->
+  <script src="phone-step-counter.js"></script>
+
+  <style>
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 40%),
+                  radial-gradient(circle at bottom left, rgba(6, 182, 212, 0.08), transparent 40%),
+                  #070a12;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .glass {
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .glow-cyan {
+      box-shadow: 0 0 25px -5px rgba(6, 182, 212, 0.3);
+    }
+
+    .glow-emerald {
+      box-shadow: 0 0 30px -5px rgba(16, 185, 129, 0.35);
+    }
+
+    /* Pulse animation for active step tracking */
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.05); opacity: 0.3; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    .pulse-active {
+      animation: pulse-ring 2.5s infinite ease-in-out;
+    }
+  </style>
+</head>
+
+<body class="selection:bg-cyan-500 selection:text-black">
+
+  <!-- Header -->
+  <header class="w-full px-5 py-4 border-b border-white/10 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-2xl bg-gradient-to-tr from-cyan-500 to-emerald-400 p-[1.5px] flex-shrink-0">
+        <div class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center font-black text-xs text-cyan-400">
+          FR
+        </div>
+      </div>
+      <div>
+        <h1 class="text-sm font-extrabold tracking-tight">Phone Step Counter</h1>
+        <p class="text-[10px] text-white/40 uppercase tracking-wider">Fitness Robot Companion</p>
+      </div>
+    </div>
+
+    <!-- Auth / Sync status pill -->
+    <div id="authStatusPill" class="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-white/5 border border-white/10">
+      <span id="authStatusDot" class="w-2 h-2 rounded-full bg-amber-400"></span>
+      <span id="authStatusText">Checking...</span>
+    </div>
+  </header>
+
+  <!-- Login Modal / Overlay (shown if user not authenticated) -->
+  <div id="loginSection" class="hidden flex-1 flex flex-col items-center justify-center p-6">
+    <div class="glass w-full max-w-sm rounded-3xl p-6 text-center space-y-4">
+      <div class="w-12 h-12 mx-auto rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-2xl">
+        📱
+      </div>
+      <div>
+        <h2 class="text-lg font-bold text-white">Sign In to Sync</h2>
+        <p class="text-xs text-white/50 mt-1">Connect your steps directly to your Fitness Robot Dashboard in real time.</p>
+      </div>
+
+      <div class="space-y-3 text-left">
+        <div>
+          <label class="block text-[11px] font-bold text-white/60 mb-1">Email</label>
+          <input id="loginEmail" type="email" placeholder="you@example.com"
+            class="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-400" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-bold text-white/60 mb-1">Password</label>
+          <input id="loginPassword" type="password" placeholder="••••••••"
+            class="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-400" />
+        </div>
+        <div id="loginError" class="text-xs text-red-400 hidden"></div>
+      </div>
+
+      <button onclick="handleLogin()"
+        class="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-sm shadow-lg active:scale-95 transition-all">
+        Sign In & Start Pedometer
+      </button>
+
+      <button onclick="useOfflineMode()"
+        class="w-full py-2 text-xs text-white/40 hover:text-white/70 transition-colors">
+        Continue in Local Device Mode (No Cloud Sync)
+      </button>
+    </div>
+  </div>
+
+  <!-- Tracker Main UI -->
+  <main id="trackerMain" class="flex-1 max-w-md mx-auto w-full p-4 sm:p-6 flex flex-col justify-between space-y-4">
+
+    <!-- Big Circular Step Counter Display -->
+    <div class="glass rounded-3xl p-6 sm:p-8 text-center relative overflow-hidden flex flex-col items-center justify-center">
+      
+      <!-- Status pill -->
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-black/40 border border-white/10 mb-4 text-xs">
+        <span id="trackerDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+        <span id="trackerStatus" class="font-bold text-red-400 uppercase tracking-wider">STOPPED</span>
+      </div>
+
+      <!-- Main Step Count -->
+      <div id="displaySteps" class="text-6xl sm:text-7xl font-black text-white tabular-nums tracking-tight">
+        0
+      </div>
+      <div class="text-xs uppercase font-extrabold tracking-widest text-white/40 mt-1">
+        STEPS TODAY
+      </div>
+
+      <!-- Progress bar -->
+      <div class="w-full max-w-xs mt-6">
+        <div class="h-2 rounded-full bg-white/10 overflow-hidden">
+          <div id="progressBar" class="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-300" style="width: 0%"></div>
+        </div>
+        <div class="flex justify-between items-center text-[11px] text-white/50 mt-2 font-medium">
+          <span id="progressPercent">0%</span>
+          <span>Goal: 10,000</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 Metrics: Calories, Distance, Active Time -->
+    <div class="grid grid-cols-3 gap-3">
+      <div class="glass rounded-2xl p-3.5 text-center">
+        <div id="displayCalories" class="text-xl sm:text-2xl font-black text-amber-400 tabular-nums">0</div>
+        <div class="text-[10px] font-bold text-white/40 uppercase mt-0.5">Calories</div>
+      </div>
+      <div class="glass rounded-2xl p-3.5 text-center">
+        <div id="displayDistance" class="text-xl sm:text-2xl font-black text-cyan-400 tabular-nums">0.00</div>
+        <div class="text-[10px] font-bold text-white/40 uppercase mt-0.5">Distance (km)</div>
+      </div>
+      <div class="glass rounded-2xl p-3.5 text-center">
+        <div id="displayActiveMin" class="text-xl sm:text-2xl font-black text-emerald-400 tabular-nums">0</div>
+        <div class="text-[10px] font-bold text-white/40 uppercase mt-0.5">Active Min</div>
+      </div>
+    </div>
+
+    <!-- Controls & Sensitivity Card -->
+    <div class="glass rounded-3xl p-4 sm:p-5 space-y-3">
+      
+      <!-- Start / Stop Button -->
+      <button id="toggleTrackBtn" onclick="toggleTracking()"
+        class="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-base shadow-lg glow-emerald active:scale-95 transition-all">
+        START STEP TRACKING
+      </button>
+
+      <!-- Sensitivity & Options -->
+      <div class="flex items-center justify-between text-xs pt-1 px-1">
+        <span class="text-white/60 font-semibold">Sensor Sensitivity:</span>
+        <select id="sensitivitySelect" onchange="changeSensitivity(this.value)"
+          class="bg-black/40 border border-white/10 rounded-xl px-2.5 py-1 text-white text-xs focus:outline-none focus:border-cyan-400">
+          <option value="normal" selected>Normal (Standard)</option>
+          <option value="high">High (Pocket/Gentle)</option>
+          <option value="low">Low (Armband/Vigorous)</option>
+        </select>
+      </div>
+
+      <!-- Quick Actions (Reset & Test Simulation) -->
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button onclick="handleSimulateStep()"
+          class="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 text-xs font-semibold text-cyan-300 transition-all">
+          +1 Test Step
+        </button>
+        <button onclick="handleResetSteps()"
+          class="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 text-xs font-semibold text-red-300 transition-all">
+          Reset Today
+        </button>
+      </div>
+    </div>
+
+    <!-- Sync status & Links -->
+    <div class="flex items-center justify-between px-2 text-xs text-white/40">
+      <span id="syncNotice">Cloud Sync: Ready</span>
+      <a href="abc.html" class="text-cyan-400 hover:underline flex items-center gap-1 font-semibold">
+        <span>Go to Dashboard</span>
+        <span>→</span>
+      </a>
+    </div>
+
+    <!-- Log Console (collapsible) -->
+    <details class="glass rounded-2xl p-3 text-xs">
+      <summary class="font-bold text-white/50 cursor-pointer select-none">Sensor & Sync Diagnostics</summary>
+      <div id="phoneLog" class="mt-2 font-mono text-[11px] text-white/60 h-28 overflow-y-auto space-y-1 bg-black/40 p-2 rounded-xl">
+        <div>Ready to record motion...</div>
+      </div>
+    </details>
+  </main>
+
+  <script>
+    let auth = null;
+    let db = null;
+    let currentUser = null;
+    let syncThrottleCounter = 0;
+
+    // Initialize Firebase
+    if (window.firebaseConfig && window.firebaseConfig.apiKey !== 'PASTE_FIREBASE_WEB_API_KEY') {
+      firebase.initializeApp(window.firebaseConfig);
+      auth = firebase.auth();
+      db = firebase.firestore();
+
+      auth.onAuthStateChanged(user => {
+        currentUser = user;
+        updateAuthDisplay();
+        if (user) {
+          document.getElementById('loginSection').classList.add('hidden');
+          document.getElementById('trackerMain').classList.remove('hidden');
+          // Load today's existing cloud data if available
+          loadCloudSteps();
+        } else {
+          document.getElementById('loginSection').classList.remove('hidden');
+        }
+      });
+    } else {
+      document.getElementById('authStatusText').textContent = 'Local Mode';
+      document.getElementById('trackerMain').classList.remove('hidden');
+    }
+
+    function updateAuthDisplay() {
+      const dot = document.getElementById('authStatusDot');
+      const text = document.getElementById('authStatusText');
+      if (currentUser) {
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
+        text.textContent = currentUser.email.split('@')[0];
+      } else {
+        dot.className = 'w-2 h-2 rounded-full bg-amber-400';
+        text.textContent = 'Not Signed In';
+      }
+    }
+
+    async function handleLogin() {
+      const email = document.getElementById('loginEmail').value.trim();
+      const pass = document.getElementById('loginPassword').value;
+      const errEl = document.getElementById('loginError');
+      errEl.classList.add('hidden');
+
+      if (!email || !pass) {
+        errEl.textContent = 'Please enter email and password';
+        errEl.classList.remove('hidden');
+        return;
+      }
+
+      try {
+        await auth.signInWithEmailAndPassword(email, pass);
+      } catch (e) {
+        errEl.textContent = e.message || 'Login failed';
+        errEl.classList.remove('hidden');
+      }
+    }
+
+    function useOfflineMode() {
+      document.getElementById('loginSection').classList.add('hidden');
+      document.getElementById('trackerMain').classList.remove('hidden');
+    }
+
+    // Subscribe to phoneStepTracker
+    const tracker = window.phoneStepTracker;
+
+    tracker.onStep((data, isStepIncrement) => {
+      updateUI(data);
+
+      // Sync to cloud every 5 steps or on major events
+      if (currentUser && db) {
+        syncThrottleCounter++;
+        if (syncThrottleCounter >= 5 || !isStepIncrement) {
+          syncThrottleCounter = 0;
+          syncToFirestore(data);
+        }
+      }
+    });
+
+    tracker.onStatusChange(status => {
+      const dot = document.getElementById('trackerDot');
+      const label = document.getElementById('trackerStatus');
+      const btn = document.getElementById('toggleTrackBtn');
+
+      if (status === 'tracking') {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
+        label.className = 'font-bold text-emerald-400 uppercase tracking-wider';
+        label.textContent = 'TRACKING LIVE';
+        btn.textContent = 'PAUSE STEP TRACKING';
+        btn.className = 'w-full py-4 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-extrabold text-base shadow-lg active:scale-95 transition-all';
+      } else {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-red-400';
+        label.className = 'font-bold text-red-400 uppercase tracking-wider';
+        label.textContent = 'STOPPED';
+        btn.textContent = 'START STEP TRACKING';
+        btn.className = 'w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-base shadow-lg glow-emerald active:scale-95 transition-all';
+      }
+    });
+
+    tracker.onLog(msg => {
+      const container = document.getElementById('phoneLog');
+      if (!container) return;
+      const el = document.createElement('div');
+      el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      container.appendChild(el);
+      container.scrollTop = container.scrollHeight;
+    });
+
+    function updateUI(data) {
+      document.getElementById('displaySteps').textContent = Number(data.steps || 0).toLocaleString();
+      document.getElementById('displayCalories').textContent = Math.round(data.calories || 0);
+      document.getElementById('displayDistance').textContent = Number(data.distance_km || 0).toFixed(2);
+      document.getElementById('displayActiveMin').textContent = data.active_min || 0;
+      document.getElementById('progressBar').style.width = `${data.pct || 0}%`;
+      document.getElementById('progressPercent').textContent = `${data.pct || 0}%`;
+    }
+
+    async function toggleTracking() {
+      if (tracker.isTracking) {
+        tracker.stop();
+        // Force final sync
+        if (currentUser && db) syncToFirestore(tracker.getStepData());
+      } else {
+        const ok = await tracker.start();
+        if (!ok) {
+          alert('Could not start motion tracking. Please ensure sensor permissions are granted.');
+        }
+      }
+    }
+
+    function changeSensitivity(val) {
+      tracker.setSensitivity(val);
+    }
+
+    function handleSimulateStep() {
+      tracker.simulateSingleStep();
+    }
+
+    function handleResetSteps() {
+      if (confirm('Reset today\'s step count to 0?')) {
+        tracker.reset();
+        if (currentUser && db) syncToFirestore(tracker.getStepData());
+      }
+    }
+
+    async function syncToFirestore(data) {
+      if (!currentUser || !db) return;
+      try {
+        const todayKey = data.date || new Date().toISOString().slice(0, 10);
+        await db.collection('users').doc(currentUser.uid)
+          .collection('watch_data')
+          .doc(todayKey)
+          .set({
+            steps: Number(data.steps || 0),
+            calories: Number(data.calories || 0),
+            distance_km: Number(data.distance_km || 0),
+            active_min: Number(data.active_min || 0),
+            last_synced_at: firebase.firestore.FieldValue.serverTimestamp(),
+            source: 'smartphone'
+          }, { merge: true });
+
+        document.getElementById('syncNotice').textContent = `Cloud Synced: ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        document.getElementById('syncNotice').textContent = `Sync Error: ${err.message}`;
+      }
+    }
+
+    async function loadCloudSteps() {
+      if (!currentUser || !db) return;
+      try {
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const doc = await db.collection('users').doc(currentUser.uid)
+          .collection('watch_data')
+          .doc(todayKey)
+          .get();
+
+        if (doc.exists) {
+          const d = doc.data();
+          const cloudSteps = Number(d.steps || 0);
+          if (cloudSteps > tracker.steps) {
+            tracker.steps = cloudSteps;
+            tracker.calories = Number(d.calories || (cloudSteps * 0.04).toFixed(1));
+            tracker.distanceKm = Number(d.distance_km || ((cloudSteps * 0.75) / 1000).toFixed(2));
+            tracker.activeMin = Number(d.active_min || 0);
+            tracker._saveStoredData();
+            updateUI(tracker.getStepData());
+          }
+        }
+      } catch (_) { }
+    }
+
+    // Initial UI render
+    updateUI(tracker.getStepData());
+  </script>
+</body>
+
+</html>
+

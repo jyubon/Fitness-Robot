@@ -125,16 +125,51 @@
           </div>
         </div>
 
-        <!-- Wristband BLE Config -->
-        <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
-          <div class="flex items-center justify-between mb-1">
-            <span class="text-[11px] font-bold uppercase tracking-wider text-emerald-400">⌚ ESP32 Wristband</span>
-            <span id="stepStatusBadge" class="step-status disconnected">Disconnected</span>
+        <!-- Step Tracker Config (Phone & Wristband) -->
+        <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-3">
+          <!-- Smartphone Step Counter (Primary) -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📱 Phone Step Counter</span>
+              <span id="phoneStepStatusBadge" class="step-status disconnected">Stopped</span>
+            </div>
+            <button id="phoneStepBtn" onclick="togglePhoneStepTracking()"
+              class="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-400 via-teal-400 to-emerald-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
+              Start Phone Tracker
+            </button>
+            <div class="flex items-center justify-between text-[11px] pt-1">
+              <span class="text-white/50">Sensitivity:</span>
+              <select id="configSensitivitySelect" onchange="changePhoneStepSensitivity(this.value)"
+                class="bg-black/60 border border-white/10 rounded-lg px-2 py-1 text-white text-[11px] focus:outline-none focus:border-cyan-400">
+                <option value="normal" selected>Normal</option>
+                <option value="high">High</option>
+                <option value="low">Low</option>
+              </select>
+              <button onclick="simulatePhoneStep()" class="text-cyan-400 hover:text-cyan-300 font-bold">
+                +1 Test
+              </button>
+              <a href="phone_tracker.html" target="_blank" class="text-emerald-400 hover:underline font-bold">
+                Mobile HUD ↗
+              </a>
+            </div>
           </div>
-          <button id="stepConnectBtn" onclick="toggleStepConnection()"
-            class="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
-            Connect to Tracker
-          </button>
+
+          <!-- ESP32 Wristband (Secondary / Alternative) -->
+          <details class="pt-2 border-t border-white/10">
+            <summary class="text-[10px] font-bold uppercase tracking-wider text-white/50 cursor-pointer select-none hover:text-white/80">
+              ⌚ ESP32 Wristband (BLE)
+            </summary>
+            <div class="mt-2 space-y-2">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] text-white/40">Status:</span>
+                <span id="stepStatusBadge" class="step-status disconnected">Disconnected</span>
+              </div>
+              <button id="stepConnectBtn" onclick="toggleStepConnection()"
+                class="w-full py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs shadow-sm active:scale-95 transition-all border border-white/10">
+                Connect to ESP32
+              </button>
+            </div>
+          </details>
         </div>
       </div>
     </div>
@@ -307,16 +342,16 @@
                   <div class="text-[10px] text-white/40 mt-1">Robot Guide</div>
                 </div>
 
-                <!-- SMARTWATCH CARD -->
+                <!-- SMARTWATCH / PHONE STEP COUNTER CARD -->
                 <div class="p-3.5 sm:p-4 rounded-2xl bg-black/35 border border-white/10 flex flex-col justify-between">
-                  <div class="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-white/50">SMARTWATCH
+                  <div class="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-white/50">STEP COUNTER
                   </div>
                   <div class="mt-2 flex items-center gap-2">
                     <span id="watchStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
                     <span id="watchStatusText"
                       class="text-sm sm:text-base font-extrabold tracking-wide text-red-400">OFFLINE</span>
                   </div>
-                  <div class="text-[10px] text-white/40 mt-1">BLE wristband</div>
+                  <div id="watchSourceLabel" class="text-[10px] text-white/40 mt-1">Phone / Wearable</div>
                 </div>
               </div>
             </div>
@@ -332,13 +367,20 @@
 
             <div
               class="glass glass-card rounded-3xl p-6 sm:p-7 flex flex-col items-center justify-center text-center h-full">
-              <div class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">SMARTWATCH STEPS TODAY</div>
+              <div class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">PHONE STEPS TODAY</div>
               <div class="mt-3 flex items-baseline justify-center gap-2">
-                <div id="watchSteps" class="text-4xl sm:text-5xl font-black tabular-nums text-white leading-none">—
+                <div id="watchSteps" class="text-4xl sm:text-5xl font-black tabular-nums text-white leading-none">0
                 </div>
               </div>
-              <div class="text-xs font-semibold text-white/40 mt-1">steps synced</div>
-              <div id="watchExtra" class="text-xs text-white/50 mt-2 text-center"></div>
+              <div class="text-xs font-semibold text-white/40 mt-1">phone motion sensor</div>
+              <div id="watchExtra" class="text-xs text-white/50 mt-1.5 text-center">0 cal • 0.00 km</div>
+              <!-- 1-Tap Mobile Sensor Action Button -->
+              <div class="mt-4 w-full max-w-[220px]">
+                <button id="homePhoneTrackBtn" onclick="togglePhoneStepTracking()"
+                  class="w-full py-2.5 px-3.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
+                  Start Step Counter
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -643,22 +685,51 @@
         <!-- ================================================================= -->
         <div id="subtabStepsView" class="hidden space-y-4">
 
-          <!-- 1. Smartwatch Status Card -->
-          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
+          <!-- 1. Step Counter Status Card & Smartphone Sensor Controls -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-5 space-y-3.5">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
                 <div
-                  class="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-xl">
-                  ⌚
+                  class="w-10 h-10 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-xl">
+                  📱
                 </div>
                 <div>
-                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide">Smartwatch</h3>
+                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide">Step Counter (Smartphone & Wearable)</h3>
+                  <p class="text-[11px] text-white/50">Tracking steps via mobile phone sensor or ESP32 wristband</p>
                 </div>
               </div>
               <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 border border-white/10">
                 <span id="fitnessWatchStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
                 <span id="fitnessWatchStatusText"
                   class="text-xs sm:text-sm font-extrabold tracking-wide text-red-400">OFFLINE</span>
+              </div>
+            </div>
+
+            <!-- Quick Phone Sensor Control Bar -->
+            <div class="p-3 bg-black/40 rounded-2xl border border-white/10 flex flex-wrap items-center justify-between gap-2.5">
+              <div class="flex items-center gap-2">
+                <button id="phoneQuickToggleBtn" onclick="togglePhoneStepTracking()"
+                  class="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
+                  Start Phone Tracker
+                </button>
+                <button onclick="simulatePhoneStep()" title="Simulate 1 test step"
+                  class="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 text-cyan-300 font-bold text-xs transition-all">
+                  +1 Test Step
+                </button>
+              </div>
+
+              <div class="flex items-center gap-2 text-xs">
+                <span class="text-white/50 text-[11px]">Sensitivity:</span>
+                <select id="subtabSensitivitySelect" onchange="changePhoneStepSensitivity(this.value)"
+                  class="bg-black/60 border border-white/15 rounded-lg px-2.5 py-1 text-white text-xs focus:outline-none focus:border-cyan-400">
+                  <option value="normal" selected>Normal</option>
+                  <option value="high">High (Pocket)</option>
+                  <option value="low">Low (Vigorous)</option>
+                </select>
+                <a href="phone_tracker.html" target="_blank"
+                  class="text-cyan-400 hover:text-cyan-300 font-bold text-xs underline ml-1">
+                  Open Dedicated Mobile HUD ↗
+                </a>
               </div>
             </div>
           </div>
@@ -1035,6 +1106,8 @@
     </button>
   </nav>
 
+  <!-- Smartphone Step Counter Engine -->
+  <script src="phone-step-counter.js"></script>
   <!-- Script linked to abc.js -->
   <script src="abc.js"></script>
 </body>

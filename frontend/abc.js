@@ -107,6 +107,7 @@ async function logout() {
   disconnectRealtime();
   disconnectAnalyticsListeners();
   if (stepConnected) disconnectStepTracker();
+  if (window.phoneStepTracker) window.phoneStepTracker.stop();
   if (auth) await auth.signOut();
   currentUserId = null;
   currentUserEmail = null;
@@ -265,7 +266,7 @@ function setRobotConnectionStatus(isOnline) {
   }
 }
 
-function setWatchConnectionStatus(isOnline) {
+function setWatchConnectionStatus(isOnline, statusLabel = 'ONLINE') {
   const dot = document.getElementById('watchStatusDot');
   const text = document.getElementById('watchStatusText');
   const fDot = document.getElementById('fitnessWatchStatusDot');
@@ -275,7 +276,7 @@ function setWatchConnectionStatus(isOnline) {
   [{ dot, text }, { dot: fDot, text: fText }].forEach(item => {
     if (!item.text) return;
     if (isOnline) {
-      item.text.textContent = 'ONLINE';
+      item.text.textContent = statusLabel;
       item.text.className = item.text.id === 'fitnessWatchStatusText'
         ? 'text-xs sm:text-sm font-extrabold tracking-wide text-emerald-400'
         : 'text-sm sm:text-base font-extrabold tracking-wide text-emerald-400';
@@ -2341,6 +2342,149 @@ function renderFormChart(form) {
   });
 }
 
+// ---------- Smartphone Step Counter Integration ----------
+
+let phoneStepThrottle = 0;
+
+function initPhoneStepTracker() {
+  if (!window.PhoneStepTracker || !window.phoneStepTracker) return;
+
+  const tracker = window.phoneStepTracker;
+
+  // Sync today's current steps to UI immediately on load
+  const initialData = tracker.getStepData();
+  if (initialData.steps > 0) {
+    updateStepDisplay(initialData, false);
+  }
+
+  // Subscribe to real-time step events
+  tracker.onStep((data, isStepIncrement) => {
+    updateStepDisplay(data, true);
+    saveStepHistory(data);
+
+    // Sync to Firestore every 5 steps or on major update
+    phoneStepThrottle++;
+    if (phoneStepThrottle >= 5 || !isStepIncrement) {
+      phoneStepThrottle = 0;
+      syncStepsToFirestore(data);
+    }
+
+    setWatchConnectionStatus(true, 'PHONE ACTIVE');
+    const sourceEl = document.getElementById('watchSourceLabel');
+    if (sourceEl) sourceEl.textContent = 'Mobile Phone Sensor';
+  });
+
+  // Subscribe to status changes
+  tracker.onStatusChange((status) => {
+    updatePhoneTrackerStatusUI(status);
+  });
+
+  // Subscribe to diagnostics log
+  tracker.onLog((msg) => {
+    stepLog(msg);
+  });
+
+  // Auto-start on mobile Android if supported
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || ('ontouchstart' in window);
+  if (isMobile) {
+    stepLog('Mobile device detected: phone accelerometer ready');
+    // Android browsers do not require click gesture for devicemotion
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission !== 'function') {
+      tracker.start().then(started => {
+        if (started) stepLog('Auto-started phone motion pedometer on mobile device');
+      }).catch(() => { });
+    }
+  }
+}
+
+function updatePhoneTrackerStatusUI(status) {
+  const badge = document.getElementById('phoneStepStatusBadge');
+  const btn = document.getElementById('phoneStepBtn');
+  const quickBtn = document.getElementById('phoneQuickToggleBtn');
+  const homeBtn = document.getElementById('homePhoneTrackBtn');
+  const isTracking = (status === 'tracking' || status === 'simulating');
+
+  if (badge) {
+    if (isTracking) {
+      badge.className = 'step-status connected';
+      badge.textContent = status === 'simulating' ? 'Simulating' : 'Tracking';
+    } else if (status === 'denied') {
+      badge.className = 'step-status disconnected';
+      badge.textContent = 'Denied';
+    } else {
+      badge.className = 'step-status disconnected';
+      badge.textContent = 'Stopped';
+    }
+  }
+
+  const btnText = isTracking ? 'Pause Phone Tracker' : 'Start Phone Tracker';
+  const btnClass = isTracking
+    ? 'w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-extrabold text-xs shadow-md active:scale-95 transition-all'
+    : 'w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-400 via-teal-400 to-emerald-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all';
+
+  if (btn) {
+    btn.textContent = btnText;
+    btn.className = btnClass;
+  }
+
+  if (quickBtn) {
+    quickBtn.textContent = btnText;
+    quickBtn.className = isTracking
+      ? 'px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-extrabold text-xs shadow-md active:scale-95 transition-all'
+      : 'px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all';
+  }
+
+  if (homeBtn) {
+    homeBtn.textContent = isTracking ? 'Pause Step Counter' : 'Start Step Counter';
+    homeBtn.className = isTracking
+      ? 'w-full py-2.5 px-3.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-extrabold text-xs shadow-md active:scale-95 transition-all'
+      : 'w-full py-2.5 px-3.5 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all';
+  }
+
+  if (isTracking) {
+    setWatchConnectionStatus(true, 'PHONE ACTIVE');
+    const sourceEl = document.getElementById('watchSourceLabel');
+    if (sourceEl) sourceEl.textContent = 'Mobile Phone Sensor';
+  } else if (!stepConnected) {
+    setWatchConnectionStatus(false);
+  }
+}
+
+async function togglePhoneStepTracking() {
+  if (!window.phoneStepTracker) {
+    alert('Smartphone Step Counter is not loaded. Please refresh the page.');
+    return;
+  }
+
+  const tracker = window.phoneStepTracker;
+  if (tracker.isTracking || tracker.simInterval) {
+    tracker.stop();
+    stepLog('Phone tracking stopped by user');
+  } else {
+    stepLog('Starting phone step tracker...');
+    const started = await tracker.start();
+    if (!started) {
+      stepLog('Could not start motion sensors. Grant motion permissions if prompted, or use simulation.');
+    }
+  }
+}
+
+function changePhoneStepSensitivity(val) {
+  if (window.phoneStepTracker) {
+    window.phoneStepTracker.setSensitivity(val);
+  }
+  const sel1 = document.getElementById('configSensitivitySelect');
+  const sel2 = document.getElementById('subtabSensitivitySelect');
+  if (sel1 && sel1.value !== val) sel1.value = val;
+  if (sel2 && sel2.value !== val) sel2.value = val;
+}
+
+function simulatePhoneStep() {
+  if (window.phoneStepTracker) {
+    window.phoneStepTracker.simulateSingleStep();
+  }
+}
+
 // ---------- Step Tracker ----------
 
 async function toggleStepConnection() {
@@ -2775,6 +2919,7 @@ function formatDate(value) {
 
 (function init() {
   renderStepHistory();
+  initPhoneStepTracker();
   if (!navigator.bluetooth) {
     const button = document.getElementById('stepConnectBtn');
     if (button) button.disabled = true;
