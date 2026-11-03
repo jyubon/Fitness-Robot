@@ -143,6 +143,13 @@ def calculate_command(person_x, body_height):
     return command, state, d_zone, h_zone
 
 
+def reset_tracking_state():
+    """Reset person-lost timer and side tracking when starting a new session."""
+    global last_person_side, lost_person_since
+    last_person_side = None
+    lost_person_since = None
+
+
 def adjust_robot_position(exercise_name, results, in_exercise_mode=False, get_pt_fn=None, get_body_height_fn=None):
     """
     Adjust robot orientation and distance to center user in frame.
@@ -165,6 +172,7 @@ def adjust_robot_position(exercise_name, results, in_exercise_mode=False, get_pt
             search_elapsed = elapsed_lost - 5.0
             if search_elapsed > 8.0:
                 send_command("STOP")
+                lost_person_since = None
                 return "LOST_TIMEOUT"
             else:
                 dir1 = "VEER_RIGHT" if last_person_side == "RIGHT" else "VEER_LEFT"

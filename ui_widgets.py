@@ -13,6 +13,7 @@ from session_manager import (
     publish_robot_state,
     force_stop,
     remote_mode_queue,
+    start_exercise,
 )
 from robot_control import send_command, ser
 from ui_overlays import bgr_to_hex
@@ -310,13 +311,16 @@ class FitnessRobotUI(tk.Tk):
         self.voice_status_label.pack(side="bottom", pady=(2, 2))
 
     def run_exercise(self, exercise_name, func):
+        global last_session_summary
         self.exercise_active = True
         self.home_clicked = False
         force_stop.clear()
         try:
             self.show_exercise_screen(exercise_name)
             self.update()
-            func(self)
+            summary = func(self)
+            if summary:
+                last_session_summary = summary
         except tk.TclError:
             return
         finally:
@@ -461,6 +465,19 @@ class FitnessRobotUI(tk.Tk):
         self.bottom_bar = tk.Frame(self.main_container, bg="#1E1E24")
         self.bottom_bar.pack(fill="x", side="bottom", pady=10)
 
+        self.start_btn = RoundedButton(
+            self.bottom_bar,
+            text="Start",
+            command=self.set_start_clicked,
+            bg_color="#96D75F",
+            fg_color="#1E1E24",
+            radius=10,
+            width=100,
+            height=35,
+            font=("Helvetica", 12, "bold")
+        )
+        self.start_btn.pack(side="left", padx=10)
+
         self.home_btn = RoundedButton(
             self.bottom_bar,
             text="Home",
@@ -533,6 +550,18 @@ class FitnessRobotUI(tk.Tk):
 
     def set_home_clicked(self):
         self.home_clicked = True
+
+    def set_start_clicked(self):
+        start_exercise.set()
+        self.hide_start_button()
+
+    def hide_start_button(self):
+        if hasattr(self, 'start_btn') and self.start_btn is not None:
+            try:
+                if self.start_btn.winfo_exists():
+                    self.start_btn.pack_forget()
+            except tk.TclError:
+                pass
 
     def show_summary_screen(self):
         global last_session_summary

@@ -5,8 +5,10 @@ Encapsulates camera handling, gesture recognition, pause/resume, rest timers,
 session tracking, and display lifecycle shared across all workout routines.
 """
 
+import os
 import cv2
 import time
+import traceback
 import local_stream_server
 
 from config import (
@@ -19,6 +21,7 @@ from config import (
     HAND_FRAME_SKIP,
     PALM_STOP_REQUIRED_FRAMES,
     ACCENT_CYAN,
+    ACCENT_RED,
 )
 from audio_manager import play_audio_track
 from session_manager import (
@@ -35,7 +38,7 @@ from session_manager import (
     force_stop,
     start_exercise,
 )
-from robot_control import send_command, adjust_robot_position
+from robot_control import send_command, adjust_robot_position, reset_tracking_state
 from pose_utils import (
     create_pose_landmarker,
     create_hand_landmarker,
@@ -165,14 +168,47 @@ class ExerciseRunner:
         """Hook for exercise subclasses when set increments while person lost."""
         pass
 
+    def _open_camera(self):
+        """Open camera reliably across V4L2 and fallback device indices."""
+        indices = []
+        for idx in (CAMERA_INDEX, 0, 1, 2):
+            if idx not in indices:
+                indices.append(idx)
+
+        for idx in indices:
+            cap = None
+            if os.name == "posix":
+                cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    cap.release()
+                    cap = None
+            if cap is None:
+                cap = cv2.VideoCapture(idx)
+            if cap is not None and cap.isOpened():
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                for _ in range(3):
+                    cap.read()
+                print(f"✅ Opened camera index {idx} for {self.exercise_title}")
+                return cap
+            if cap is not None:
+                cap.release()
+
+        return cv2.VideoCapture(CAMERA_INDEX)
+
     def run(self):
         """Execute exercise session."""
         clear_session_errors()
+        reset_tracking_state()
         self.home_clicked = False
 
-        cap = cv2.VideoCapture(CAMERA_INDEX)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        cap = None
+        landmarker = None
+        hand_landmarker = None
+        session_started = False
 
         window_name = self.exercise_title
         if self.ui is None:
@@ -183,16 +219,30 @@ class ExerciseRunner:
         print(f"🏋️ {self.exercise_title} Active! Press Q or Palm-Stop to exit.")
         publish_robot_state("LOADING", exercise=self.exercise_key)
 
-        landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
-        hand_landmarker = create_hand_landmarker()
-
-        session_started = False
-
         try:
+            cap = self._open_camera()
+            if not cap or not cap.isOpened():
+                print(f"❌ Could not open camera for {self.exercise_title}.")
+                if self.ui is not None:
+                    self.ui.update_feedback("⚠️ Camera not detected! Check USB camera connection.", ACCENT_RED)
+                    self.ui.update()
+                    time.sleep(2.5)
+                return
+
+            landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
+            hand_landmarker = create_hand_landmarker()
+
+            failed_reads = 0
             while cap.isOpened():
                 ret, frame = cap.read()
-                if not ret:
-                    break
+                if not ret or frame is None:
+                    failed_reads += 1
+                    if failed_reads > 30:
+                        print(f"⚠️ Camera read failed {failed_reads} consecutive times; exiting {self.exercise_title}.")
+                        break
+                    time.sleep(0.05)
+                    continue
+                failed_reads = 0
 
                 if force_stop.is_set():
                     print("  [REMOTE] Force Stop received from web UI")
@@ -221,14 +271,18 @@ class ExerciseRunner:
                     if start_exercise.is_set():
                         play_audio_track(14)
                         send_command("STOP")
+                        reset_tracking_state()
                         self.waiting_for_start = False
                         start_exercise.clear()
+                        if self.ui is not None and hasattr(self.ui, 'hide_start_button'):
+                            self.ui.hide_start_button()
                         if not session_started:
                             publish_session_start(self.exercise_key)
                             session_started = True
                         publish_robot_state("ACTIVE", exercise=self.exercise_key)
                     else:
                         if results and results.pose_landmarks:
+                            self.lost_start_time = None
                             draw_skeleton(image, results)
                             robot_status = adjust_robot_position(
                                 self.exercise_key.upper(), results,
@@ -245,13 +299,15 @@ class ExerciseRunner:
                             )
 
                         if robot_status == "LOST_TIMEOUT":
-                            break
+                            send_command("STOP")
+                            if not self._handle_person_lost():
+                                break
 
                         draw_follow_phase_overlay(image, self.view_position)
                         local_stream_server.update_frame(image)
 
                         if self.ui is not None:
-                            self.ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press the Start", ACCENT_CYAN)
+                            self.ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press Start", ACCENT_CYAN)
                             self.ui.update()
                         else:
                             img_copy = image.copy()
@@ -357,6 +413,16 @@ class ExerciseRunner:
                         break
                     self.ui.update()
 
+        except Exception as exc:
+            print(f"❌ Error in {self.exercise_title}: {exc}")
+            traceback.print_exc()
+            if self.ui is not None:
+                try:
+                    self.ui.update_feedback(f"⚠️ Error: {exc}", ACCENT_RED)
+                    self.ui.update()
+                    time.sleep(2.5)
+                except Exception:
+                    pass
         finally:
             send_command("STOP")
             if landmarker is not None:
@@ -375,7 +441,11 @@ class ExerciseRunner:
             except Exception:
                 pass
 
-            cap.release()
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
             if self.ui is None:
                 cv2.destroyAllWindows()
 

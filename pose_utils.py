@@ -4,6 +4,8 @@ MediaPipe Pose & Hand Utilities for Fitness Robot.
 Handles landmarker initializations, geometric calculations, and gesture recognition.
 """
 
+import os
+import urllib.request
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -15,6 +17,25 @@ from config import (
     HAND_MODEL_PATH,
     PALM_STOP_MIN_HAND_SIZE,
 )
+
+POSE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+)
+
+
+def _ensure_pose_model(model_path):
+    """Ensure pose_landmarker.task exists locally, downloading it if missing."""
+    if os.path.exists(model_path) and os.path.getsize(model_path) > 100_000:
+        return model_path
+    print(f"⚠️ Pose model not found at {model_path}. Downloading from MediaPipe...")
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(model_path)), exist_ok=True)
+        urllib.request.urlretrieve(POSE_MODEL_URL, model_path)
+        print(f"✅ Downloaded pose model to {model_path}")
+    except Exception as exc:
+        print(f"❌ Failed to download pose model: {exc}")
+    return model_path
 
 
 def calculate_angle(a, b, c):
@@ -67,7 +88,8 @@ def check_plank(shoulder, hip, ankle, min_angle=165.0):
 
 def create_pose_landmarker(det_conf=0.5, track_conf=0.5):
     """Create MediaPipe PoseLandmarker in VIDEO mode."""
-    base_options = mp_tasks.BaseOptions(model_asset_path=MODEL_PATH)
+    resolved_path = _ensure_pose_model(MODEL_PATH)
+    base_options = mp_tasks.BaseOptions(model_asset_path=resolved_path)
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
         running_mode=vision.RunningMode.VIDEO,

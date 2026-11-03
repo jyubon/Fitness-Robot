@@ -40,8 +40,24 @@ FRAME_SKIP      = 2              # Process pose landmarks every N frames (optimi
 HAND_FRAME_SKIP = 6              # Process hand landmarks every N frames (optimized for RPi4)
 
 # ─── MediaPipe ───
-MODEL_PATH                = "pose_landmarker.task"
-HAND_MODEL_PATH           = "hand_landmarker.task"
+def _resolve_asset_path(filename):
+    for candidate in (
+        PROJECT_DIR / filename,
+        PROJECT_DIR.parent / filename,
+        Path("/home/fitness/Documents") / filename,
+        Path("/home/fitness/Desktop") / filename,
+        Path.home() / "Documents" / filename,
+        Path.home() / "Desktop" / filename,
+    ):
+        try:
+            if candidate.exists():
+                return str(candidate.resolve())
+        except OSError:
+            continue
+    return str(PROJECT_DIR / filename)
+
+MODEL_PATH                = _resolve_asset_path("pose_landmarker.task")
+HAND_MODEL_PATH           = _resolve_asset_path("hand_landmarker.task")
 PALM_STOP_REQUIRED_FRAMES = 12
 PALM_STOP_MIN_HAND_SIZE   = 0.12
 

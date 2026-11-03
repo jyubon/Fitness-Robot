@@ -97,6 +97,7 @@ from robot_control import (
     send_command,
     calculate_command,
     adjust_robot_position,
+    reset_tracking_state,
 )
 
 # ─── Pose & Hand Detection Utilities ───
@@ -171,16 +172,26 @@ def on_mouse_click(event, x, y, flags, param):
             home_clicked = True
 
 
-def main():
+def main(ui=None):
     """8-Direction Person Following Routine."""
     global home_clicked, last_session_summary
+
+    reset_tracking_state()
+    if ui is not None and hasattr(ui, 'hide_start_button'):
+        try:
+            ui.hide_start_button()
+        except Exception:
+            pass
 
     landmarker = create_pose_landmarker(det_conf=0.5, track_conf=0.5)
     timestamp_ms = 0
     print("✅ MediaPipe loaded")
 
     print("\nOpening camera...")
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+    if sys.platform.startswith("linux"):
+        cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
+    else:
+        cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         cap = cv2.VideoCapture(CAMERA_INDEX)
 
@@ -224,7 +235,7 @@ def main():
     print("  Press Q to quit")
     print()
 
-    if SHOW_WINDOW:
+    if SHOW_WINDOW and ui is None:
         cv2.namedWindow('Person Follower', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Person Follower', DISPLAY_WIDTH, DISPLAY_HEIGHT)
         home_clicked = False
@@ -250,8 +261,8 @@ def main():
         if not ret:
             continue
 
-        if force_stop.is_set():
-            print("  [REMOTE] Force Stop received from web UI")
+        if force_stop.is_set() or (ui is not None and getattr(ui, 'home_clicked', False)):
+            print("  [REMOTE/UI] Stop received")
             send_command("STOP")
             break
 
@@ -321,8 +332,13 @@ def main():
         draw_frame(display, command, state, person_x, body_height, fps, d_zone, h_zone)
         draw_home_button(display)
 
-        if SHOW_WINDOW:
-            local_stream_server.update_frame(display)
+        local_stream_server.update_frame(display)
+        if ui is not None:
+            try:
+                ui.update()
+            except Exception:
+                break
+        elif SHOW_WINDOW:
             cv2.imshow('Person Follower', display)
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q') or home_clicked:
@@ -337,7 +353,8 @@ def main():
     send_command("STOP")
     time.sleep(0.2)
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_WINDOW and ui is None:
+        cv2.destroyAllWindows()
     if landmarker is not None:
         try: landmarker.close()
         except Exception: pass
@@ -348,6 +365,7 @@ def main():
         'metrics': [('Duration', f"{duration:.1f}s")],
         'errors': []
     }
+    return last_session_summary
 
 
 if __name__ == "__main__":
@@ -371,7 +389,7 @@ if __name__ == "__main__":
 
     # Wire GUI callbacks
     callbacks = {
-        "person_follow": lambda ui: main(),
+        "person_follow": main,
         "bicep_curls": run_bicep_curls,
         "pushups": run_pushups,
         "squats": run_squats,
