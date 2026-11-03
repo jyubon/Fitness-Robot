@@ -186,7 +186,6 @@ class ExerciseRunner:
         landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
         hand_landmarker = create_hand_landmarker()
 
-        start_exercise.clear()
         session_started = False
 
         try:

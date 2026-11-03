@@ -2,11 +2,10 @@
 Type=Application
 Name=Fitness Robot
 Comment=Start Fitness Robot UI after desktop login
-Exec=/bin/bash "/home/fitness/Documents/FitBot/Fitness-Robot/autostart_fitness.sh" --run
+Exec=/bin/bash /home/fitness/Documents/FitBot/Fitness-Robot/autostart_fitness.sh --run
 Path=/home/fitness/Documents/FitBot/Fitness-Robot
-WorkingDirectory=/home/fitness/Documents/FitBot/Fitness-Robot
 StartupNotify=false
 Terminal=false
 Hidden=false
 X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Delay=8
+X-GNOME-Autostart-Delay=5
