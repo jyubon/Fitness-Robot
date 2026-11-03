@@ -863,8 +863,9 @@ function handleTelemetryMessage(msg) {
   }
 
   if (type === 'watch_steps') {
+    const cloudSteps = Number(payload.steps || 0);
     updateStepDisplay({
-      steps: Number(payload.steps || 0),
+      steps: cloudSteps,
       cal: payload.calories,
       km: payload.distance_km,
       min: payload.active_min
@@ -872,6 +873,10 @@ function handleTelemetryMessage(msg) {
     const lastSyncEl = document.getElementById('watchLastSync');
     if (lastSyncEl) lastSyncEl.textContent = payload.last_synced_at ? formatTime(payload.last_synced_at) : '';
     setWatchConnectionStatus(true);
+    // Sync external steps into phone tracker so switching between phone and wristband is seamless
+    if (window.phoneStepTracker) {
+      window.phoneStepTracker.setInitialSteps(cloudSteps, payload.calories, payload.distance_km, payload.active_min);
+    }
     return;
   }
 
@@ -2532,7 +2537,13 @@ async function connectStepTracker() {
 
     stepConnected = true;
     setStepStatus('connected');
-    stepLog('Connected successfully');
+    stepLog('Connected successfully to ESP32 Wristband');
+
+    // Pause phone tracking if active to avoid double-counting
+    if (window.phoneStepTracker && window.phoneStepTracker.isTracking) {
+      window.phoneStepTracker.stop();
+      stepLog('Active tracker switched: Now using ESP32 Wristband');
+    }
 
     setTimeout(async () => {
       await syncStepTime();
@@ -2626,6 +2637,11 @@ function onStepCountChanged(event) {
 
   // Update local UI immediately in real time so the user sees changes instantly
   updateStepDisplay(data, true);
+
+  // Keep phone tracker baseline in sync for seamless switching
+  if (window.phoneStepTracker) {
+    window.phoneStepTracker.setInitialSteps(steps, cal, km, min);
+  }
 
   // Only sync to Firestore on the initial connection (when lastSyncedStepCount is -1)
   // or when the steps have increased by at least 10 since the last write.
@@ -2922,8 +2938,10 @@ function formatDate(value) {
   initPhoneStepTracker();
   if (!navigator.bluetooth) {
     const button = document.getElementById('stepConnectBtn');
-    if (button) button.disabled = true;
-    stepLog('Web Bluetooth is not supported. Use Chrome or Edge on a secure origin.');
+    if (button) {
+      button.disabled = true;
+      button.title = 'Web Bluetooth is not supported on this browser (use the Phone Step Counter instead)';
+    }
   }
 
   if (auth) {

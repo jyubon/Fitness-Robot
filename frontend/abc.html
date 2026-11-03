@@ -130,7 +130,10 @@
           <!-- Smartphone Step Counter (Primary) -->
           <div class="space-y-2">
             <div class="flex items-center justify-between mb-1">
-              <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📱 Phone Step Counter</span>
+              <div>
+                <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📱 Phone Step Counter</span>
+                <span class="text-[9px] text-white/40 block">Uses phone sensor • No Bluetooth needed</span>
+              </div>
               <span id="phoneStepStatusBadge" class="step-status disconnected">Stopped</span>
             </div>
             <button id="phoneStepBtn" onclick="togglePhoneStepTracking()"
@@ -780,16 +783,16 @@
               </div>
             </div>
 
-            <!-- Bluetooth Diagnostics Log -->
+            <!-- Step & Diagnostics Log -->
             <div class="glass glass-card rounded-3xl p-5">
               <div class="flex items-center justify-between mb-3">
-                <div class="font-bold text-sm">Bluetooth Log</div>
+                <div class="font-bold text-sm">Step &amp; Sensor Activity Log</div>
                 <button onclick="clearStepLog()"
                   class="text-xs px-2.5 py-1 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition-all">Clear</button>
               </div>
               <div id="stepLogContainer"
                 class="h-[260px] overflow-y-auto bg-black/40 rounded-2xl p-3 text-xs font-mono space-y-1 border border-white/10">
-                <div class="text-white/30">Ready to pair with wearable device...</div>
+                <div class="text-white/30">Ready (Phone sensor operates without Bluetooth; ESP32 wristband uses BLE)...</div>
               </div>
             </div>
           </div>

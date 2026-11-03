@@ -130,6 +130,25 @@
       }
     }
 
+    /**
+     * Adopt baseline steps from cloud sync or ESP32 wristband if higher.
+     * Enables seamless switching between wristband and mobile phone.
+     */
+    setInitialSteps(steps, calories, distanceKm, activeMin) {
+      const numSteps = Number(steps) || 0;
+      if (numSteps > this.steps) {
+        this.steps = numSteps;
+        this.calories = typeof calories === 'number' ? calories : Number((this.steps * this.calPerStep).toFixed(1));
+        this.distanceKm = typeof distanceKm === 'number' ? distanceKm : Number(((this.steps * this.metersPerStep) / 1000.0).toFixed(2));
+        if (typeof activeMin === 'number' && activeMin > this.activeMin) {
+          this.activeMin = activeMin;
+          this.activeSeconds = activeMin * 60;
+        }
+        this._saveStoredData();
+        this.log(`Adopted external step baseline: ${this.steps} steps`);
+      }
+    }
+
     // ==========================================
     // PERMISSIONS & HARDWARE
     // ==========================================
