@@ -1744,7 +1744,7 @@ function updateProfileViewForSelectedDate() {
   }
 
   const totalForm = good + flaw;
-  const pct = totalForm > 0 ? Math.round((good / totalForm) * 100) : 100;
+  const pct = totalForm > 0 ? Math.round((good / totalForm) * 100) : 0;
 
   const kpiForm = document.getElementById('kpiForm');
   if (kpiForm) kpiForm.textContent = `${pct}%`;
@@ -1836,7 +1836,7 @@ function generateWorkoutSnapshotCanvas() {
   const totalReps = document.getElementById('kpiTotalReps')?.textContent || '0';
   const repsDetail = document.getElementById('kpiRepsBreakdown')?.textContent || 'Curls • Pushups • Squats';
   const plank = document.getElementById('kpiPlankTime')?.textContent || '0s';
-  const form = document.getElementById('kpiForm')?.textContent || '100%';
+  const form = document.getElementById('kpiForm')?.textContent || '0%';
   const formSub = document.getElementById('kpiFormSub')?.textContent || 'Pose Precision Score';
   const steps = document.getElementById('profileStepsCount')?.textContent || '0';
   const stepsSub = document.getElementById('profileStepsSub')?.textContent || 'ESP32 Wristband';
