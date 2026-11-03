@@ -77,16 +77,33 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Header styling - Fades softly into background without hard separation */
+/* Header styling - Mobile-first: natural flow, non-sticky, completely seamless without separation */
 .app-header {
   height: 64px;
-  position: sticky;
-  top: 0;
-  background: linear-gradient(180deg, rgba(20, 26, 10, 0.94) 0%, rgba(14, 20, 8, 0.78) 55%, rgba(4, 5, 7, 0) 100%);
+  position: relative;
+  top: auto;
+  background: transparent !important;
   border: none !important;
+  border-bottom: none !important;
   box-shadow: none !important;
   pointer-events: auto;
   z-index: 50;
+  transition: background 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              border-bottom-color 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Mobile Header (< 1024px): Non-sticky, seamless without separation or borders */
+@media (max-width: 1023px) {
+  .app-header,
+  .app-header.header-scrolled {
+    position: relative !important;
+    top: auto !important;
+    background: transparent !important;
+    border: none !important;
+    border-bottom: none !important;
+    box-shadow: none !important;
+  }
 }
 
 /* Hardware & Stream Config Popup (Dropdown from spanner button) */
@@ -754,12 +771,68 @@ body {
   box-shadow: 0 0 10px rgba(6, 182, 212, 0.45);
 }
 
-/* Bicep Curls Dual Arm Card & Progress Styles */
-#bicepArmsBox {
-  animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+/* Equal Height Alignment for Fitness Top Cards */
+.fitness-top-card {
+  height: 104px;
+  min-height: 104px;
 }
 
-#leftArmProgress,
-#rightArmProgress {
-  box-shadow: 0 0 10px rgba(6, 182, 212, 0.45);
+@media (min-width: 640px) {
+  .fitness-top-card {
+    height: 114px;
+    min-height: 114px;
+  }
+}
+
+/* Camera view wrapper behavior: toggled on mobile (< 1024px), permanently fixed on desktop (>= 1024px) */
+.camera-wrapper {
+  display: none;
+}
+
+.camera-wrapper.mobile-active {
+  display: flex !important;
+}
+
+@media (min-width: 1024px) {
+  /* Permanently fixed camera on desktop */
+  .camera-wrapper {
+    display: flex !important;
+  }
+
+  /* Desktop Previous Blue Cyber-Athletic Color Palette */
+  :root {
+    --bg-primary: #07080e;
+    --bg-secondary: #0e111a;
+    --glass-bg: rgba(18, 22, 34, 0.65);
+    --glass-bg-hover: rgba(26, 32, 48, 0.75);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-border-focus: rgba(6, 182, 212, 0.35);
+  }
+
+  body {
+    background-color: #07080e;
+    background-image:
+      radial-gradient(circle at 15% 15%, rgba(6, 182, 212, 0.09) 0%, transparent 40%),
+      radial-gradient(circle at 85% 65%, rgba(16, 185, 129, 0.06) 0%, transparent 40%),
+      radial-gradient(circle at 50% 90%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
+      linear-gradient(180deg, #090c17 0%, #07080e 40%, #05060a 100%);
+    background-attachment: fixed;
+    background-size: cover;
+  }
+
+  /* Desktop Sticky Header with smooth scroll transformation */
+  .app-header {
+    position: sticky !important;
+    top: 0 !important;
+    background: linear-gradient(180deg, rgba(7, 8, 14, 0.95) 0%, rgba(7, 8, 14, 0.75) 55%, rgba(7, 8, 14, 0) 100%) !important;
+    border-bottom: 1px solid transparent !important;
+    box-shadow: none !important;
+  }
+
+  /* Desktop Scrolled State: completely non-transparent solid menu with luminous bottom line */
+  .app-header.header-scrolled {
+    background: #080b13 !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.9) !important;
+  }
 }

@@ -417,7 +417,7 @@ function switchFitnessSubtab(subtab) {
       btnSteps.classList.remove('subtab-btn-active');
       btnSteps.classList.add('text-white/60');
     }
-    if (isCameraActive) {
+    if (isCameraActive || isDesktop()) {
       startCameraStreamIfNeeded();
     }
   } else {
@@ -441,23 +441,37 @@ function toggleConfigDrawer() {
   drawer.classList.toggle('hidden');
 }
 
+function isDesktop() {
+  return window.innerWidth >= 1024;
+}
+
 function toggleCameraView(forceState) {
   const card = document.getElementById('cameraViewCard');
+  const wrapper = document.getElementById('cameraViewCardWrapper');
   const btn = document.getElementById('cameraToggleBtn');
   if (!card) return;
 
+  if (isDesktop()) {
+    // Camera view is permanently fixed in the left column on desktop
+    isCameraActive = true;
+    startCameraStreamIfNeeded();
+    return;
+  }
+
+  // Mobile toggle behavior
   if (typeof forceState === 'boolean') {
     isCameraActive = forceState;
   } else {
-    isCameraActive = card.classList.contains('hidden');
+    const isCurrentlyActive = wrapper ? wrapper.classList.contains('mobile-active') : isCameraActive;
+    isCameraActive = !isCurrentlyActive;
   }
 
   if (isCameraActive) {
-    card.classList.remove('hidden');
+    if (wrapper) wrapper.classList.add('mobile-active');
     if (btn) btn.classList.add('camera-btn-active');
     startCameraStreamIfNeeded();
   } else {
-    card.classList.add('hidden');
+    if (wrapper) wrapper.classList.remove('mobile-active');
     if (btn) btn.classList.remove('camera-btn-active');
   }
 }
@@ -587,25 +601,15 @@ function showTab(tab) {
   const btnSteps = document.getElementById('tab-steps');
   const btnAnalytics = document.getElementById('tab-analytics');
   const btnStart = document.getElementById('startExerciseBtn');
-  const forceStopBtn = document.getElementById('forceStopBtn');
   const configMenuBtn = document.getElementById('configMenuBtn');
   const configDrawer = document.getElementById('configDrawer');
 
-  // Both Start Detecting Button and Emergency Stop button only appear in Fitness section ('steps')
+  // Start button in Fitness section
   if (btnStart) {
     if (tab === 'steps') {
       btnStart.classList.remove('hidden');
     } else {
       btnStart.classList.add('hidden');
-    }
-  }
-
-  // Emergency stop button only appears in Fitness section ('steps')
-  if (forceStopBtn) {
-    if (tab === 'steps') {
-      forceStopBtn.classList.remove('hidden');
-    } else {
-      forceStopBtn.classList.add('hidden');
     }
   }
 
@@ -647,6 +651,9 @@ function showTab(tab) {
     disconnectAnalyticsListeners();
     switchFitnessSubtab(currentFitnessSubtab || 'exercises');
     syncExerciseUI(currentExercise || 'bicep_curls');
+    if (isDesktop() || isCameraActive) {
+      startCameraStreamIfNeeded();
+    }
   } else {
     live.classList.add('hidden');
     steps.classList.add('hidden');
@@ -2468,43 +2475,115 @@ async function toggleStepConnection() {
   }
 }
 
+function renderWristbandDeviceUI(device, status) {
+  const container = document.getElementById('wristbandDeviceList');
+  const emptyNotice = document.getElementById('wristbandEmptyNotice');
+  const scanStatus = document.getElementById('wristbandScanStatus');
+  if (!container) return;
+
+  if (emptyNotice) emptyNotice.remove();
+  if (scanStatus) scanStatus.textContent = status || 'paired';
+
+  const devId = (device.id || 'bt-wristband').replace(/[^a-zA-Z0-9_-]/g, '_');
+  let card = document.getElementById(`wb-device-${devId}`);
+  if (!card) {
+    card = document.createElement('div');
+    card.id = `wb-device-${devId}`;
+    card.className = 'p-2 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between transition-all';
+    container.appendChild(card);
+  }
+
+  const isConn = (status === 'connected');
+  const devName = device.name || 'ESP32 Wristband';
+
+  card.innerHTML = `
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-base">${isConn ? '⌚' : '📡'}</span>
+      <div class="min-w-0">
+        <div class="font-bold text-xs text-white truncate">${escapeHtml(devName)}</div>
+        <div class="text-[10px] text-white/50 flex items-center gap-1.5 font-mono">
+          <span class="w-1.5 h-1.5 rounded-full ${isConn ? 'bg-emerald-400 animate-pulse' : 'bg-white/40'}"></span>
+          <span>${isConn ? 'Connected' : 'Paired'}</span>
+        </div>
+      </div>
+    </div>
+    <div class="flex items-center gap-1.5">
+      ${isConn ? `
+        <button onclick="disconnectStepTracker()" class="px-2 py-0.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[10px] font-bold border border-red-500/30 transition-all active:scale-95">
+          Disconnect
+        </button>
+      ` : `
+        <button onclick="connectStepTracker()" class="px-2 py-0.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-[10px] font-bold border border-cyan-500/30 transition-all active:scale-95">
+          Connect
+        </button>
+      `}
+    </div>
+  `;
+}
+
+async function loadPermittedWristbandDevices() {
+  if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return;
+  try {
+    const devices = await navigator.bluetooth.getDevices();
+    if (devices && devices.length > 0) {
+      devices.forEach(dev => {
+        renderWristbandDeviceUI(dev, (dev.gatt && dev.gatt.connected) ? 'connected' : 'paired');
+      });
+    }
+  } catch (err) {
+    console.debug('getDevices check:', err);
+  }
+}
+
 async function connectStepTracker() {
   if (!navigator.bluetooth) {
     stepLog('Web Bluetooth is not supported in this browser. Use Chrome or Edge.');
     setStepStatus('disconnected');
+    const scanStatus = document.getElementById('wristbandScanStatus');
+    if (scanStatus) scanStatus.textContent = 'unsupported';
     return;
   }
 
   try {
     setStepStatus('connecting');
-    stepLog('Opening Bluetooth device picker...');
+    const scanStatus = document.getElementById('wristbandScanStatus');
+    if (scanStatus) scanStatus.textContent = 'showing available devices...';
+    stepLog('Opening Bluetooth pairing prompt (showing all available devices)...');
 
+    // Shows ALL available nearby Bluetooth devices for pairing
     stepDevice = await requestStepDevice();
     stepLog(`Selected: ${stepDevice.name || 'Unknown Device'}`);
+    renderWristbandDeviceUI(stepDevice, 'connecting');
     stepDevice.addEventListener('gattserverdisconnected', onStepDisconnected);
 
     stepServer = await stepDevice.gatt.connect();
     stepLog('GATT connected');
 
-    const service = await stepServer.getPrimaryService(STEP_SERVICE_UUID);
-    stepCountChar = await service.getCharacteristic(STEP_COUNT_UUID);
-    stepTimeSyncChar = await service.getCharacteristic(STEP_TIME_SYNC_UUID);
-    stepDailyDataChar = await service.getCharacteristic(STEP_DAILY_DATA_UUID);
-    stepCommandChar = await service.getCharacteristic(STEP_COMMAND_UUID);
-    stepLog('Tracker characteristics ready');
+    try {
+      const service = await stepServer.getPrimaryService(STEP_SERVICE_UUID);
+      stepCountChar = await service.getCharacteristic(STEP_COUNT_UUID);
+      stepTimeSyncChar = await service.getCharacteristic(STEP_TIME_SYNC_UUID);
+      stepDailyDataChar = await service.getCharacteristic(STEP_DAILY_DATA_UUID);
+      stepCommandChar = await service.getCharacteristic(STEP_COMMAND_UUID);
+      stepLog('Tracker characteristics ready');
 
-    await stepCountChar.startNotifications();
-    stepCountChar.addEventListener('characteristicvaluechanged', onStepCountChanged);
+      await stepCountChar.startNotifications();
+      stepCountChar.addEventListener('characteristicvaluechanged', onStepCountChanged);
 
-    await stepDailyDataChar.startNotifications();
-    stepDailyDataChar.addEventListener('characteristicvaluechanged', onStepDailyDataChanged);
+      await stepDailyDataChar.startNotifications();
+      stepDailyDataChar.addEventListener('characteristicvaluechanged', onStepDailyDataChanged);
 
-    await stepCommandChar.startNotifications();
-    stepCommandChar.addEventListener('characteristicvaluechanged', onStepCommandReceived);
-    stepLog('Subscribed to command notifications (physical button ready)');
+      await stepCommandChar.startNotifications();
+      stepCommandChar.addEventListener('characteristicvaluechanged', onStepCommandReceived);
+      stepLog('Subscribed to command notifications (physical button ready)');
+    } catch (svcErr) {
+      stepLog(`Service notice: ${svcErr.message || svcErr}`);
+    }
 
     stepConnected = true;
     setStepStatus('connected');
+    setWatchConnectionStatus(true);
+    renderWristbandDeviceUI(stepDevice, 'connected');
     stepLog('Connected successfully');
 
     setTimeout(async () => {
@@ -2514,46 +2593,48 @@ async function connectStepTracker() {
   } catch (error) {
     stepLog(`Connection error: ${error.message}`);
     setStepStatus('disconnected');
+    const scanStatus = document.getElementById('wristbandScanStatus');
+    if (scanStatus) scanStatus.textContent = 'idle';
   }
 }
 
 async function requestStepDevice() {
-  try {
-    return await navigator.bluetooth.requestDevice({
-      filters: [{ services: [STEP_SERVICE_UUID] }],
-      optionalServices: [STEP_SERVICE_UUID]
-    });
-  } catch (serviceError) {
-    stepLog(`Service filter failed: ${serviceError.message}`);
-  }
-
-  try {
-    return await navigator.bluetooth.requestDevice({
-      filters: [{ name: 'StepTracker' }, { namePrefix: 'Step' }],
-      optionalServices: [STEP_SERVICE_UUID]
-    });
-  } catch (nameError) {
-    stepLog(`Name filter failed: ${nameError.message}`);
-  }
-
-  return navigator.bluetooth.requestDevice({
+  // Directly use acceptAllDevices: true so Chrome/Edge displays ALL available Bluetooth devices in the pairing popup
+  return await navigator.bluetooth.requestDevice({
     acceptAllDevices: true,
-    optionalServices: [STEP_SERVICE_UUID]
+    optionalServices: [
+      STEP_SERVICE_UUID,
+      'battery_service',
+      'heart_rate',
+      'device_information'
+    ]
   });
 }
 
 function disconnectStepTracker() {
-  if (stepDevice && stepDevice.gatt.connected) {
+  if (stepDevice && stepDevice.gatt && stepDevice.gatt.connected) {
     stepDevice.gatt.disconnect();
   }
   stepConnected = false;
   setStepStatus('disconnected');
-  stepLog('Disconnected');
+  setWatchConnectionStatus(false);
+  const scanStatus = document.getElementById('wristbandScanStatus');
+  if (scanStatus) scanStatus.textContent = 'disconnected';
+  if (stepDevice) {
+    renderWristbandDeviceUI(stepDevice, 'disconnected');
+  }
+  stepLog('Disconnected from wristband');
 }
 
 function onStepDisconnected() {
   stepConnected = false;
   setStepStatus('disconnected');
+  setWatchConnectionStatus(false);
+  const scanStatus = document.getElementById('wristbandScanStatus');
+  if (scanStatus) scanStatus.textContent = 'disconnected';
+  if (stepDevice) {
+    renderWristbandDeviceUI(stepDevice, 'disconnected');
+  }
   stepLog('Device disconnected');
 }
 
@@ -2947,4 +3028,43 @@ function formatDate(value) {
       }
     }
   });
+
+  // Initialize Header Scroll transformation (transforms into solid non-transparent menu with bottom line)
+  initHeaderScrollListener();
+
+  // Load any previously permitted wristband Bluetooth devices
+  loadPermittedWristbandDevices();
 })();
+
+function initHeaderScrollListener() {
+  const header = document.querySelector('.app-header');
+  if (!header) return;
+  const updateScroll = () => {
+    if (isDesktop() && window.scrollY > 15) {
+      header.classList.add('header-scrolled');
+    } else {
+      header.classList.remove('header-scrolled');
+    }
+  };
+  window.addEventListener('scroll', updateScroll, { passive: true });
+  updateScroll();
+
+  // Keep camera state & header scroll synchronized on viewport resize between desktop & mobile
+  window.addEventListener('resize', () => {
+    updateScroll();
+    const wrapper = document.getElementById('cameraViewCardWrapper');
+    const btn = document.getElementById('cameraToggleBtn');
+    if (isDesktop()) {
+      if (btn) btn.classList.remove('camera-btn-active');
+      startCameraStreamIfNeeded();
+    } else {
+      if (isCameraActive) {
+        if (wrapper) wrapper.classList.add('mobile-active');
+        if (btn) btn.classList.add('camera-btn-active');
+      } else {
+        if (wrapper) wrapper.classList.remove('mobile-active');
+        if (btn) btn.classList.remove('camera-btn-active');
+      }
+    }
+  });
+}
