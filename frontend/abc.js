@@ -15,9 +15,18 @@ let timeChart = null;
 let formChart = null;
 
 let currentSessionId = null;
-let currentExercise = null;
+let currentExercise = 'bicep_curls';
 let latestEventTimestamp = null;
 let robotState = 'READY';
+
+// Bicep curls dual-arm tracking state (8 reps per arm = 1 set)
+let bicepCurrentSet = 1;
+let bicepLeftInSet = 0;
+let bicepRightInSet = 0;
+let bicepSetStartLeft = 0;
+let bicepSetStartRight = 0;
+let bicepHasBaseline = false;
+let lastFinishedBicepSet = 0;
 
 // Analytics real-time listeners (unsubscribed when tab is hidden)
 let analyticsAggUnsubscribe = null;
@@ -463,6 +472,59 @@ function selectExerciseFromHome(mode, btn) {
   switchMode(mode);
 }
 
+function updateBicepArmUI(left, right, setNum) {
+  const leftEl = document.getElementById('leftArmReps');
+  const rightEl = document.getElementById('rightArmReps');
+  const leftBar = document.getElementById('leftArmProgress');
+  const rightBar = document.getElementById('rightArmProgress');
+  const setEl = document.getElementById('currentSet');
+
+  const l = Math.max(0, Number(left) || 0);
+  const r = Math.max(0, Number(right) || 0);
+
+  if (leftEl) leftEl.textContent = l;
+  if (rightEl) rightEl.textContent = r;
+  if (leftBar) leftBar.style.width = `${Math.min(100, (l / 8) * 100)}%`;
+  if (rightBar) rightBar.style.width = `${Math.min(100, (r / 8) * 100)}%`;
+  if (setEl && setNum !== undefined) setEl.textContent = setNum;
+}
+
+function handleBicepSetComplete(newSet, rawLeft, rawRight) {
+  const finishedSet = bicepCurrentSet;
+  if (lastFinishedBicepSet === finishedSet && newSet === undefined) {
+    return; // Already processed this set completion
+  }
+  lastFinishedBicepSet = finishedSet;
+
+  if (newSet !== undefined && Number(newSet) > 0) {
+    bicepCurrentSet = Math.max(bicepCurrentSet, Number(newSet));
+    if (bicepCurrentSet === finishedSet) {
+      bicepCurrentSet = finishedSet + 1;
+    }
+  } else {
+    bicepCurrentSet = finishedSet + 1;
+  }
+
+  // Left count and right count reset again to 0 upon completing a set (8 reps each)
+  bicepLeftInSet = 0;
+  bicepRightInSet = 0;
+
+  if (rawLeft !== undefined && rawRight !== undefined) {
+    bicepSetStartLeft = rawLeft;
+    bicepSetStartRight = rawRight;
+  }
+
+  updateBicepArmUI(0, 0, bicepCurrentSet);
+
+  const repsEl = document.getElementById('currentReps');
+  if (repsEl) repsEl.textContent = '0';
+
+  const detailEl = document.getElementById('repsDetail');
+  if (detailEl) detailEl.textContent = 'Set Complete - Rest';
+
+  appendExerciseLog(`🎉 Bicep Curls: Set ${finishedSet} Complete! Both arms reached 8 reps.`);
+}
+
 function syncExerciseUI(exercise) {
   if (!exercise) return;
   const currentWorkoutEl = document.getElementById('currentWorkout');
@@ -483,6 +545,25 @@ function syncExerciseUI(exercise) {
       plankBox.classList.remove('hidden');
     } else {
       plankBox.classList.add('hidden');
+    }
+  }
+
+  // Show dual arm tracking box when bicep curls is selected; in other times keep hidden
+  const bicepBox = document.getElementById('bicepArmsBox');
+  if (bicepBox) {
+    if (exercise === 'bicep_curls') {
+      bicepBox.classList.remove('hidden');
+      updateBicepArmUI(bicepLeftInSet, bicepRightInSet, bicepCurrentSet);
+      const setEl = document.getElementById('currentSet');
+      if (setEl && (setEl.textContent === '—' || !setEl.textContent)) {
+        setEl.textContent = bicepCurrentSet;
+      }
+      const repsEl = document.getElementById('currentReps');
+      if (repsEl && (repsEl.textContent === '—' || !repsEl.textContent)) {
+        repsEl.textContent = Math.min(bicepLeftInSet, bicepRightInSet);
+      }
+    } else {
+      bicepBox.classList.add('hidden');
     }
   }
 
@@ -558,6 +639,7 @@ function showTab(tab) {
     if (btnAnalytics) btnAnalytics.classList.remove('active');
     disconnectAnalyticsListeners();
     switchFitnessSubtab(currentFitnessSubtab || 'exercises');
+    syncExerciseUI(currentExercise || 'bicep_curls');
   } else {
     live.classList.add('hidden');
     steps.classList.add('hidden');
@@ -623,7 +705,15 @@ function handleTelemetryMessage(msg) {
 
   if (type === 'session_start') {
     currentSessionId = msg.session_id || payload.session_id || msg.id;
-    currentExercise = msg.exercise_type || payload.exercise_type;
+    currentExercise = msg.exercise_type || payload.exercise_type || currentExercise;
+    if (currentExercise === 'bicep_curls') {
+      bicepCurrentSet = 1;
+      bicepLeftInSet = 0;
+      bicepRightInSet = 0;
+      bicepHasBaseline = false;
+      lastFinishedBicepSet = 0;
+      updateBicepArmUI(0, 0, 1);
+    }
     syncExerciseUI(currentExercise);
     appendExerciseLog(`Session started: ${formatExercise(currentExercise)}`);
     return;
@@ -660,26 +750,71 @@ function handleTelemetryMessage(msg) {
     currentExercise = payload.exercise || currentExercise;
     syncExerciseUI(currentExercise);
 
-    if (payload.set !== undefined) {
-      const setEl = document.getElementById('currentSet');
-      if (setEl) setEl.textContent = payload.set;
-    }
+    if (payload.exercise === 'bicep_curls' || currentExercise === 'bicep_curls') {
+      const rawLeft = Number(payload.left ?? payload.count ?? 0);
+      const rawRight = Number(payload.right ?? payload.count ?? 0);
 
-    if (payload.exercise === 'bicep_curls' && (payload.left !== undefined || payload.right !== undefined)) {
+      // Check if backend reports an updated set number
+      if (payload.set !== undefined && Number(payload.set) > 0) {
+        if (Number(payload.set) > bicepCurrentSet) {
+          bicepCurrentSet = Number(payload.set);
+          bicepSetStartLeft = rawLeft;
+          bicepSetStartRight = rawRight;
+          bicepLeftInSet = 0;
+          bicepRightInSet = 0;
+        }
+      }
+
+      if (!bicepHasBaseline) {
+        if (rawLeft > 8 || rawRight > 8) {
+          bicepSetStartLeft = rawLeft - (rawLeft % 8);
+          bicepSetStartRight = rawRight - (rawRight % 8);
+        } else {
+          bicepSetStartLeft = 0;
+          bicepSetStartRight = 0;
+        }
+        bicepHasBaseline = true;
+      }
+
+      // Current set reps relative to set start (or explicit in-set counts)
+      let lReps = payload.left_in_set !== undefined ? Number(payload.left_in_set) : (rawLeft - bicepSetStartLeft);
+      let rReps = payload.right_in_set !== undefined ? Number(payload.right_in_set) : (rawRight - bicepSetStartRight);
+      if (lReps < 0) { bicepSetStartLeft = rawLeft; lReps = 0; }
+      if (rReps < 0) { bicepSetStartRight = rawRight; rReps = 0; }
+
+      bicepLeftInSet = lReps;
+      bicepRightInSet = rReps;
+
+      // Completed reps in set (both arms synchronized towards 8 reps goal)
+      const completedSetReps = Math.min(bicepLeftInSet, bicepRightInSet);
       const repsEl = document.getElementById('currentReps');
       const detailEl = document.getElementById('repsDetail');
-      if (repsEl) repsEl.textContent = Math.min(payload.left || 0, payload.right || 0);
-      if (detailEl) detailEl.textContent = `L:${payload.left ?? 0}  R:${payload.right ?? 0}`;
-      recordLiveRep(currentExercise, payload.count, payload.left, payload.right);
+      if (repsEl) repsEl.textContent = completedSetReps;
+      if (detailEl) detailEl.textContent = `L:${bicepLeftInSet}/8  R:${bicepRightInSet}/8`;
+
+      updateBicepArmUI(bicepLeftInSet, bicepRightInSet, bicepCurrentSet);
+
+      // A set should have 8 reps from both arms.
+      // Left count and right count reset again to 0 upon completing a set.
+      if (bicepLeftInSet >= 8 && bicepRightInSet >= 8) {
+        handleBicepSetComplete(bicepCurrentSet + 1, rawLeft, rawRight);
+      }
+
+      recordLiveRep(currentExercise, completedSetReps, bicepLeftInSet, bicepRightInSet);
+      return;
     } else {
+      if (payload.set !== undefined) {
+        const setEl = document.getElementById('currentSet');
+        if (setEl) setEl.textContent = payload.set;
+      }
       const repCount = payload.count ?? payload.reps ?? payload.total ?? 0;
       const repsEl = document.getElementById('currentReps');
       const detailEl = document.getElementById('repsDetail');
       if (repsEl) repsEl.textContent = repCount;
       if (detailEl) detailEl.textContent = '';
       recordLiveRep(currentExercise, repCount);
+      return;
     }
-    return;
   }
 
   if (type === 'plank_time' || type === 'plank') {
@@ -741,6 +876,10 @@ function handleTelemetryMessage(msg) {
 
   if (type === 'set_complete') {
     appendExerciseLog(`Set ${payload.set} complete (${payload.reps ?? '?'} reps)`);
+    if (payload.exercise === 'bicep_curls' || currentExercise === 'bicep_curls') {
+      const nextSet = payload.set !== undefined ? Number(payload.set) + 1 : (bicepCurrentSet + 1);
+      handleBicepSetComplete(nextSet);
+    }
     return;
   }
 
@@ -858,6 +997,12 @@ async function sendForceStop() {
 
 async function sendStartExercise() {
   toggleCameraView(true);
+  if (currentExercise === 'bicep_curls') {
+    bicepHasBaseline = false;
+    bicepLeftInSet = 0;
+    bicepRightInSet = 0;
+    updateBicepArmUI(0, 0, bicepCurrentSet);
+  }
   await sendControlCommand({ action: 'start_exercise' }, 'Start detecting exercise signal sent to robot');
 }
 
@@ -870,6 +1015,11 @@ async function switchMode(mode) {
   }
 
   currentExercise = mode;
+  if (mode === 'bicep_curls') {
+    bicepHasBaseline = false;
+    bicepLeftInSet = 0;
+    bicepRightInSet = 0;
+  }
   syncExerciseUI(currentExercise);
 
   const mapping = {
