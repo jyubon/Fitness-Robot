@@ -1,25 +1,41 @@
 #!/usr/bin/env python3
 """
 Vosk Offline Voice Control for Fitness Robot.
-Handles continuous standby listening, speech detection, a 3-second delay
-window to capture and process full utterances, and executes motion and workout commands.
+
+Flow:
+  1. STANDBY    – passively listens to the microphone (background noise
+                  level is learned continuously).
+  2. LISTENING  – as soon as words are heard, the whole utterance is
+                  captured until the speaker has been silent for
+                  VOICE_SILENCE_TIMEOUT (1 s by default).
+  3. PROCESSING – the full sentence is passed to the intent extractor
+                  (local LLM via Ollama if available, otherwise the local
+                  semantic matcher) which picks the intended command.
+  4. EXECUTING  – the command's action (defined in voice_commands.py) runs.
+
+Commands are defined in `voice_commands.py` – edit that file to add or
+change commands (it is hot-reloaded, no restart required).
 """
 
-import os
 import sys
 import json
 import time
 import queue
-import re
 import threading
 from pathlib import Path
+
+import numpy as np
 
 from config import (
     VOSK_MODEL_PATH,
     VOICE_COMMANDS_ENABLED,
     VOICE_SAMPLE_RATE,
-    VOICE_PROCESSING_DELAY,
     VOICE_MIC_DEVICE,
+    VOICE_SILENCE_TIMEOUT,
+    VOICE_MAX_UTTERANCE,
+    VOICE_BLOCK_DURATION,
+    VOICE_MIN_ENERGY,
+    VOICE_ENERGY_RATIO,
     DEBUG,
 )
 from robot_control import send_command
@@ -27,10 +43,11 @@ from session_manager import (
     force_stop,
     remote_mode_queue,
     start_exercise,
+    pause_request,
+    resume_request,
     publish_event,
-    publish_pause,
-    publish_resume,
 )
+from intent_parser import extract_intent, get_registry, llm_available
 import local_stream_server
 
 # Check for Vosk and SoundDevice availability
@@ -63,7 +80,7 @@ _last_recognized_text = ""
 _last_executed_command = ""
 _state_lock = threading.Lock()
 
-_audio_queue = queue.Queue(maxsize=120)
+_audio_queue = queue.Queue(maxsize=200)
 _listener_thread = None
 _stop_listener_event = threading.Event()
 
@@ -120,6 +137,14 @@ def _audio_callback(indata, frames, time_info, status):
         pass
 
 
+def _rms(chunk):
+    """Root-mean-square loudness of an int16 audio chunk."""
+    samples = np.frombuffer(chunk, dtype=np.int16)
+    if samples.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+
+
 # ─── Timed Autonomous Movement Helper ───
 def _execute_timed_motion(direction, duration=2.5):
     """
@@ -129,17 +154,16 @@ def _execute_timed_motion(direction, duration=2.5):
     global _motion_thread
     _motion_stop_event.set()
     if _motion_thread and _motion_thread.is_alive():
-        _motion_thread.join(timeout=0.3)
+        _motion_thread.join(timeout=0.5)
     _motion_stop_event.clear()
 
     def _worker():
         send_command(direction)
         start_ts = time.time()
         while time.time() - start_ts < duration:
-            if _motion_stop_event.is_set():
+            if _motion_stop_event.wait(0.4):
                 break
-            time.sleep(0.4)
-            # Send heartbeat command to avoid ESP32 failsafe timeout (2.0s)
+            # Heartbeat to avoid ESP32 failsafe timeout (2.0s)
             send_command(direction)
         send_command("STOP")
         print(f"🤖 [ROBOT] Completed {direction} movement.")
@@ -155,125 +179,111 @@ def _execute_stop_motion():
 
 
 # ─── Command Parsing & Execution ───
-COMMAND_PATTERNS = [
-    # 1. STOP has highest priority
-    ("STOP", [
-        r"\bstop\b", r"\bhalt\b", r"\bfreeze\b", r"\bbrake\b",
-        r"\bcancel\b", r"\bwait\b"
-    ]),
-
-    # 2. Workout selection modes
-    ("BICEP_CURLS", [r"\bbicep\b", r"\bcurls?\b"]),
-    ("PUSHUPS", [r"\bpush\s*ups?\b", r"\bpushup\b"]),
-    ("SQUATS", [r"\bsquats?\b"]),
-    ("PLANK", [r"\bplanks?\b"]),
-    ("PERSON_FOLLOW", [r"\bfollow(\s+me)?\b", r"\btrack(ing)?\b", r"\btrack\s+me\b"]),
-
-    # 3. Directional movement
-    ("FORWARD", [r"\bforward\b", r"\bahead\b", r"\bfront\b", r"\bgo\s+ahead\b"]),
-    ("BACKWARD", [r"\bback(ward)?\b", r"\breverse\b", r"\bretreat\b"]),
-    ("LEFT", [r"\bturn\s+left\b", r"\bgo\s+left\b", r"\bmove\s+left\b", r"\bleft\b"]),
-    ("RIGHT", [r"\bturn\s+right\b", r"\bgo\s+right\b", r"\bmove\s+right\b", r"\bright\b"]),
-
-    # 4. Session & UI controls
-    ("PAUSE", [r"\bpause\b", r"\brest\b", r"\btake\s+a\s+break\b"]),
-    ("RESUME", [r"\bresume\b", r"\bcontinue\b"]),
-    ("HOME", [r"\bhome\b", r"\bmenu\b", r"\bmain\s+menu\b", r"\bexit\b", r"\bquit\b"]),
-    ("START", [r"\bstart(\s+workout|\s+exercise)?\b", r"\bbegin\b"]),
-]
-
-
 def parse_voice_command(text):
-    """Match transcribed text to a canonical command keyword."""
-    if not text:
-        return None
-    cleaned = text.lower().strip()
-    for cmd_key, regex_list in COMMAND_PATTERNS:
-        for pattern in regex_list:
-            if re.search(pattern, cleaned):
-                return cmd_key
-    return None
+    """Return the command name extracted from a sentence, or None."""
+    intent = extract_intent(text)
+    return intent.name if intent else None
+
+
+def _run_action(intent, text):
+    """Perform the action attached to a command in voice_commands.py."""
+    action = intent.command.get("action", {}) or {}
+    a_type = str(action.get("type", "")).lower()
+    params = intent.params
+
+    if a_type == "stop":
+        _execute_stop_motion()
+        force_stop.set()
+
+    elif a_type == "motion":
+        reg = get_registry()
+        max_dur = float(getattr(reg, "MAX_MOTION_DURATION", 10.0))
+        duration = float(params.get("duration", action.get("duration", 2.0)))
+        duration *= float(params.get("scale", 1.0))
+        duration = max(0.3, min(duration, max_dur))
+        _execute_timed_motion(action.get("direction", "STOP"), duration=duration)
+
+    elif a_type == "mode":
+        mode = action.get("mode")
+        print(f"🔄 [VOICE] Queueing mode switch to {mode}")
+        remote_mode_queue.put(("switch", mode))
+
+    elif a_type == "start":
+        start_exercise.set()
+
+    elif a_type == "pause":
+        resume_request.clear()
+        pause_request.set()
+
+    elif a_type == "resume":
+        pause_request.clear()
+        resume_request.set()
+
+    elif a_type == "home":
+        _execute_stop_motion()
+        force_stop.set()
+
+    elif a_type == "serial":
+        send_command(str(action.get("command", "STOP")))
+
+    elif a_type == "python":
+        func = action.get("function")
+        if callable(func):
+            func(params, text)
+        else:
+            raise ValueError(f"Command {intent.name}: 'function' is not callable")
+
+    else:
+        raise ValueError(f"Command {intent.name}: unknown action type '{a_type}'")
 
 
 def execute_voice_command(recognized_text):
-    """Dispatches the matched command to the robot and application state."""
-    command = parse_voice_command(recognized_text)
-    if not command:
-        print(f"⚠️ [VOICE] Unrecognized command phrase: \"{recognized_text}\"")
+    """Extract the intended command from a sentence and execute it."""
+    intent = extract_intent(recognized_text)
+    if intent is None:
+        print(f"⚠️ [VOICE] No command understood in: \"{recognized_text}\"")
         _set_voice_state(
             VoiceState.STANDBY,
-            f"Unrecognized: \"{recognized_text}\"",
-            last_text=recognized_text
+            f"Not a command: \"{recognized_text}\"",
+            last_text=recognized_text,
         )
         return False
 
-    print(f"🚀 [VOICE] Executing command: {command} (Heard: \"{recognized_text}\")")
+    print(f"🚀 [VOICE] Executing {intent.name} "
+          f"(conf {intent.confidence:.2f}, via {intent.source}, params {intent.params}) "
+          f"<- \"{recognized_text}\"")
     _set_voice_state(
         VoiceState.EXECUTING,
-        f"Executing: {command}",
+        f"Executing: {intent.name}",
         last_text=recognized_text,
-        last_cmd=command
+        last_cmd=intent.name,
     )
 
     try:
-        # 1. Stop command
-        if command == "STOP":
-            _execute_stop_motion()
-            try:
-                force_stop.set()
-            except Exception:
-                pass
-
-        # 2. Motion commands
-        elif command == "FORWARD":
-            _execute_timed_motion("FORWARD", duration=2.5)
-        elif command == "BACKWARD":
-            _execute_timed_motion("BACKWARD", duration=2.5)
-        elif command == "LEFT":
-            _execute_timed_motion("LEFT", duration=1.5)
-        elif command == "RIGHT":
-            _execute_timed_motion("RIGHT", duration=1.5)
-
-        # 3. Exercise modes
-        elif command in ("BICEP_CURLS", "PUSHUPS", "SQUATS", "PLANK", "PERSON_FOLLOW"):
-            print(f"🔄 [VOICE] Queueing mode switch to {command}")
-            remote_mode_queue.put(("switch", command))
-
-        # 4. Session & UI controls
-        elif command == "START":
-            start_exercise.set()
-        elif command == "PAUSE":
-            publish_pause()
-        elif command == "RESUME":
-            publish_resume()
-        elif command == "HOME":
-            _execute_stop_motion()
-            force_stop.set()
-
-        # Telemetry broadcast
+        _run_action(intent, recognized_text)
         publish_event("voice_command", {
-            "command": command,
+            "command": intent.name,
             "raw_text": recognized_text,
+            "confidence": round(intent.confidence, 3),
+            "source": intent.source,
+            "params": intent.params,
             "status": "executed",
             "timestamp": time.time(),
         })
         return True
-
     except Exception as e:
-        print(f"⚠️ [VOICE ERROR] Failed to execute {command}: {e}", file=sys.stderr)
+        print(f"⚠️ [VOICE ERROR] Failed to execute {intent.name}: {e}", file=sys.stderr)
         return False
 
 
 # ─── Background Voice Listener Loop ───
 def _voice_listener_worker():
     """
-    Main background thread loop:
-    1. Standby: Wait for incoming audio and detect when someone is speaking.
-    2. Speaking Detected: When speech begins, wait for a 3-second delay to
-       allow the speaker to finish their utterance without interruption.
-    3. Processing: Transcribe the final complete utterance with Vosk.
-    4. Execution: Parse and execute the robot control command.
-    5. Return to standby.
+    Passive listening loop with end-of-speech detection.
+
+    Speech activity = Vosk producing new words OR audio louder than the
+    adaptive noise threshold. The utterance ends once there has been no
+    speech activity for VOICE_SILENCE_TIMEOUT seconds.
     """
     if not VOSK_AVAILABLE:
         print("⚠️ [VOICE] Vosk or sounddevice not installed. Voice control disabled.")
@@ -291,7 +301,6 @@ def _voice_listener_worker():
         print(f"🎙️ [VOICE] Loading Vosk model from: {model_path} ...")
         model = Model(str(model_path))
 
-        # Determine audio device & sample rate
         try:
             device_info = sd.query_devices(VOICE_MIC_DEVICE, "input")
             sample_rate = int(device_info.get("default_samplerate", VOICE_SAMPLE_RATE))
@@ -307,103 +316,124 @@ def _voice_listener_worker():
         _set_voice_state(VoiceState.ERROR, str(init_err))
         return
 
+    backend = "local LLM (Ollama)" if llm_available() else "local semantic matcher"
     print("==================================================")
     print("  🎤 VOSK VOICE CONTROL ACTIVE")
-    print("  • Robot is in STANDBY awaiting speech")
-    print(f"  • When speech is detected, a {VOICE_PROCESSING_DELAY}s delay")
-    print("    accumulates the full utterance before execution.")
+    print("  • Passive listening (STANDBY)")
+    print(f"  • Utterance ends after {VOICE_SILENCE_TIMEOUT:.1f}s of silence")
+    print(f"  • Command extraction: {backend}")
+    print("  • Commands defined in voice_commands.py")
     print("==================================================")
 
-    _set_voice_state(VoiceState.STANDBY, "Standby - waiting for voice command")
+    _set_voice_state(VoiceState.STANDBY, "Standby - listening passively")
+
+    blocksize = max(400, int(sample_rate * VOICE_BLOCK_DURATION))
 
     try:
         with sd.RawInputStream(
             device=VOICE_MIC_DEVICE,
             samplerate=sample_rate,
-            blocksize=4000,
+            blocksize=blocksize,
             dtype="int16",
             channels=1,
             callback=_audio_callback,
         ):
-            accumulated_text = []
-            speaking_detected = False
-            speech_start_time = 0.0
+            noise_floor = None
+            listening = False
+            segments = []
+            last_partial = ""
+            last_voice_time = 0.0
+            utterance_start = 0.0
+
+            def finalize(reason):
+                nonlocal listening, segments, last_partial
+                final_text = json.loads(recognizer.FinalResult() or "{}").get("text", "").strip()
+                if final_text:
+                    segments.append(final_text)
+                sentence = " ".join(s for s in segments if s).strip()
+
+                if DEBUG:
+                    print()
+                print(f"⏱️ [VOICE] Speech ended ({reason}).")
+                if sentence:
+                    print(f"🧠 [VOICE] Heard: \"{sentence}\"")
+                    _set_voice_state(VoiceState.PROCESSING, f"Understanding: \"{sentence}\"",
+                                     last_text=sentence)
+                    execute_voice_command(sentence)
+                else:
+                    print("⚠️ [VOICE] No words captured.")
+
+                recognizer.Reset()
+                listening = False
+                segments = []
+                last_partial = ""
+                _drain_audio_queue()
+                _set_voice_state(VoiceState.STANDBY, "Standby - listening passively")
+                print("🎤 [VOICE] Standby - listening passively.\n")
 
             while not _stop_listener_event.is_set():
                 try:
                     chunk = _audio_queue.get(timeout=0.1)
                 except queue.Empty:
+                    if listening and time.time() - last_voice_time >= VOICE_SILENCE_TIMEOUT:
+                        finalize(f"{VOICE_SILENCE_TIMEOUT:.1f}s silence")
                     continue
 
-                if not speaking_detected:
-                    # ─── STANDBY PHASE ───
-                    has_accepted = recognizer.AcceptWaveform(chunk)
-                    if has_accepted:
-                        res = json.loads(recognizer.Result() or "{}").get("text", "").strip()
-                        if res:
-                            speaking_detected = True
-                            speech_start_time = time.time()
-                            accumulated_text.append(res)
-                            _set_voice_state(
-                                VoiceState.LISTENING,
-                                f"Speech detected: '{res}'. Waiting {VOICE_PROCESSING_DELAY:.0f}s delay..."
-                            )
-                            print(f"\n🎙️ [VOICE] Speech detected: '{res}'! Waiting {VOICE_PROCESSING_DELAY:.0f}s delay to process command...")
-                    else:
-                        partial = json.loads(recognizer.PartialResult() or "{}").get("partial", "").strip()
-                        if partial:
-                            speaking_detected = True
-                            speech_start_time = time.time()
-                            _set_voice_state(
-                                VoiceState.LISTENING,
-                                f"Listening: '{partial}'. Waiting {VOICE_PROCESSING_DELAY:.0f}s delay..."
-                            )
-                            print(f"\n🎙️ [VOICE] Speech detected: '{partial}'! Waiting {VOICE_PROCESSING_DELAY:.0f}s delay to process command...")
+                now = time.time()
+                level = _rms(chunk)
+                floor = noise_floor if noise_floor is not None else VOICE_MIN_ENERGY / VOICE_ENERGY_RATIO
+                loud = level > max(VOICE_MIN_ENERGY, floor * VOICE_ENERGY_RATIO)
 
+                if recognizer.AcceptWaveform(chunk):
+                    text = json.loads(recognizer.Result() or "{}").get("text", "").strip()
+                    partial = ""
                 else:
-                    # ─── SPEAKING DETECTED: 3-SECOND DELAY PHASE ───
-                    time_elapsed = time.time() - speech_start_time
-                    remaining = max(0.0, VOICE_PROCESSING_DELAY - time_elapsed)
+                    text = ""
+                    partial = json.loads(recognizer.PartialResult() or "{}").get("partial", "").strip()
 
-                    # Feed chunks to recognizer during the 3-second delay
-                    if recognizer.AcceptWaveform(chunk):
-                        res = json.loads(recognizer.Result() or "{}").get("text", "").strip()
-                        if res:
-                            accumulated_text.append(res)
+                # ─── STANDBY: wait for words ───
+                if not listening:
+                    if text or partial:
+                        listening = True
+                        utterance_start = now
+                        last_voice_time = now
+                        segments = [text] if text else []
+                        last_partial = partial
+                        heard = text or partial
+                        _set_voice_state(VoiceState.LISTENING, f"Listening: \"{heard}\"")
+                        print(f"\n🎙️ [VOICE] Speech detected: \"{heard}\" ...")
                     else:
-                        partial = json.loads(recognizer.PartialResult() or "{}").get("partial", "").strip()
-                        if partial and DEBUG:
-                            print(f"\r  [VOICE] Hearing: '{partial}' ({remaining:.1f}s delay remaining)...", end="", flush=True)
-
-                    # Check if 3-second delay has completed
-                    if time_elapsed >= VOICE_PROCESSING_DELAY:
-                        if DEBUG:
-                            print()  # newline after carriage return
-                        _set_voice_state(VoiceState.PROCESSING, "3s delay elapsed. Processing command...")
-                        print(f"⏱️ [VOICE] {VOICE_PROCESSING_DELAY:.0f}-second delay complete. Finalizing utterance...")
-
-                        # Finalize remaining decoded speech from the recognizer
-                        final_res = json.loads(recognizer.FinalResult() or "{}").get("text", "").strip()
-                        if final_res:
-                            accumulated_text.append(final_res)
-
-                        full_command = " ".join(accumulated_text).strip()
-
-                        if full_command:
-                            print(f"🧠 [VOICE] Command Received: \"{full_command}\"")
-                            execute_voice_command(full_command)
+                        # Learn background noise level while nobody is talking
+                        if noise_floor is None:
+                            noise_floor = level
                         else:
-                            print("⚠️ [VOICE] No distinct command speech captured. Returning to standby.")
-                            _set_voice_state(VoiceState.STANDBY, "Standby - waiting for voice command")
+                            alpha = 0.01 if loud else 0.05
+                            noise_floor = (1 - alpha) * noise_floor + alpha * level
+                    continue
 
-                        # Reset recognizer state and audio buffer for next standby cycle
-                        recognizer.Reset()
-                        accumulated_text = []
-                        speaking_detected = False
-                        _drain_audio_queue()
-                        time.sleep(0.3)
-                        _set_voice_state(VoiceState.STANDBY, "Standby - waiting for voice command")
-                        print("🎤 [VOICE] Robot in standby - ready for next voice command.\n")
+                # ─── LISTENING: capture until 1 s of silence ───
+                if text:
+                    segments.append(text)
+                    # Vosk finalises a segment *after* a pause; only count it as
+                    # new speech if it did not come from a partial we already saw.
+                    if not last_partial:
+                        last_voice_time = now
+                    last_partial = ""
+                elif partial and partial != last_partial:
+                    last_partial = partial
+                    last_voice_time = now
+                    heard = " ".join(segments + [partial]).strip()
+                    _set_voice_state(VoiceState.LISTENING, f"Listening: \"{heard}\"")
+                    if DEBUG:
+                        print(f"\r  [VOICE] Hearing: \"{heard}\"", end="", flush=True)
+
+                if loud:
+                    last_voice_time = now
+
+                if now - last_voice_time >= VOICE_SILENCE_TIMEOUT:
+                    finalize(f"{VOICE_SILENCE_TIMEOUT:.1f}s silence")
+                elif now - utterance_start >= VOICE_MAX_UTTERANCE:
+                    finalize(f"max {VOICE_MAX_UTTERANCE:.0f}s reached")
 
     except Exception as e:
         print(f"❌ [VOICE STREAM ERROR] {e}", file=sys.stderr)
@@ -451,4 +481,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nExiting...")
         stop_voice_listener()
-

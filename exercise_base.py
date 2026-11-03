@@ -37,6 +37,8 @@ from session_manager import (
     save_session_to_firestore,
     force_stop,
     start_exercise,
+    pause_request,
+    resume_request,
 )
 from robot_control import send_command, adjust_robot_position, reset_tracking_state
 from pose_utils import (
@@ -203,6 +205,8 @@ class ExerciseRunner:
         """Execute exercise session."""
         clear_session_errors()
         reset_tracking_state()
+        pause_request.clear()
+        resume_request.clear()
         self.home_clicked = False
 
         cap = None
@@ -351,6 +355,22 @@ class ExerciseRunner:
                         hand_results = self.last_hand_results
                 else:
                     hand_results = None
+
+                # 4b. Voice pause / resume requests
+                if pause_request.is_set():
+                    pause_request.clear()
+                    if not self.paused:
+                        self.paused = True
+                        self.pause_start_time = time.time()
+                        publish_pause()
+                if resume_request.is_set():
+                    resume_request.clear()
+                    if self.paused:
+                        self.paused = False
+                        p_dur = time.time() - self.pause_start_time
+                        add_pause_time(p_dur)
+                        publish_resume()
+                        self.on_resume_adjust_timing(p_dur)
 
                 # 5. Paused Overlay
                 if self.paused:

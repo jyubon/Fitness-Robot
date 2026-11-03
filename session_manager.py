@@ -67,6 +67,8 @@ _resolve_firebase_user_id()
 force_stop = threading.Event()
 remote_mode_queue = queue.Queue()
 start_exercise = threading.Event()
+pause_request = threading.Event()    # Set by voice "pause"; consumed by the exercise loop
+resume_request = threading.Event()   # Set by voice "resume"; consumed by the exercise loop
 
 # ─── Session State Tracking ───
 _session_id = None

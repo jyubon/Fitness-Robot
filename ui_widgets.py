@@ -364,9 +364,9 @@ class FitnessRobotUI(tk.Tk):
                     if self.voice_status_label.winfo_exists():
                         st, msg, last_txt, last_cmd = get_voice_state()
                         if st == VoiceState.LISTENING:
-                            self.voice_status_label.configure(text="🎙️ Listening... (3s delay)", fg="#FF9500")
+                            self.voice_status_label.configure(text="🎙️ Listening... (speak, pause 1s to send)", fg="#FF9500")
                         elif st == VoiceState.PROCESSING:
-                            self.voice_status_label.configure(text="🧠 Processing command...", fg="#00C7BE")
+                            self.voice_status_label.configure(text="🧠 Understanding command...", fg="#00C7BE")
                         elif st == VoiceState.EXECUTING:
                             self.voice_status_label.configure(text=f"✅ Voice: {last_cmd}", fg="#34C759")
                         elif st == VoiceState.DISABLED:

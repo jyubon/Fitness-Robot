@@ -145,6 +145,24 @@ else:
 
 VOICE_COMMANDS_ENABLED = True
 VOICE_SAMPLE_RATE = 16000
-VOICE_PROCESSING_DELAY = 3.0  # Seconds to wait when someone is speaking before processing
 VOICE_MIC_DEVICE = None       # Default microphone
+
+# End-of-speech detection: the command is processed once the speaker has
+# been silent for this many seconds.
+VOICE_SILENCE_TIMEOUT = 1.0
+VOICE_MAX_UTTERANCE = 12.0    # Safety cap: process after this many seconds of continuous speech
+VOICE_BLOCK_DURATION = 0.1    # Audio chunk size (s) -> silence timing resolution
+VOICE_MIN_ENERGY = 300        # Min RMS (int16) treated as voice; raise in noisy rooms
+VOICE_ENERGY_RATIO = 2.5      # Voice must be this many times louder than background noise
+
+# Command extraction with a local Large Language Model (Ollama).
+#   "auto": use the LLM if Ollama is running with VOICE_LLM_MODEL, else local matcher
+#   "on":   always try the LLM (falls back to local matcher on error)
+#   "off":  local matcher only
+# Setup on the Pi:  curl -fsSL https://ollama.com/install.sh | sh
+#                   ollama pull qwen2.5:0.5b
+VOICE_LLM_MODE = os.getenv("VOICE_LLM_MODE", "auto")
+VOICE_LLM_URL = os.getenv("VOICE_LLM_URL", "http://localhost:11434")
+VOICE_LLM_MODEL = os.getenv("VOICE_LLM_MODEL", "qwen2.5:0.5b")
+VOICE_LLM_TIMEOUT = 8.0       # Seconds before falling back to the local matcher
 
