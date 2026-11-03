@@ -2,7 +2,6 @@ venv/
 .venv/
 __pycache__/
 *.py[cod]
-*.task
 .env
 api_keys.py
 .DS_Store
@@ -12,3 +11,4 @@ firebase-config.js
 .clangD
 esp_commands/arduino_secrets.h
 esp_commands/build
+.log
