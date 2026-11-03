@@ -28,6 +28,67 @@ VOICE_FILE_MAP = {
 _current_audio_process = None
 _process_lock = threading.Lock()
 _audio_lock = threading.Semaphore(1)
+_tts_speaking = threading.Event()
+
+
+def is_tts_speaking():
+    """Return True while FitBot is speaking a synthesized voice response."""
+    return _tts_speaking.is_set()
+
+
+def speak_text(text):
+    """
+    Speak a conversational response out loud in a background thread.
+    Uses espeak-ng / espeak / spd-say / flite on Raspberry Pi (Linux)
+    and SAPI.SpVoice / System.Speech on Windows.
+    """
+    if not text or not str(text).strip():
+        return
+    clean_text = str(text).strip()
+
+    def _run_tts():
+        _tts_speaking.set()
+        try:
+            if os.name == "nt":
+                escaped = clean_text.replace("'", "''")
+                ps_cmd = (
+                    f"try {{ (New-Object -ComObject SAPI.SpVoice).Speak('{escaped}') }} "
+                    f"catch {{ Add-Type -AssemblyName System.Speech; "
+                    f"(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{escaped}') }}"
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-c", ps_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=12,
+                )
+            else:
+                for cmd in (
+                    ["espeak-ng", "-s", "155", clean_text],
+                    ["espeak", "-s", "155", clean_text],
+                    ["spd-say", "--wait", clean_text],
+                    ["flite", "-t", clean_text],
+                ):
+                    try:
+                        res = subprocess.run(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=12,
+                        )
+                        if res.returncode == 0:
+                            break
+                    except FileNotFoundError:
+                        continue
+                    except Exception:
+                        break
+        except Exception:
+            pass
+        finally:
+            time.sleep(0.15)
+            _tts_speaking.clear()
+
+    threading.Thread(target=_run_tts, daemon=True).start()
 
 
 def terminate_current_audio():

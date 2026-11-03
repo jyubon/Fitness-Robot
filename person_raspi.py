@@ -60,6 +60,7 @@ from session_manager import (
     force_stop,
     remote_mode_queue,
     start_exercise,
+    exercise_executing,
     publish_event,
     publish_session_start,
     publish_session_end,
@@ -177,6 +178,7 @@ def main(ui=None):
     global home_clicked, last_session_summary
 
     reset_tracking_state()
+    exercise_executing.set()
     if ui is not None and hasattr(ui, 'hide_start_button'):
         try:
             ui.hide_start_button()
@@ -211,6 +213,7 @@ def main(ui=None):
     def shutdown(sig, frame):
         print("\n🛑 Stopping...")
         stop_voice_listener()
+        exercise_executing.clear()
         send_command("STOP")
         time.sleep(0.2)
         cap.release()
@@ -350,6 +353,7 @@ def main(ui=None):
             fps_counter = 0
             fps_time = time.time()
 
+    exercise_executing.clear()
     send_command("STOP")
     time.sleep(0.2)
     cap.release()

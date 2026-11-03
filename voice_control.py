@@ -3,18 +3,17 @@
 Vosk Offline Voice Control for Fitness Robot.
 
 Flow:
-  1. STANDBY    – passively listens to the microphone (background noise
-                  level is learned continuously).
+  1. STANDBY    – passively listens to the microphone all the time
+                  (both on the Home screen and while exercises are executing).
   2. LISTENING  – as soon as words are heard, the whole utterance is
                   captured until the speaker has been silent for
                   VOICE_SILENCE_TIMEOUT (1 s by default).
-  3. PROCESSING – the full sentence is passed to the intent extractor
-                  (local LLM via Ollama if available, otherwise the local
-                  semantic matcher) which picks the intended command.
-  4. EXECUTING  – the command's action (defined in voice_commands.py) runs.
-
-Commands are defined in `voice_commands.py` – edit that file to add or
-change commands (it is hot-reloaded, no restart required).
+  3. PROCESSING – the full sentence is passed to the intent extractor.
+                  When an exercise is executing, the wake word "FitBot"
+                  must precede the command ("FitBot move left", "FitBot pause").
+  4. EXECUTING  – the command's action (defined in voice_commands.py) runs,
+                  including movement, mode switches, workout controls, and
+                  spoken conversational replies ("Hello FitBot", "What's the time now").
 """
 
 import sys
@@ -22,6 +21,7 @@ import json
 import time
 import queue
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -38,13 +38,15 @@ from config import (
     VOICE_ENERGY_RATIO,
     DEBUG,
 )
-from robot_control import send_command
+from robot_control import send_command, set_manual_motion_override
+from audio_manager import speak_text, is_tts_speaking
 from session_manager import (
     force_stop,
     remote_mode_queue,
     start_exercise,
     pause_request,
     resume_request,
+    exercise_executing,
     publish_event,
 )
 from intent_parser import extract_intent, get_registry, llm_available
@@ -78,13 +80,14 @@ _current_state = VoiceState.STANDBY
 _state_message = "Initializing..."
 _last_recognized_text = ""
 _last_executed_command = ""
+_last_voice_reply = ""
 _state_lock = threading.Lock()
 
 _audio_queue = queue.Queue(maxsize=200)
 _listener_thread = None
 _stop_listener_event = threading.Event()
 
-# Timed movement management (for directional commands)
+# Timed movement management (for directional & rotation commands)
 _motion_stop_event = threading.Event()
 _motion_thread = None
 
@@ -95,9 +98,15 @@ def get_voice_state():
         return _current_state, _state_message, _last_recognized_text, _last_executed_command
 
 
-def _set_voice_state(state, message=None, last_text=None, last_cmd=None):
+def get_last_voice_reply():
+    """Return the most recent conversational response spoken by FitBot."""
+    with _state_lock:
+        return _last_voice_reply
+
+
+def _set_voice_state(state, message=None, last_text=None, last_cmd=None, last_reply=None):
     """Update voice assistant state and broadcast telemetry."""
-    global _current_state, _state_message, _last_recognized_text, _last_executed_command
+    global _current_state, _state_message, _last_recognized_text, _last_executed_command, _last_voice_reply
     with _state_lock:
         _current_state = state
         if message is not None:
@@ -106,6 +115,8 @@ def _set_voice_state(state, message=None, last_text=None, last_cmd=None):
             _last_recognized_text = last_text
         if last_cmd is not None:
             _last_executed_command = last_cmd
+        if last_reply is not None:
+            _last_voice_reply = last_reply
 
     try:
         local_stream_server.broadcast_telemetry("voice_status", {
@@ -113,6 +124,7 @@ def _set_voice_state(state, message=None, last_text=None, last_cmd=None):
             "message": _state_message,
             "last_text": _last_recognized_text,
             "last_command": _last_executed_command,
+            "last_reply": _last_voice_reply,
         })
     except Exception:
         pass
@@ -131,6 +143,8 @@ def _audio_callback(indata, frames, time_info, status):
     """Callback for sounddevice RawInputStream."""
     if status and DEBUG:
         print(f"[VOICE AUDIO] Warning: {status}", file=sys.stderr)
+    if is_tts_speaking():
+        return
     try:
         _audio_queue.put_nowait(bytes(indata))
     except queue.Full:
@@ -150,6 +164,7 @@ def _execute_timed_motion(direction, duration=2.5):
     """
     Execute robot motion in background for `duration` seconds,
     then automatically issue STOP, unless interrupted.
+    Uses manual override so active camera tracking does not clobber the move.
     """
     global _motion_thread
     _motion_stop_event.set()
@@ -158,15 +173,19 @@ def _execute_timed_motion(direction, duration=2.5):
     _motion_stop_event.clear()
 
     def _worker():
-        send_command(direction)
-        start_ts = time.time()
-        while time.time() - start_ts < duration:
-            if _motion_stop_event.wait(0.4):
-                break
-            # Heartbeat to avoid ESP32 failsafe timeout (2.0s)
-            send_command(direction)
-        send_command("STOP")
-        print(f"🤖 [ROBOT] Completed {direction} movement.")
+        set_manual_motion_override(True)
+        try:
+            send_command(direction, manual=True)
+            start_ts = time.time()
+            while time.time() - start_ts < duration:
+                if _motion_stop_event.wait(0.4):
+                    break
+                # Heartbeat to avoid ESP32 failsafe timeout (2.0s)
+                send_command(direction, manual=True)
+        finally:
+            send_command("STOP", manual=True)
+            set_manual_motion_override(False)
+            print(f"🤖 [ROBOT] Completed {direction} movement.")
 
     _motion_thread = threading.Thread(target=_worker, daemon=True)
     _motion_thread.start()
@@ -175,13 +194,30 @@ def _execute_timed_motion(direction, duration=2.5):
 def _execute_stop_motion():
     """Immediately halt any active timed movement and issue STOP to ESP32."""
     _motion_stop_event.set()
-    send_command("STOP")
+    set_manual_motion_override(False)
+    send_command("STOP", manual=True)
+
+
+# ─── Conversational Reply Formatting ───
+def _format_reply(response_spec, params, text):
+    """Format a conversational response string or callable."""
+    if callable(response_spec):
+        return str(response_spec(params, text))
+    now = datetime.now()
+    time_str = now.strftime("%I:%M %p").lstrip("0")
+    date_str = now.strftime("%B %d, %Y")
+    day_str = now.strftime("%A")
+    return str(response_spec).format(
+        time=time_str,
+        date=date_str,
+        day=day_str,
+    )
 
 
 # ─── Command Parsing & Execution ───
-def parse_voice_command(text):
+def parse_voice_command(text, exercising=None):
     """Return the command name extracted from a sentence, or None."""
-    intent = extract_intent(text)
+    intent = extract_intent(text, exercising=exercising)
     return intent.name if intent else None
 
 
@@ -223,8 +259,26 @@ def _run_action(intent, text):
         _execute_stop_motion()
         force_stop.set()
 
+    elif a_type == "reply":
+        reply_text = _format_reply(action.get("response", ""), params, text)
+        print(f"🗣️ [FITBOT] \"{reply_text}\"")
+        _set_voice_state(
+            VoiceState.EXECUTING,
+            f"🗣️ {reply_text}",
+            last_text=text,
+            last_cmd=intent.name,
+            last_reply=reply_text,
+        )
+        speak_text(reply_text)
+        publish_event("voice_response", {
+            "command": intent.name,
+            "raw_text": text,
+            "reply": reply_text,
+            "timestamp": time.time(),
+        })
+
     elif a_type == "serial":
-        send_command(str(action.get("command", "STOP")))
+        send_command(str(action.get("command", "STOP")), manual=True)
 
     elif a_type == "python":
         func = action.get("function")
@@ -237,16 +291,27 @@ def _run_action(intent, text):
         raise ValueError(f"Command {intent.name}: unknown action type '{a_type}'")
 
 
-def execute_voice_command(recognized_text):
+def execute_voice_command(recognized_text, exercising=None):
     """Extract the intended command from a sentence and execute it."""
-    intent = extract_intent(recognized_text)
+    if exercising is None:
+        exercising = exercise_executing.is_set()
+
+    intent = extract_intent(recognized_text, exercising=exercising)
     if intent is None:
-        print(f"⚠️ [VOICE] No command understood in: \"{recognized_text}\"")
-        _set_voice_state(
-            VoiceState.STANDBY,
-            f"Not a command: \"{recognized_text}\"",
-            last_text=recognized_text,
-        )
+        if exercising:
+            print(f"🔇 [VOICE] Ignored during exercise (require 'FitBot <command>'): \"{recognized_text}\"")
+            _set_voice_state(
+                VoiceState.STANDBY,
+                "Say \"FitBot <command>\" while exercising",
+                last_text=recognized_text,
+            )
+        else:
+            print(f"⚠️ [VOICE] No command understood in: \"{recognized_text}\"")
+            _set_voice_state(
+                VoiceState.STANDBY,
+                f"Not a command: \"{recognized_text}\"",
+                last_text=recognized_text,
+            )
         return False
 
     print(f"🚀 [VOICE] Executing {intent.name} "
@@ -281,6 +346,7 @@ def _voice_listener_worker():
     """
     Passive listening loop with end-of-speech detection.
 
+    Listens continuously both on the Home screen and during exercise execution.
     Speech activity = Vosk producing new words OR audio louder than the
     adaptive noise threshold. The utterance ends once there has been no
     speech activity for VOICE_SILENCE_TIMEOUT seconds.
@@ -318,8 +384,9 @@ def _voice_listener_worker():
 
     backend = "local LLM (Ollama)" if llm_available() else "local semantic matcher"
     print("==================================================")
-    print("  🎤 VOSK VOICE CONTROL ACTIVE")
-    print("  • Passive listening (STANDBY)")
+    print("  🎤 VOSK VOICE CONTROL ACTIVE (Always Listening)")
+    print("  • Passive listening in STANDBY and during Exercises")
+    print("  • Wake word during Exercises: 'FitBot <command>'")
     print(f"  • Utterance ends after {VOICE_SILENCE_TIMEOUT:.1f}s of silence")
     print(f"  • Command extraction: {backend}")
     print("  • Commands defined in voice_commands.py")
@@ -372,6 +439,11 @@ def _voice_listener_worker():
                 print("🎤 [VOICE] Standby - listening passively.\n")
 
             while not _stop_listener_event.is_set():
+                if is_tts_speaking():
+                    _drain_audio_queue()
+                    time.sleep(0.05)
+                    continue
+
                 try:
                     chunk = _audio_queue.get(timeout=0.1)
                 except queue.Empty:
@@ -414,8 +486,6 @@ def _voice_listener_worker():
                 # ─── LISTENING: capture until 1 s of silence ───
                 if text:
                     segments.append(text)
-                    # Vosk finalises a segment *after* a pause; only count it as
-                    # new speech if it did not come from a partial we already saw.
                     if not last_partial:
                         last_voice_time = now
                     last_partial = ""

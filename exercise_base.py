@@ -39,6 +39,7 @@ from session_manager import (
     start_exercise,
     pause_request,
     resume_request,
+    exercise_executing,
 )
 from robot_control import send_command, adjust_robot_position, reset_tracking_state
 from pose_utils import (
@@ -207,6 +208,7 @@ class ExerciseRunner:
         reset_tracking_state()
         pause_request.clear()
         resume_request.clear()
+        exercise_executing.set()
         self.home_clicked = False
 
         cap = None
@@ -444,6 +446,7 @@ class ExerciseRunner:
                 except Exception:
                     pass
         finally:
+            exercise_executing.clear()
             send_command("STOP")
             if landmarker is not None:
                 try: landmarker.close()

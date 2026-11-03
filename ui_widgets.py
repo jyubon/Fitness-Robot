@@ -14,6 +14,7 @@ from session_manager import (
     force_stop,
     remote_mode_queue,
     start_exercise,
+    exercise_executing,
 )
 from robot_control import send_command, ser
 from ui_overlays import bgr_to_hex
@@ -313,6 +314,7 @@ class FitnessRobotUI(tk.Tk):
     def run_exercise(self, exercise_name, func):
         global last_session_summary
         self.exercise_active = True
+        exercise_executing.set()
         self.home_clicked = False
         force_stop.clear()
         try:
@@ -325,6 +327,7 @@ class FitnessRobotUI(tk.Tk):
             return
         finally:
             self.exercise_active = False
+            exercise_executing.clear()
             try:
                 local_stream_server.update_frame(None)
             except Exception:
@@ -354,7 +357,8 @@ class FitnessRobotUI(tk.Tk):
                 if cmd_type == "switch":
                     print(f"[GUI] Remote mode switch received: {cmd_val}")
                     if self.exercise_active:
-                        print("[GUI] Ignored remote switch mode because an exercise is active.")
+                        self.next_remote_mode = cmd_val
+                        force_stop.set()
                     else:
                         self.launch_by_name(cmd_val)
 
@@ -364,15 +368,21 @@ class FitnessRobotUI(tk.Tk):
                     if self.voice_status_label.winfo_exists():
                         st, msg, last_txt, last_cmd = get_voice_state()
                         if st == VoiceState.LISTENING:
-                            self.voice_status_label.configure(text="🎙️ Listening... (speak, pause 1s to send)", fg="#FF9500")
+                            self.voice_status_label.configure(text="🎙️ Listening... (pause 1s to send)", fg="#FF9500")
                         elif st == VoiceState.PROCESSING:
                             self.voice_status_label.configure(text="🧠 Understanding command...", fg="#00C7BE")
                         elif st == VoiceState.EXECUTING:
-                            self.voice_status_label.configure(text=f"✅ Voice: {last_cmd}", fg="#34C759")
+                            if msg and msg.startswith("🗣️"):
+                                self.voice_status_label.configure(text=msg, fg="#34C759")
+                            else:
+                                self.voice_status_label.configure(text=f"✅ Voice: {last_cmd}", fg="#34C759")
                         elif st == VoiceState.DISABLED:
                             self.voice_status_label.configure(text="🎤 Voice: Disabled", fg="#8E8E93")
                         else:
-                            self.voice_status_label.configure(text="🎤 Voice: Standby", fg="#96D75F")
+                            if self.exercise_active:
+                                self.voice_status_label.configure(text="🎤 Voice: Say \"FitBot <command>\"", fg="#96D75F")
+                            else:
+                                self.voice_status_label.configure(text="🎤 Voice: Standby", fg="#96D75F")
                 except Exception:
                     pass
 
@@ -390,7 +400,7 @@ class FitnessRobotUI(tk.Tk):
             self.launch_squats()
         elif name == "PLANK":
             self.launch_plank()
-        elif name in ("PERSON_FOLLOW", "PERSON_TRACKING", "FOLLOWING", "FOLLOW"):
+        elif name in ("PERSON_FOLLOW", "PERSON_TRACKING", "FOLLOWING", "FOLLOW", "FOLLOW_ME"):
             self.launch_person_follow()
         else:
             print(f"[GUI] Unknown remote mode: {name}")
@@ -490,6 +500,16 @@ class FitnessRobotUI(tk.Tk):
             font=("Helvetica", 12, "bold")
         )
         self.home_btn.pack(side="right", padx=10)
+
+        self.voice_status_label = tk.Label(
+            self.bottom_bar,
+            text="🎤 Voice: Say \"FitBot <command>\"",
+            font=("Helvetica", 9, "bold"),
+            fg="#96D75F",
+            bg="#1E1E24",
+            wraplength=230,
+        )
+        self.voice_status_label.pack(side="top", pady=5)
 
     def update_stat_card(self, label, value, color="#96D75F"):
         try:

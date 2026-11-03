@@ -79,16 +79,37 @@ _serial_read_thread = threading.Thread(target=_serial_read_worker, daemon=True)
 _serial_read_thread.start()
 
 
-def send_command(command):
+_manual_motion_override = False
+
+
+def set_manual_motion_override(active):
+    """Enable/disable manual voice motion override so tracking loops don't interrupt timed voice movements."""
+    global _manual_motion_override
+    _manual_motion_override = bool(active)
+
+
+def is_manual_motion_override():
+    """Return True if a voice-controlled timed movement is currently active."""
+    return _manual_motion_override
+
+
+def send_command(command, manual=False):
     """Send command to ESP32 over serial only when changed or refreshed."""
     global current_command, last_command_time
+    if _manual_motion_override and not manual:
+        return
     now = time.time()
 
     cmd_mapping = {
         "FORWARD": "FWD",
         "BACKWARD": "BACK",
         "LEFT": "LEFT",
+        "MOVE_LEFT": "LEFT",
         "RIGHT": "RIGHT",
+        "MOVE_RIGHT": "RIGHT",
+        "ROTATE": "VEER_RIGHT",
+        "ROTATE_LEFT": "VEER_LEFT",
+        "ROTATE_RIGHT": "VEER_RIGHT",
         "FWD_LEFT": "VEER_LEFT",
         "FWD_RIGHT": "VEER_RIGHT",
         "BWD_LEFT": "VEER_LEFT",

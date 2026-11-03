@@ -5,18 +5,22 @@ Intent extraction for spoken robot commands.
 Turns a free-form spoken sentence (from Vosk) into one command defined in
 `voice_commands.py`, plus parameters such as durations and counts.
 
+Wake-word rule:
+  • While an exercise is executing (`session_manager.exercise_executing` is set),
+    the robot only responds when the keyword "FitBot" is spoken and then the
+    command follows (e.g. "FitBot move left", "FitBot pause", "FitBot what's
+    the time now", plus "Hello FitBot" or saying "FitBot" and then speaking
+    the command within WAKE_WORD_WINDOW seconds).
+  • When no exercise is executing (Home screen), commands work both with and
+    without the "FitBot" prefix.
+
 Two backends:
   1. LLM backend (optional) – a local Large Language Model served by Ollama
-     (https://ollama.com). Understands paraphrases ("I'm tired, give me a
-     minute" -> PAUSE). Enabled automatically when Ollama is running and
+     (https://ollama.com). Enabled automatically when Ollama is running and
      the configured model is pulled (see VOICE_LLM_* in config.py).
   2. Local semantic matcher (always available, instant, offline) –
-     keyword/phrase scoring with fuzzy matching (tolerates Vosk
-     mis-hearings), negation handling ("don't stop"), example-sentence
-     similarity, number-word parsing and parameter extraction.
-
-The LLM is tried first when available; the local matcher is the fallback.
-Safety-critical commands (STOP) bypass the LLM for zero latency.
+     keyword/phrase scoring with fuzzy matching, negation handling,
+     example-sentence similarity, number-word parsing and parameter extraction.
 """
 
 import os
@@ -40,6 +44,11 @@ try:
 except Exception:  # pragma: no cover - allows standalone use
     VOICE_LLM_MODE, VOICE_LLM_URL = "off", "http://localhost:11434"
     VOICE_LLM_MODEL, VOICE_LLM_TIMEOUT, DEBUG = "qwen2.5:0.5b", 6.0, False
+
+try:
+    from session_manager import exercise_executing
+except Exception:  # pragma: no cover
+    exercise_executing = None
 
 import voice_commands as _registry_module
 
@@ -94,6 +103,10 @@ _UNITS = {
 _TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
          "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
 _NEGATIONS = {"dont", "not", "never", "no", "without"}
+_GREETING_PREFIXES = {
+    "hello", "hi", "hey", "greetings",
+    "good morning", "good afternoon", "good evening",
+}
 
 
 def _words_to_numbers(tokens):
@@ -129,6 +142,80 @@ def normalize(text):
 
 def _tokens(text):
     return text.split()
+
+
+# ─── Wake-word ("FitBot") detection & two-step window ─────────────────
+_wake_word_active_until = 0.0
+
+
+def activate_wake_word_window(duration=None):
+    """Open the wake-word window so the next utterance is accepted as a command."""
+    global _wake_word_active_until
+    reg = get_registry()
+    win = float(duration if duration is not None else getattr(reg, "WAKE_WORD_WINDOW", 6.0))
+    _wake_word_active_until = time.time() + win
+
+
+def clear_wake_word_window():
+    """Close any active wake-word window."""
+    global _wake_word_active_until
+    _wake_word_active_until = 0.0
+
+
+def is_wake_word_window_active():
+    """Return True if the user recently said 'FitBot' and we are awaiting the command."""
+    return time.time() < _wake_word_active_until
+
+
+def _is_fuzzy_fitbot(window_tokens):
+    """Check if a 1- or 2-word token window is a phonetic match for 'fitbot'."""
+    joined = "".join(window_tokens)
+    if len(joined) < 5 or len(joined) > 8:
+        return False
+    if not (joined[0] in ("f", "b", "s") or joined.endswith(("bot", "but", "pot", "box", "bar"))):
+        return False
+    return SequenceMatcher(None, joined, "fitbot").ratio() >= 0.82
+
+
+def split_on_wake_word(text):
+    """
+    Search `text` for the wake word ('FitBot' or its Vosk phonetic aliases).
+    Returns tuple: (found: bool, before_wake: str, after_wake: str).
+    """
+    reg = get_registry()
+    norm = normalize(text)
+    tokens = _tokens(norm)
+    if not tokens:
+        return False, "", ""
+
+    wake_phrases = [_tokens(normalize(w)) for w in getattr(reg, "WAKE_WORDS", ["fitbot", "fit bot"])]
+    wake_phrases = [p for p in wake_phrases if p]
+    # Sort longest first so 2-word "fit bot" matches completely
+    wake_phrases.sort(key=len, reverse=True)
+
+    for i in range(len(tokens)):
+        # 1. Exact wake-word or alias match
+        for wp in wake_phrases:
+            n = len(wp)
+            if i + n <= len(tokens) and tokens[i:i + n] == wp:
+                before = " ".join(tokens[:i]).strip()
+                after = " ".join(tokens[i + n:]).strip()
+                return True, before, after
+
+        # 2. Fuzzy phonetic match for 1- or 2-token transcriptions of "FitBot"
+        for n in (2, 1):
+            if i + n <= len(tokens) and _is_fuzzy_fitbot(tokens[i:i + n]):
+                before = " ".join(tokens[:i]).strip()
+                after = " ".join(tokens[i + n:]).strip()
+                return True, before, after
+
+    return False, norm, ""
+
+
+def has_wake_word(text):
+    """Return True if `text` contains the wake word 'FitBot'."""
+    found, _, _ = split_on_wake_word(text)
+    return found
 
 
 # ─── Parameter extraction ─────────────────────────────────────────────
@@ -292,10 +379,10 @@ def llm_available():
 def _build_prompt(text, commands):
     lines = [f"- {c['name']}: {c.get('description', '')}" for c in commands]
     return (
-        "You are the command interpreter of a fitness robot. A user spoke a "
+        "You are FitBot, a voice-controlled fitness robot. A user spoke a "
         "sentence (transcribed by speech recognition, it may contain errors). "
         "Decide which ONE command the user wants, or NONE if the sentence is "
-        "not a command (for example normal conversation).\n\n"
+        "not a command.\n\n"
         "Available commands:\n" + "\n".join(lines) + "\n- NONE: not a command\n\n"
         "Reply ONLY with JSON in this exact format:\n"
         '{"command": "<COMMAND_NAME or NONE>", "duration": <seconds or null>, '
@@ -350,46 +437,124 @@ def llm_parse(text):
     return Intent(name, max(0.0, min(1.0, conf)), params, "llm", cmd)
 
 
-# ─── Public API ───────────────────────────────────────────────────────
-def has_wake_word(text):
-    reg = get_registry()
-    norm = normalize(text)
-    return any(re.search(rf"\b{re.escape(normalize(w))}\b", norm)
-               for w in getattr(reg, "WAKE_WORDS", []))
-
-
-def extract_intent(text):
-    """
-    Extract the intended command from a spoken sentence.
-    Returns an Intent, or None if no command was understood.
-    """
-    if not text or not text.strip():
-        return None
-    reg = get_registry()
-    min_conf = float(getattr(reg, "MIN_CONFIDENCE", 0.4))
-
-    if getattr(reg, "REQUIRE_WAKE_WORD", False) and not has_wake_word(text):
-        if DEBUG:
-            print(f"🔇 [VOICE] No wake word in: \"{text}\"")
-        return None
-
-    local = local_parse(text)
+def _match_text_to_intent(candidate_text, min_conf):
+    """Run local + optional LLM matching on `candidate_text`."""
+    local = local_parse(candidate_text)
 
     # Safety fast-path: high-priority commands (STOP) skip the LLM entirely.
     if local and local.command.get("priority", 0) >= 5 and local.confidence >= 0.6:
         return local
 
     if llm_available():
-        llm = llm_parse(text)
+        llm = llm_parse(candidate_text)
         if isinstance(llm, Intent) and llm.confidence >= min_conf:
             return llm
         if llm == "NONE":
-            # LLM says "not a command": only trust the local matcher if it is very sure.
             return local if (local and local.confidence >= 0.75) else None
 
     if local and local.confidence >= min_conf:
         return local
     return None
+
+
+def _get_hello_intent():
+    """Return the HELLO command Intent if defined in voice_commands.py."""
+    for cmd in get_commands():
+        if cmd.get("name") == "HELLO":
+            return Intent("HELLO", 0.95, {}, "local", cmd)
+    return Intent(
+        "HELLO",
+        0.95,
+        {},
+        "local",
+        {
+            "name": "HELLO",
+            "action": {
+                "type": "reply",
+                "response": "Hello! I am FitBot, your fitness assistant. How can I help you today?",
+            },
+        },
+    )
+
+
+def _get_wakeup_intent():
+    """Return a wake-word acknowledgement Intent when the user says only 'FitBot'."""
+    return Intent(
+        "WAKE_UP",
+        1.0,
+        {},
+        "local",
+        {
+            "name": "WAKE_UP",
+            "action": {
+                "type": "reply",
+                "response": "Yes? I am listening.",
+            },
+        },
+    )
+
+
+# ─── Public API ───────────────────────────────────────────────────────
+def extract_intent(text, exercising=None):
+    """
+    Extract the intended command from a spoken sentence.
+    When `exercising` is True (or `session_manager.exercise_executing` is set),
+    requires the keyword "FitBot" followed by the command.
+    Returns an Intent, or None if no command was understood.
+    """
+    if not text or not text.strip():
+        return None
+
+    reg = get_registry()
+    min_conf = float(getattr(reg, "MIN_CONFIDENCE", 0.4))
+
+    if exercising is None:
+        exercising = bool(exercise_executing is not None and exercise_executing.is_set())
+
+    require_wake = (
+        (exercising and getattr(reg, "REQUIRE_WAKE_WORD_DURING_EXERCISE", True))
+        or bool(getattr(reg, "REQUIRE_WAKE_WORD", False))
+    )
+
+    found_wake, before_wake, after_wake = split_on_wake_word(text)
+
+    if found_wake:
+        clear_wake_word_window()
+        # 1. Command follows "FitBot": e.g. "FitBot move left", "FitBot what's the time now"
+        if after_wake:
+            return _match_text_to_intent(after_wake, min_conf)
+
+        # 2. Nothing after "FitBot": check if it was "Hello FitBot" / "Hi FitBot" or bare "FitBot"
+        before_clean = before_wake.strip()
+        if not before_clean:
+            activate_wake_word_window()
+            return _get_wakeup_intent() if require_wake else _get_hello_intent()
+
+        if before_clean in _GREETING_PREFIXES or any(
+            before_clean.endswith(g) for g in _GREETING_PREFIXES
+        ):
+            return _get_hello_intent()
+
+        # When wake word is required (during exercise), commands BEFORE "FitBot"
+        # (like "move left FitBot") are ignored because the command must follow "FitBot".
+        if require_wake:
+            if DEBUG:
+                print(f"🔇 [VOICE] Command must follow '{getattr(reg, 'WAKE_WORD', 'FitBot')}': \"{text}\"")
+            return None
+
+        return _match_text_to_intent(before_clean, min_conf)
+
+    # Wake word was not in this sentence: check if user said "FitBot" just before this
+    if is_wake_word_window_active():
+        clear_wake_word_window()
+        return _match_text_to_intent(text, min_conf)
+
+    if require_wake:
+        if DEBUG:
+            print(f"🔇 [VOICE] Ignored during exercise (say '{getattr(reg, 'WAKE_WORD', 'FitBot')} <command>'): \"{text}\"")
+        return None
+
+    return _match_text_to_intent(text, min_conf)
 
 
 if __name__ == "__main__":
@@ -403,5 +568,6 @@ if __name__ == "__main__":
             break
         if not s:
             break
-        print("  ->", extract_intent(s))
+        print("  [Home mode]    ->", extract_intent(s, exercising=False))
+        print("  [Exercise mode]->", extract_intent(s, exercising=True))
         print("  ranking:", local_parse(s, return_all=True)[:4])

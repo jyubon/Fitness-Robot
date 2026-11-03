@@ -16,7 +16,7 @@ HOW A COMMAND IS DEFINED
                        understand what the command does.
         "keywords":    Words / short phrases that strongly signal this
                        command. Multi-word phrases score higher than
-                       single words, so "forward left" beats "forward".
+                       single words, so "rotate left" beats "rotate".
         "examples":    Full example sentences people might say. They help
                        both the local matcher and the LLM.
         "action":      What the robot does (see ACTION TYPES below).
@@ -31,7 +31,8 @@ ACTION TYPES
 
     {"type": "motion", "direction": "FORWARD", "duration": 2.5}
         Drive for `duration` seconds then stop. Valid directions:
-        FORWARD, BACKWARD, LEFT, RIGHT, FWD_LEFT, FWD_RIGHT,
+        FORWARD, BACKWARD, LEFT (or MOVE_LEFT), RIGHT (or MOVE_RIGHT),
+        ROTATE, ROTATE_LEFT, ROTATE_RIGHT, FWD_LEFT, FWD_RIGHT,
         BWD_LEFT, BWD_RIGHT, SEARCH.
         A spoken duration overrides it: "go forward for 4 seconds".
         "a little" halves it, "a lot" doubles it.
@@ -45,6 +46,11 @@ ACTION TYPES
     {"type": "resume"}    Resume the current exercise.
     {"type": "home"}      Stop everything and return to the home screen.
 
+    {"type": "reply", "response": "Hello! The time now is {time}."}
+        Speak a conversational response out loud (and show it on screen).
+        Supports placeholders {time}, {date}, {day}, or a callable
+        function `lambda params, text: "..."`.
+
     {"type": "serial", "command": "STOP"}
         Send a raw command string to the ESP32.
 
@@ -54,17 +60,49 @@ ACTION TYPES
         from speech, and text = the full recognised sentence.
 """
 
-# ─── Matching behaviour ───────────────────────────────────────────────
+# ─── Wake-word & Matching Behaviour ───────────────────────────────────
+
+# Primary wake word ("FitBot").
+WAKE_WORD = "FitBot"
+
+# When an exercise is actively executing, require the user to say "FitBot"
+# followed by the command (e.g., "FitBot move left", "FitBot pause").
+REQUIRE_WAKE_WORD_DURING_EXERCISE = True
+
+# If True, ALSO require "FitBot" on the Home screen / main menu.
+# (Default False so on the Home screen you can speak with or without "FitBot".)
+REQUIRE_WAKE_WORD = False
+
+# Seconds the robot stays awake waiting for the command if the user says
+# only "FitBot" and pauses before speaking the command.
+WAKE_WORD_WINDOW = 6.0
+
+# Accepted wake-word transcriptions. Because Vosk's compact model splits
+# "FitBot" into two words ("fit bot") or close phonetic pairs depending
+# on accent and microphone, these aliases are all recognised as "FitBot".
+WAKE_WORDS = [
+    "fitbot",
+    "fit bot",
+    "fit but",
+    "fit boat",
+    "fit bought",
+    "fit pot",
+    "fit part",
+    "fit box",
+    "fit bar",
+    "fit board",
+    "fit ball",
+    "feet bot",
+    "feed bot",
+    "foot bot",
+    "fifth bot",
+    "bit bot",
+    "sit bot",
+    "fib bot",
+]
 
 # Minimum confidence (0..1) needed before a command is executed.
-# Raise it if the robot reacts to random conversation, lower it if it
-# misses commands.
 MIN_CONFIDENCE = 0.40
-
-# If True, a sentence is only treated as a command when it contains one
-# of the WAKE_WORDS (e.g. "robot, go forward").
-REQUIRE_WAKE_WORD = False
-WAKE_WORDS = ["robot", "fitbot", "fit bot", "fitness robot", "hey robot"]
 
 # Words ignored while matching (politeness, fillers, wake words ...).
 FILLER_WORDS = [
@@ -74,8 +112,8 @@ FILLER_WORDS = [
     "do", "for", "with", "my", "be", "is", "it", "of", "on", "kindly",
 ]
 
-# Phrases removed before keyword matching because they contain a keyword
-# but mean something else ("all right" is not the direction RIGHT).
+# Phrases removed before keyword matching because they contain a direction
+# word ("right" / "back") in a non-directional sense.
 IGNORE_PHRASES = [
     "all right", "alright", "right now", "right there", "right away",
     "that's right", "thats right", "youre right", "you are right",
@@ -86,96 +124,87 @@ IGNORE_PHRASES = [
 MAX_MOTION_DURATION = 10.0
 
 
-# ─── Command list ─────────────────────────────────────────────────────
+# ─── Command List ─────────────────────────────────────────────────────
 
 COMMANDS = [
-    # ── Safety ──────────────────────────────────────────────────────
+    # ── 1. Safety ───────────────────────────────────────────────────
     {
         "name": "STOP",
         "description": "Immediately stop all robot movement and stop the current activity.",
         "keywords": ["stop", "halt", "freeze", "brake", "cancel", "stay", "hold on",
                      "stop moving", "stand still", "emergency"],
-        "examples": ["stop", "stop the robot", "please stop moving", "freeze right there",
-                     "hold on stop"],
+        "examples": ["stop", "fitbot stop", "stop the robot", "please stop moving",
+                     "freeze right there", "hold on stop"],
         "action": {"type": "stop"},
         "priority": 5,
     },
 
-    # ── Exercises / modes ──────────────────────────────────────────
+    # ── 2. Movement & Rotation Commands ────────────────────────────
     {
-        "name": "BICEP_CURLS",
-        "description": "Open the bicep curls exercise.",
-        "keywords": ["bicep", "biceps", "curl", "curls", "bicep curls", "arm curls", "arms"],
-        "examples": ["start bicep curls", "i want to train my biceps", "let's do some curls",
-                     "arm workout"],
-        "action": {"type": "mode", "mode": "BICEP_CURLS"},
+        "name": "ROTATE",
+        "description": "Rotate or spin the robot in place.",
+        "keywords": ["rotate", "spin", "turn around", "rotate around", "spin around",
+                     "do a spin", "rotate robot", "turn in place", "circle"],
+        "examples": ["rotate", "fitbot rotate", "spin around", "turn around",
+                     "rotate for three seconds"],
+        "action": {"type": "motion", "direction": "ROTATE", "duration": 2.5},
+        "priority": 1,
     },
     {
-        "name": "PUSHUPS",
-        "description": "Open the push-ups exercise.",
-        "keywords": ["push ups", "push up", "pushups", "pushup", "press ups", "chest"],
-        "examples": ["start push ups", "let's do pushups", "i want to do some press ups",
-                     "chest workout"],
-        "action": {"type": "mode", "mode": "PUSHUPS"},
+        "name": "ROTATE_LEFT",
+        "description": "Rotate or turn the robot counter-clockwise (to the left) in place.",
+        "keywords": ["rotate left", "spin left", "turn left", "rotate to the left",
+                     "turn to the left", "rotate counter clockwise"],
+        "examples": ["rotate left", "fitbot rotate left", "turn left", "spin to the left"],
+        "action": {"type": "motion", "direction": "ROTATE_LEFT", "duration": 1.8},
+        "priority": 2,
     },
     {
-        "name": "SQUATS",
-        "description": "Open the squats exercise.",
-        "keywords": ["squat", "squats", "legs", "leg day"],
-        "examples": ["start squats", "let's do squats", "time for leg day",
-                     "i want to train my legs"],
-        "action": {"type": "mode", "mode": "SQUATS"},
+        "name": "ROTATE_RIGHT",
+        "description": "Rotate or turn the robot clockwise (to the right) in place.",
+        "keywords": ["rotate right", "spin right", "turn right", "rotate to the right",
+                     "turn to the right", "rotate clockwise"],
+        "examples": ["rotate right", "fitbot rotate right", "turn right", "spin to the right"],
+        "action": {"type": "motion", "direction": "ROTATE_RIGHT", "duration": 1.8},
+        "priority": 2,
     },
     {
-        "name": "PLANK",
-        "description": "Open the plank exercise.",
-        "keywords": ["plank", "planks", "core", "planking"],
-        "examples": ["start plank", "plank exercise", "let's do a plank",
-                     "core workout"],
-        "action": {"type": "mode", "mode": "PLANK"},
+        "name": "MOVE_LEFT",
+        "description": "Move / strafe the robot sideways to the left.",
+        "keywords": ["move left", "go left", "step left", "slide left", "strafe left",
+                     "shift left", "move to the left", "left"],
+        "examples": ["move left", "fitbot move left", "move to the left",
+                     "go left a bit", "slide left"],
+        "action": {"type": "motion", "direction": "MOVE_LEFT", "duration": 1.5},
+        "priority": 1,
     },
     {
-        "name": "PERSON_FOLLOW",
-        "description": "Start person-following mode where the robot follows the user.",
-        "keywords": ["follow", "follow me", "track me", "tracking", "come with me",
-                     "come along", "walk with me"],
-        "examples": ["follow me", "please follow me around", "come with me robot",
-                     "start tracking me"],
-        "action": {"type": "mode", "mode": "PERSON_FOLLOW"},
+        "name": "MOVE_RIGHT",
+        "description": "Move / strafe the robot sideways to the right.",
+        "keywords": ["move right", "go right", "step right", "slide right", "strafe right",
+                     "shift right", "move to the right", "right"],
+        "examples": ["move right", "fitbot move right", "move to the right",
+                     "go right a bit", "slide right"],
+        "action": {"type": "motion", "direction": "MOVE_RIGHT", "duration": 1.5},
+        "priority": 1,
     },
-
-    # ── Movement ───────────────────────────────────────────────────
     {
         "name": "FORWARD",
         "description": "Drive the robot forward for a short time.",
-        "keywords": ["forward", "forwards", "ahead", "front", "come here",
-                     "come closer", "closer", "straight"],
-        "examples": ["go forward", "move forward a bit", "come closer to me",
-                     "drive ahead for three seconds"],
+        "keywords": ["forward", "forwards", "move forward", "go forward", "ahead",
+                     "front", "come here", "come closer", "closer", "straight"],
+        "examples": ["go forward", "fitbot move forward", "move forward a bit",
+                     "come closer to me", "drive ahead for three seconds"],
         "action": {"type": "motion", "direction": "FORWARD", "duration": 2.5},
     },
     {
         "name": "BACKWARD",
         "description": "Drive the robot backward for a short time.",
-        "keywords": ["back", "backward", "backwards", "reverse", "retreat",
-                     "move away", "go away", "further"],
-        "examples": ["go back", "move backward", "reverse a little",
-                     "move away from me"],
+        "keywords": ["back", "backward", "backwards", "move backward", "go backward",
+                     "move back", "go back", "reverse", "retreat", "move away", "go away"],
+        "examples": ["go back", "fitbot move backward", "move backward",
+                     "reverse a little", "move away from me"],
         "action": {"type": "motion", "direction": "BACKWARD", "duration": 2.5},
-    },
-    {
-        "name": "LEFT",
-        "description": "Turn or move the robot to the left.",
-        "keywords": ["left", "turn left", "go left", "move left", "rotate left"],
-        "examples": ["turn left", "move to the left", "go left a bit"],
-        "action": {"type": "motion", "direction": "LEFT", "duration": 1.5},
-    },
-    {
-        "name": "RIGHT",
-        "description": "Turn or move the robot to the right.",
-        "keywords": ["right", "turn right", "go right", "move right", "rotate right"],
-        "examples": ["turn right", "move to the right", "go right a bit"],
-        "action": {"type": "motion", "direction": "RIGHT", "duration": 1.5},
     },
     {
         "name": "FWD_LEFT",
@@ -183,6 +212,7 @@ COMMANDS = [
         "keywords": ["forward left", "front left", "diagonal left", "ahead left"],
         "examples": ["go forward left", "move diagonally to the front left"],
         "action": {"type": "motion", "direction": "FWD_LEFT", "duration": 2.0},
+        "priority": 2,
     },
     {
         "name": "FWD_RIGHT",
@@ -190,26 +220,72 @@ COMMANDS = [
         "keywords": ["forward right", "front right", "diagonal right", "ahead right"],
         "examples": ["go forward right", "move diagonally to the front right"],
         "action": {"type": "motion", "direction": "FWD_RIGHT", "duration": 2.0},
+        "priority": 2,
     },
 
-    # ── Session / UI control ───────────────────────────────────────
+    # ── 3. Follow Me & Workout Modes ───────────────────────────────
+    {
+        "name": "FOLLOW_ME",
+        "description": "Start person-following mode where the robot follows the user.",
+        "keywords": ["follow me", "follow", "track me", "tracking", "start following",
+                     "come with me", "come along", "walk with me"],
+        "examples": ["follow me", "fitbot follow me", "please follow me around",
+                     "come with me", "start tracking me"],
+        "action": {"type": "mode", "mode": "PERSON_FOLLOW"},
+        "priority": 2,
+    },
+    {
+        "name": "BICEP_CURLS",
+        "description": "Open the bicep curls exercise.",
+        "keywords": ["bicep", "biceps", "curl", "curls", "bicep curls", "arm curls", "arms"],
+        "examples": ["start bicep curls", "fitbot start bicep curls",
+                     "i want to train my biceps", "let's do some curls"],
+        "action": {"type": "mode", "mode": "BICEP_CURLS"},
+    },
+    {
+        "name": "PUSHUPS",
+        "description": "Open the push-ups exercise.",
+        "keywords": ["push ups", "push up", "pushups", "pushup", "press ups", "chest"],
+        "examples": ["start push ups", "fitbot start pushups",
+                     "let's do pushups", "i want to do some press ups"],
+        "action": {"type": "mode", "mode": "PUSHUPS"},
+    },
+    {
+        "name": "SQUATS",
+        "description": "Open the squats exercise.",
+        "keywords": ["squat", "squats", "legs", "leg day"],
+        "examples": ["start squats", "fitbot start squats",
+                     "let's do squats", "time for leg day"],
+        "action": {"type": "mode", "mode": "SQUATS"},
+    },
+    {
+        "name": "PLANK",
+        "description": "Open the plank exercise.",
+        "keywords": ["plank", "planks", "core", "planking"],
+        "examples": ["start plank", "fitbot start plank",
+                     "plank exercise", "let's do a plank"],
+        "action": {"type": "mode", "mode": "PLANK"},
+    },
+
+    # ── 4. Session / UI Control ────────────────────────────────────
     {
         "name": "START",
         "description": "Begin the currently selected exercise (press the Start button).",
         "keywords": ["start", "begin", "ready", "i am ready", "im ready",
                      "start workout", "start exercise", "start the exercise",
                      "start the workout", "begin workout"],
-        "examples": ["start", "i'm ready", "begin the workout", "start the exercise",
-                     "okay let's begin"],
+        "examples": ["start", "fitbot start", "i'm ready",
+                     "begin the workout", "start the exercise"],
         "action": {"type": "start"},
-        # Negative priority: "start squats" should open SQUATS, not press Start.
+        # Negative priority so "start squats" opens SQUATS rather than pressing Start.
         "priority": -1,
     },
     {
         "name": "PAUSE",
         "description": "Pause the current exercise.",
-        "keywords": ["pause", "break", "take a break", "rest", "wait"],
-        "examples": ["pause", "i need a break", "pause the workout", "let me rest"],
+        "keywords": ["pause", "break", "take a break", "rest", "wait", "pause workout"],
+        "examples": ["pause", "fitbot pause", "i need a break",
+                     "pause the workout", "let me rest"],
         "action": {"type": "pause"},
         "priority": 1,
     },
@@ -217,29 +293,109 @@ COMMANDS = [
         "name": "RESUME",
         "description": "Resume a paused exercise.",
         "keywords": ["resume", "continue", "unpause", "carry on", "keep going"],
-        "examples": ["resume", "continue the workout", "let's keep going"],
+        "examples": ["resume", "fitbot resume", "continue the workout",
+                     "let's keep going"],
         "action": {"type": "resume"},
         "priority": 1,
     },
     {
         "name": "HOME",
         "description": "Stop the current activity and go back to the main menu.",
-        "keywords": ["home", "menu", "main menu", "exit", "quit", "finish",
+        "keywords": ["home", "menu", "main menu", "go home", "exit", "quit", "finish",
                      "end workout", "i am done", "im done", "done"],
-        "examples": ["go home", "back to the main menu", "i'm done",
-                     "end the workout", "exit"],
+        "examples": ["go home", "fitbot go home", "back to the main menu",
+                     "i'm done", "end the workout"],
         "action": {"type": "home"},
         "priority": 2,
     },
 
-    # ── Add your own commands below ────────────────────────────────
-    # Example of a custom command calling your own Python function:
-    #
-    # {
-    #     "name": "SAY_HELLO",
-    #     "description": "Greet the user.",
-    #     "keywords": ["hello", "hi", "good morning"],
-    #     "examples": ["hello robot", "hi there"],
-    #     "action": {"type": "python", "function": lambda params, text: print("👋 Hello!")},
-    # },
+    # ── 5. Normal / Conversational Voice Commands ──────────────────
+    {
+        "name": "HELLO",
+        "description": "Greet the user when they say hello or hi to FitBot.",
+        "keywords": ["hello", "hello fitbot", "hi", "hi fitbot", "hey fitbot",
+                     "greetings", "good morning", "good afternoon", "good evening"],
+        "examples": ["hello", "hello fitbot", "hi fitbot",
+                     "good morning fitbot", "hey there"],
+        "action": {
+            "type": "reply",
+            "response": "Hello! I am FitBot, your fitness assistant. How can I help you today?",
+        },
+        "priority": 1,
+    },
+    {
+        "name": "TIME_NOW",
+        "description": "Tell the user the current time.",
+        "keywords": ["whats the time now", "what is the time now", "whats the time",
+                     "what is the time", "what time is it", "what time", "time now",
+                     "current time", "tell me the time", "the time now", "what the time"],
+        "examples": ["what's the time now", "fitbot what's the time now",
+                     "what time is it", "tell me the time"],
+        "action": {
+            "type": "reply",
+            "response": "The time now is {time}.",
+        },
+        "priority": 3,
+    },
+    {
+        "name": "DATE_TODAY",
+        "description": "Tell the user today's day and date.",
+        "keywords": ["what is the date", "whats the date", "what day is it",
+                     "what is today", "todays date", "date today", "what day is today"],
+        "examples": ["what is the date today", "what day is it",
+                     "fitbot what is today's date"],
+        "action": {
+            "type": "reply",
+            "response": "Today is {day}, {date}.",
+        },
+        "priority": 2,
+    },
+    {
+        "name": "HOW_ARE_YOU",
+        "description": "Respond when the user asks how FitBot is doing.",
+        "keywords": ["how are you", "how are you doing", "how is it going",
+                     "hows it going", "how do you feel", "are you okay"],
+        "examples": ["how are you", "hello fitbot how are you",
+                     "how are you doing today"],
+        "action": {
+            "type": "reply",
+            "response": "I am doing great and ready for a workout! How are you feeling?",
+        },
+        "priority": 2,
+    },
+    {
+        "name": "WHO_ARE_YOU",
+        "description": "Explain who FitBot is and what it can do.",
+        "keywords": ["who are you", "what is your name", "whats your name",
+                     "your name", "what can you do", "introduce yourself"],
+        "examples": ["who are you", "what is your name", "fitbot what can you do"],
+        "action": {
+            "type": "reply",
+            "response": "I am FitBot, your smart fitness robot. I can track your exercises, follow you, and move on your voice command.",
+        },
+        "priority": 2,
+    },
+    {
+        "name": "THANK_YOU",
+        "description": "Respond politely when the user says thank you.",
+        "keywords": ["thank you", "thanks", "thanks a lot", "thank you fitbot",
+                     "appreciate it"],
+        "examples": ["thank you", "thank you fitbot", "thanks a lot"],
+        "action": {
+            "type": "reply",
+            "response": "You are welcome! Keep up the great workout!",
+        },
+        "priority": 1,
+    },
+    {
+        "name": "GOODBYE",
+        "description": "Say goodbye to the user.",
+        "keywords": ["goodbye", "bye", "bye bye", "see you", "see you later", "good night"],
+        "examples": ["goodbye", "bye fitbot", "see you later"],
+        "action": {
+            "type": "reply",
+            "response": "Goodbye! Stay healthy and see you next workout!",
+        },
+        "priority": 1,
+    },
 ]

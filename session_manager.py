@@ -67,8 +67,9 @@ _resolve_firebase_user_id()
 force_stop = threading.Event()
 remote_mode_queue = queue.Queue()
 start_exercise = threading.Event()
-pause_request = threading.Event()    # Set by voice "pause"; consumed by the exercise loop
-resume_request = threading.Event()   # Set by voice "resume"; consumed by the exercise loop
+pause_request = threading.Event()       # Set by voice "pause"; consumed by the exercise loop
+resume_request = threading.Event()      # Set by voice "resume"; consumed by the exercise loop
+exercise_executing = threading.Event()  # Set while an exercise is actively running (requires "FitBot" wake word)
 
 # ─── Session State Tracking ───
 _session_id = None
