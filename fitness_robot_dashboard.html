@@ -1002,6 +1002,11 @@
               <span class="card-title">Robot State</span>
               <span class="live-badge"><span class="live-dot"></span>LIVE</span>
             </div>
+            <!-- Interactive Googly Eyes Robot Face -->
+            <div id="googly-eyes-card" style="text-align: center; margin-bottom: 12px; background: var(--bg3); border-radius: var(--radius); padding: 12px 10px; border: 1px solid var(--border);">
+              <canvas id="googlyCanvas" width="240" height="85" style="display:inline-block; max-width: 100%; border-radius: 8px; cursor: pointer; touch-action: none;"></canvas>
+              <div id="eye-reaction-text" style="font-size: 11px; font-weight: 600; color: var(--accent); margin-top: 4px; letter-spacing: 0.5px;">FITBOT EYES • ACTIVE</div>
+            </div>
             <div class="robot-mode-display">
               <div class="robot-mode-label">Current Mode</div>
               <div class="robot-mode-value" id="robot-mode">BICEP_CURLS</div>
@@ -1717,6 +1722,192 @@ function showToast(msg, icon) {
   document.getElementById('toast').classList.add('show');
   toastTimer = setTimeout(() => document.getElementById('toast').classList.remove('show'), 2800);
 }
+
+// ════════════════════════════════════════════════
+//  GOOGLY EYES CONTROLLER
+// ════════════════════════════════════════════════
+(function() {
+  const canvas = document.getElementById('googlyCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const reactionText = document.getElementById('eye-reaction-text');
+
+  let state = 'IDLE';
+  let targetX = 0, targetY = 0;
+  let currentX = 0, currentY = 0;
+  let velX = 0, velY = 0;
+  const springK = 0.22, damping = 0.72, restitution = 0.45;
+
+  let blinkProgress = 0, isBlinking = false, blinkClosing = true;
+  let lastBlink = performance.now(), nextBlink = 3000 + Math.random() * 3000;
+  let lastSaccade = performance.now(), saccadeInterval = 2000 + Math.random() * 2000;
+
+  function updatePhysics(now) {
+    const modeEl = document.getElementById('robot-mode');
+    const curMode = modeEl ? modeEl.textContent.trim().toUpperCase() : 'IDLE';
+
+    if (curMode.includes('FOLLOW') || curMode.includes('TRACK')) {
+      state = 'FOLLOWING';
+      if (reactionText) reactionText.textContent = '👀 FOLLOWING USER • EYES LOCKED';
+    } else if (curMode.includes('SEARCH')) {
+      state = 'SEARCHING';
+      if (reactionText) reactionText.textContent = '🔍 SEARCHING FOR PERSON...';
+    } else if (state !== 'INTERACTIVE') {
+      state = 'IDLE';
+      if (reactionText) reactionText.textContent = 'FITBOT EYES • ACTIVE';
+    }
+
+    if (state === 'SEARCHING') {
+      targetX = Math.sin(now * 0.005) * 0.95;
+      targetY = Math.sin(now * 0.0025) * 0.25;
+    } else if (state === 'IDLE') {
+      if (now - lastSaccade > saccadeInterval) {
+        lastSaccade = now;
+        saccadeInterval = 1800 + Math.random() * 2500;
+        if (Math.random() < 0.45) {
+          targetX = (Math.random() - 0.5) * 1.3;
+          targetY = (Math.random() - 0.5) * 0.9;
+        } else {
+          targetX = (Math.random() - 0.5) * 0.3;
+          targetY = (Math.random() - 0.5) * 0.2;
+        }
+      }
+    }
+
+    if (!isBlinking && (now - lastBlink > nextBlink)) {
+      isBlinking = true;
+      blinkClosing = true;
+      lastBlink = now;
+      nextBlink = 3000 + Math.random() * 4000;
+    }
+    if (isBlinking) {
+      if (blinkClosing) {
+        blinkProgress += 0.22;
+        if (blinkProgress >= 1.0) { blinkProgress = 1.0; blinkClosing = false; }
+      } else {
+        blinkProgress -= 0.22;
+        if (blinkProgress <= 0.0) { blinkProgress = 0.0; isBlinking = false; }
+      }
+    }
+
+    velX = (velX + (targetX - currentX) * springK) * damping;
+    velY = (velY + (targetY - currentY) * springK) * damping;
+    currentX += velX;
+    currentY += velY;
+
+    const dist = Math.hypot(currentX, currentY);
+    if (dist > 1.0) {
+      const nx = currentX / dist, ny = currentY / dist;
+      currentX = nx; currentY = ny;
+      const dot = velX * nx + velY * ny;
+      if (dot > 0) {
+        velX -= (1.0 + restitution) * dot * nx;
+        velY -= (1.0 + restitution) * dot * ny;
+      }
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const w = canvas.width, h = canvas.height;
+    const cx = w / 2, cy = h / 2;
+    const er = Math.min(w * 0.2, h * 0.42);
+    const pr = er * 0.46;
+    const spacing = er * 2.45;
+    const maxTravel = er - pr - 3;
+
+    [-1, 1].forEach(sign => {
+      const ecx = cx + sign * (spacing / 2);
+      ctx.beginPath();
+      ctx.arc(ecx, cy, er + 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#121318';
+      ctx.fill();
+      ctx.strokeStyle = '#2B2B36';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(ecx, cy, er, 0, Math.PI * 2);
+      ctx.fillStyle = '#FAFAFA';
+      ctx.fill();
+      ctx.strokeStyle = '#D2D6DC';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(ecx, cy, er - 2, Math.PI * 0.2, Math.PI * 0.8, false);
+      ctx.strokeStyle = '#C8CCD4';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      const px = ecx + currentX * maxTravel;
+      const py = cy + currentY * maxTravel;
+      ctx.beginPath();
+      ctx.arc(px, py, pr, 0, Math.PI * 2);
+      ctx.fillStyle = '#15171C';
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(px - pr * 0.32, py - pr * 0.32, pr * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(px + pr * 0.35, py + pr * 0.35, pr * 0.16, 0, Math.PI * 2);
+      ctx.fillStyle = '#E2E8F0';
+      ctx.fill();
+
+      if (blinkProgress > 0.02) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(ecx, cy, er, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.fillStyle = '#1E1E24';
+        ctx.fillRect(ecx - er, cy - er, er * 2, er * 2 * blinkProgress);
+        ctx.strokeStyle = '#2B2B36';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(ecx - er, cy - er, er * 2, er * 2 * blinkProgress);
+        ctx.restore();
+      }
+
+      const browTilt = state === 'FOLLOWING' ? 3.5 : (state === 'SEARCHING' ? -3.0 : 0);
+      const by = cy - er - 6;
+      ctx.beginPath();
+      ctx.moveTo(ecx - er * 0.85, by + browTilt * sign);
+      ctx.lineTo(ecx + er * 0.85, by - browTilt * sign);
+      ctx.strokeStyle = state === 'FOLLOWING' ? '#00e5a0' : '#4da6ff';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    });
+  }
+
+  function loop(now) {
+    updatePhysics(now);
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  function handlePointer(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const normX = ((clientX - rect.left) / rect.width - 0.5) * 2.2;
+    const normY = ((clientY - rect.top) / rect.height - 0.5) * 2.2;
+    targetX = Math.max(-1, Math.min(1, normX));
+    targetY = Math.max(-1, Math.min(1, normY));
+    state = 'INTERACTIVE';
+    if (reactionText) reactionText.textContent = '👀 TOUCH TRACKING • LOOKING AT YOU!';
+  }
+
+  canvas.addEventListener('pointerdown', handlePointer);
+  canvas.addEventListener('pointermove', (e) => { if (e.buttons === 1) handlePointer(e); });
+  canvas.addEventListener('click', () => {
+    velX += (Math.random() - 0.5) * 0.35;
+    velY += (Math.random() - 0.5) * 0.35;
+  });
+})();
 </script>
 </body>
 </html>
