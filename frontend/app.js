@@ -118,6 +118,13 @@ async function logout() {
   currentUserId = null;
   currentUserEmail = null;
 
+  if (localReconnectTimer) {
+    clearTimeout(localReconnectTimer);
+    localReconnectTimer = null;
+  }
+  isCameraStreamLoaded = false;
+  lastRobotTelemetryAt = 0;
+
   setRobotConnectionStatus(false);
   setWatchConnectionStatus(false);
 
@@ -258,7 +265,12 @@ function showAppView(email) {
   if (mobileNav) mobileNav.classList.remove('hidden');
 
   updateGreeting();
-  setRobotConnectionStatus(localControlSocket && localControlSocket.readyState === 1);
+  const cameraUrlInput = document.getElementById('cameraUrl');
+  if (cameraUrlInput && !cameraUrlInput.value.trim() && currentCameraUrl) {
+    cameraUrlInput.value = currentCameraUrl;
+  }
+  ensureLocalWebSocketConnected();
+  refreshRobotOnlineStatus();
   setWatchConnectionStatus(stepConnected);
 
   if (localControlSocket && localControlSocket.readyState === 1 && currentUserId) {
@@ -274,18 +286,48 @@ function showAppView(email) {
   showTab('live');
 }
 
+let isCameraStreamLoaded = false;
+let lastRobotTelemetryAt = 0;
+
+function isRobotCurrentlyOnline() {
+  const wsOpen = Boolean(localControlSocket && localControlSocket.readyState === WebSocket.OPEN);
+  const recentTelemetry = lastRobotTelemetryAt > 0 && (Date.now() - lastRobotTelemetryAt < 65000);
+  return wsOpen || isCameraStreamLoaded || recentTelemetry;
+}
+
+function refreshRobotOnlineStatus() {
+  setRobotConnectionStatus(isRobotCurrentlyOnline());
+}
+
 function setRobotConnectionStatus(isOnline) {
   const dot = document.getElementById('robotStatusDot');
   const text = document.getElementById('robotStatusText');
-  if (!text) return;
-  if (isOnline) {
-    text.textContent = 'ONLINE';
-    text.className = 'text-sm sm:text-base font-extrabold tracking-wide text-emerald-400';
-    if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
-  } else {
-    text.textContent = 'OFFLINE';
-    text.className = 'text-sm sm:text-base font-extrabold tracking-wide text-red-400';
-    if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-red-400';
+  const pill = document.getElementById('robotState');
+
+  if (text) {
+    if (isOnline) {
+      text.textContent = 'ONLINE';
+      text.className = 'text-sm sm:text-base font-extrabold tracking-wide text-emerald-400';
+      if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
+    } else {
+      text.textContent = 'OFFLINE';
+      text.className = 'text-sm sm:text-base font-extrabold tracking-wide text-red-400';
+      if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-red-400';
+    }
+  }
+
+  if (pill) {
+    if (isOnline) {
+      const currentPillState = (pill.getAttribute('data-state') || pill.textContent || '').toUpperCase();
+      if (!currentPillState || currentPillState === 'OFFLINE') {
+        const displayState = (robotState && robotState !== 'OFFLINE') ? robotState : 'CONNECTED';
+        pill.textContent = displayState;
+        pill.setAttribute('data-state', displayState);
+      }
+    } else {
+      pill.textContent = 'OFFLINE';
+      pill.setAttribute('data-state', 'OFFLINE');
+    }
   }
 }
 
@@ -864,7 +906,13 @@ function connectRealtime() {
     .doc('battery')
     .onSnapshot((doc) => {
       if (doc.exists && doc.data() && doc.data().voltage !== undefined) {
-        updateBatteryUI(doc.data().voltage);
+        const data = doc.data();
+        updateBatteryUI(data.voltage);
+        const updatedMs = toMillis(data.updated_at);
+        if (!updatedMs || (Date.now() - updatedMs < 65000)) {
+          lastRobotTelemetryAt = Date.now();
+          setRobotConnectionStatus(true);
+        }
       }
     });
 
@@ -883,6 +931,11 @@ function disconnectRealtime() {
 function handleTelemetryMessage(msg) {
   const type = msg.type;
   const payload = msg.payload || msg;
+
+  if (type && type !== 'watch_steps') {
+    lastRobotTelemetryAt = Date.now();
+    setRobotConnectionStatus(true);
+  }
 
   if (type === 'session_start') {
     const sid = msg.session_id || payload.session_id || msg.id;
@@ -1164,33 +1217,74 @@ function clearLog() {
 // ---------- Control ----------
 
 let localControlSocket = null;
+let localControlHost = null;
+let localReconnectTimer = null;
 
-function connectLocalWebSocket(piIp) {
+function ensureLocalWebSocketConnected() {
+  const urlToUse = currentCameraUrl || DEFAULT_CAMERA_URL;
+  if (!urlToUse) return;
+  try {
+    const parsed = new URL(normalizeUrl(urlToUse));
+    if (parsed.hostname) {
+      connectLocalWebSocket(parsed.hostname, false);
+    }
+  } catch (e) { }
+}
+
+function connectLocalWebSocket(piIp, forceReconnect = false) {
   if (!piIp) return;
+
+  if (localReconnectTimer) {
+    clearTimeout(localReconnectTimer);
+    localReconnectTimer = null;
+  }
+
+  // Reuse existing socket if already open or connecting to the same host
+  if (
+    !forceReconnect &&
+    localControlSocket &&
+    localControlHost === piIp &&
+    (localControlSocket.readyState === WebSocket.OPEN || localControlSocket.readyState === WebSocket.CONNECTING)
+  ) {
+    if (localControlSocket.readyState === WebSocket.OPEN) {
+      setRobotConnectionStatus(true);
+    }
+    return;
+  }
 
   if (localControlSocket) {
     try {
-      localControlSocket.close();
+      const oldSocket = localControlSocket;
+      oldSocket.onopen = null;
+      oldSocket.onmessage = null;
+      oldSocket.onerror = null;
+      oldSocket.onclose = null;
+      oldSocket.close();
     } catch (e) { }
+    localControlSocket = null;
   }
 
+  localControlHost = piIp;
   console.log(`🔌 Attempting to connect to local robot control at ws://${piIp}:8001`);
-  localControlSocket = new WebSocket(`ws://${piIp}:8001`);
+  let ws;
+  try {
+    ws = new WebSocket(`ws://${piIp}:8001`);
+  } catch (err) {
+    console.warn("⚠️ Could not create local WebSocket:", err);
+    refreshRobotOnlineStatus();
+    return;
+  }
+  localControlSocket = ws;
 
-  localControlSocket.onopen = () => {
+  ws.onopen = () => {
+    if (localControlSocket !== ws) return;
     console.log("✅ Local WebSocket control channel connected");
     appendSystemLog("Connected to local robot control channel");
+    lastRobotTelemetryAt = Date.now();
     setRobotConnectionStatus(true);
-    const pill = document.getElementById('robotState');
-    if (pill) {
-      if (!robotState || robotState === 'OFFLINE') {
-        pill.textContent = "CONNECTED";
-        pill.setAttribute('data-state', 'CONNECTED');
-      }
-    }
     if (currentUserId) {
       try {
-        localControlSocket.send(JSON.stringify({
+        ws.send(JSON.stringify({
           action: 'identify',
           user_id: currentUserId,
           user_email: currentUserEmail
@@ -1200,10 +1294,12 @@ function connectLocalWebSocket(piIp) {
     updateExerciseButtonStates();
   };
 
-  localControlSocket.onmessage = (event) => {
+  ws.onmessage = (event) => {
+    if (localControlSocket !== ws) return;
     try {
       const data = JSON.parse(event.data);
       console.log("📩 Received response from local robot:", data);
+      lastRobotTelemetryAt = Date.now();
       setRobotConnectionStatus(true);
       if (data.type) {
         handleTelemetryMessage(data);
@@ -1213,15 +1309,17 @@ function connectLocalWebSocket(piIp) {
     }
   };
 
-  localControlSocket.onclose = () => {
+  ws.onclose = () => {
+    if (localControlSocket !== ws) return;
     console.log("❌ Local WebSocket control channel closed");
-    appendSystemLog("Disconnected from local robot control channel", true);
     localControlSocket = null;
-    setRobotConnectionStatus(false);
-    const pill = document.getElementById('robotState');
-    if (pill) {
-      pill.textContent = "OFFLINE";
-      pill.setAttribute('data-state', 'OFFLINE');
+    refreshRobotOnlineStatus();
+
+    // Automatically attempt to reconnect while user is signed in
+    if (currentUserId && localControlHost) {
+      localReconnectTimer = setTimeout(() => {
+        connectLocalWebSocket(localControlHost, false);
+      }, 4000);
     }
   };
 }
@@ -1449,37 +1547,48 @@ function normalizeUrl(input) {
   }
 }
 
-function setCameraStream() {
-  const rawUrl = document.getElementById('cameraUrl').value.trim();
+function setCameraStream(forceReload = false) {
+  const cameraUrlEl = document.getElementById('cameraUrl');
+  const rawUrl = (cameraUrlEl ? cameraUrlEl.value.trim() : '') || currentCameraUrl;
   if (!rawUrl) return;
 
   const url = normalizeUrl(rawUrl);
   // Update the input field with the normalized URL
-  document.getElementById('cameraUrl').value = url;
+  if (cameraUrlEl) cameraUrlEl.value = url;
 
   const img = document.getElementById('cameraFeed');
   const placeholder = document.getElementById('cameraPlaceholder');
 
+  const urlChanged = (currentCameraUrl !== url);
   currentCameraUrl = url;
   localStorage.setItem('currentCameraUrl', url); // Save to localStorage
 
-  img.src = url;
-  img.onload = () => {
-    img.classList.remove('hidden');
-    placeholder.classList.add('hidden');
-  };
-  img.onerror = () => {
-    img.classList.add('hidden');
-    placeholder.classList.remove('hidden');
-    placeholder.innerHTML = '<div class="text-red-400">Failed to load stream.<br>Check Pi MJPEG server is running.</div>';
-  };
+  if (img && (forceReload || urlChanged || img.getAttribute('data-stream-url') !== url || img.classList.contains('hidden'))) {
+    img.setAttribute('data-stream-url', url);
+    img.src = url;
+    img.onload = () => {
+      isCameraStreamLoaded = true;
+      img.classList.remove('hidden');
+      if (placeholder) placeholder.classList.add('hidden');
+      setRobotConnectionStatus(true);
+    };
+    img.onerror = () => {
+      isCameraStreamLoaded = false;
+      img.classList.add('hidden');
+      if (placeholder) {
+        placeholder.classList.remove('hidden');
+        placeholder.innerHTML = '<div class="text-red-400">Failed to load stream.<br>Check Pi MJPEG server is running.</div>';
+      }
+      refreshRobotOnlineStatus();
+    };
+  }
 
   // Extract hostname or IP address to connect to WebSocket control server
   try {
     const parsedUrl = new URL(url);
     const hostname = parsedUrl.hostname;
     if (hostname) {
-      connectLocalWebSocket(hostname);
+      connectLocalWebSocket(hostname, urlChanged);
     }
   } catch (e) {
     console.warn("⚠️ Failed to parse local connection URL:", e);
@@ -1492,7 +1601,7 @@ function startCameraStreamIfNeeded() {
   if (cameraUrlInput && cameraUrlInput.value.trim() !== currentCameraUrl) {
     cameraUrlInput.value = currentCameraUrl;
   }
-  setCameraStream();
+  setCameraStream(false);
 }
 
 function toggleCameraSettings() {
@@ -1507,7 +1616,7 @@ function setCameraPreset(url) {
   const input = document.getElementById('cameraUrl');
   if (input) {
     input.value = url;
-    setCameraStream();
+    setCameraStream(true);
   }
 }
 

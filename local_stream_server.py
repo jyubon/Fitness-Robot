@@ -60,6 +60,7 @@ _latest_frame = None
 _force_stop_event = None
 _remote_mode_queue = None
 _latest_battery_voltage = None
+_latest_robot_state = None
 
 # Active local WebSocket clients
 _connected_clients = set()
@@ -150,6 +151,12 @@ async def _ws_handler(websocket):
             await websocket.send(json.dumps({
                 "type": "battery_voltage",
                 "payload": {"voltage": _latest_battery_voltage},
+                "ts": time.time()
+            }))
+        if _latest_robot_state is not None:
+            await websocket.send(json.dumps({
+                "type": "robot_state",
+                "payload": _latest_robot_state,
                 "ts": time.time()
             }))
         
@@ -256,9 +263,11 @@ def broadcast_telemetry(event_type, payload):
     :param event_type: event type string (e.g. rep, session_start, robot_state)
     :param payload: dict content payload
     """
-    global _ws_loop, _connected_clients, _latest_battery_voltage
+    global _ws_loop, _connected_clients, _latest_battery_voltage, _latest_robot_state
     if event_type == "battery_voltage" and isinstance(payload, dict) and "voltage" in payload:
         _latest_battery_voltage = payload["voltage"]
+    elif event_type == "robot_state" and isinstance(payload, dict):
+        _latest_robot_state = dict(payload)
     if _ws_loop is not None and _connected_clients:
         msg = json.dumps({"type": event_type, "payload": payload, "ts": time.time()})
         asyncio.run_coroutine_threadsafe(_send_to_all_clients(msg), _ws_loop)
