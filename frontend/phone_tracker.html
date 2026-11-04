@@ -96,11 +96,19 @@
       </div>
     </div>
 
-    <!-- Auth / Sync status pill -->
-    <div id="authStatusPill"
-      class="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-white/5 border border-white/10">
-      <span id="authStatusDot" class="w-2 h-2 rounded-full bg-amber-400"></span>
-      <span id="authStatusText">Checking...</span>
+    <div class="flex items-center gap-2">
+      <a href="index.html"
+        class="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 text-cyan-300 transition-all">
+        <span>←</span>
+        <span>Dashboard</span>
+      </a>
+
+      <!-- Auth / Sync status pill -->
+      <div id="authStatusPill"
+        class="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-white/5 border border-white/10">
+        <span id="authStatusDot" class="w-2 h-2 rounded-full bg-amber-400"></span>
+        <span id="authStatusText">Checking...</span>
+      </div>
     </div>
   </header>
 
@@ -140,6 +148,14 @@
         class="w-full py-2 text-xs text-white/40 hover:text-white/70 transition-colors">
         Continue in Local Device Mode (No Cloud Sync)
       </button>
+
+      <div class="pt-2 border-t border-white/10">
+        <a href="index.html"
+          class="inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 font-semibold">
+          <span>←</span>
+          <span>Back to Dashboard</span>
+        </a>
+      </div>
     </div>
   </div>
 
@@ -231,7 +247,7 @@
     <!-- Sync status & Links -->
     <div class="flex items-center justify-between px-2 text-xs text-white/40">
       <span id="syncNotice">Cloud Sync: Ready</span>
-      <a href="abc.html" class="text-cyan-400 hover:underline flex items-center gap-1 font-semibold">
+      <a href="index.html" class="text-cyan-400 hover:underline flex items-center gap-1 font-semibold">
         <span>Go to Dashboard</span>
         <span>→</span>
       </a>
