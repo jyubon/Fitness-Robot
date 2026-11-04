@@ -166,16 +166,3 @@ VOICE_LLM_URL = os.getenv("VOICE_LLM_URL", "http://localhost:11434")
 VOICE_LLM_MODEL = os.getenv("VOICE_LLM_MODEL", "qwen2.5:0.5b")
 VOICE_LLM_TIMEOUT = 8.0       # Seconds before falling back to the local matcher
 
-# ─── ElevenLabs Text-to-Speech & Permanent SD Card Cache ───
-ELEVENLABS_API_KEY          = os.getenv("ELEVENLABS_API_KEY", "").strip()
-ELEVENLABS_VOICE_ID         = os.getenv("ELEVENLABS_VOICE_ID", "6psAnGNeDguzLyTxKYvI").strip()
-ELEVENLABS_MODEL_ID         = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
-ELEVENLABS_SPEED            = float(os.getenv("ELEVENLABS_SPEED", "0.9"))
-ELEVENLABS_STABILITY        = float(os.getenv("ELEVENLABS_STABILITY", "0.50"))
-ELEVENLABS_SIMILARITY_BOOST = float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.75"))
-ELEVENLABS_STYLE            = float(os.getenv("ELEVENLABS_STYLE", "0.06"))
-ELEVENLABS_SPEAKER_BOOST    = os.getenv("ELEVENLABS_SPEAKER_BOOST", "true").strip().lower() in (
-    "1", "true", "yes", "on", "enabled"
-)
-TTS_CACHE_DIR               = PROJECT_DIR / "voice" / "tts_cache"
-

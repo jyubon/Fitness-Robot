@@ -39,6 +39,7 @@ from config import (
     DEBUG,
 )
 from robot_control import send_command, set_manual_motion_override
+import audio_manager
 from audio_manager import speak_text, is_tts_speaking
 from session_manager import (
     force_stop,
@@ -269,7 +270,10 @@ def _run_action(intent, text):
             last_cmd=intent.name,
             last_reply=reply_text,
         )
-        speak_text(reply_text)
+        try:
+            audio_manager.speak_text(reply_text, command_name=intent.name, audio_file=action.get("audio_file"))
+        except TypeError:
+            audio_manager.speak_text(reply_text)
         publish_event("voice_response", {
             "command": intent.name,
             "raw_text": text,
@@ -289,6 +293,9 @@ def _run_action(intent, text):
 
     else:
         raise ValueError(f"Command {intent.name}: unknown action type '{a_type}'")
+
+    if a_type != "reply":
+        audio_manager.play_command_audio(intent.name, audio_file=action.get("audio_file"))
 
 
 def execute_voice_command(recognized_text, exercising=None):

@@ -320,6 +320,7 @@ COMMANDS = [
         "action": {
             "type": "reply",
             "response": "Hello! I am FitBot, your fitness assistant. How can I help you today?",
+            "audio_file": "017_hello_fitbot.mp3",
         },
         "priority": 1,
     },
@@ -360,6 +361,7 @@ COMMANDS = [
         "action": {
             "type": "reply",
             "response": "I am doing great and ready for a workout! How are you feeling?",
+            "audio_file": "018_how_are_you.mp3",
         },
         "priority": 2,
     },
@@ -372,6 +374,7 @@ COMMANDS = [
         "action": {
             "type": "reply",
             "response": "I am FitBot, your smart fitness robot. I can track your exercises, follow you, and move on your voice command.",
+            "audio_file": "019_who_are_you.mp3",
         },
         "priority": 2,
     },
@@ -384,6 +387,7 @@ COMMANDS = [
         "action": {
             "type": "reply",
             "response": "You are welcome! Keep up the great workout!",
+            "audio_file": "020_thank_you.mp3",
         },
         "priority": 1,
     },
@@ -395,6 +399,7 @@ COMMANDS = [
         "action": {
             "type": "reply",
             "response": "Goodbye! Stay healthy and see you next workout!",
+            "audio_file": "021_goodbye.mp3",
         },
         "priority": 1,
     },

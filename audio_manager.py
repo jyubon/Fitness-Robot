@@ -1,510 +1,156 @@
 #!/usr/bin/env python3
 """
 Audio Manager for Fitness Robot.
-Handles non-blocking background MP3 playback for voice guidance, alerts,
-and ElevenLabs / Local XTTS-v2 Voice Cloning with permanent SD-card caching.
+Handles non-blocking background MP3 playback for exercise feedback, state alerts,
+and ElevenLabs voice command responses mapped to Vosk Speech-to-Text commands.
 """
 
 import os
-import re
-import sys
-import json
 import time
-import hashlib
 import subprocess
 import threading
-import urllib.request
-import urllib.error
 from pathlib import Path
-from config import (
-    PROJECT_DIR,
-    ELEVENLABS_API_KEY,
-    ELEVENLABS_VOICE_ID,
-    ELEVENLABS_MODEL_ID,
-    ELEVENLABS_SPEED,
-    ELEVENLABS_STABILITY,
-    ELEVENLABS_SIMILARITY_BOOST,
-    ELEVENLABS_STYLE,
-    ELEVENLABS_SPEAKER_BOOST,
-    TTS_CACHE_DIR,
-)
+from config import PROJECT_DIR
 
+# ─── Exercise Form Feedback MP3 Map (in voice/) ───
 VOICE_FILE_MAP = {
-    "align horizontally":    "001_align_horizontally_GET_IN_POSITION.mp3",
-    "too deep":              "002_don't_go_too_deep_in_squats.mp3",
-    "equalize both hands":   "003_equalize_both_hands.mp3",
-    "extend arms straight":  "004_extendarms_straight_and_directly_in_front_of_you.mp3",
-    "straight line":         "005_form_a_straight_line_with_body!.mp3",
-    "feet at shoulder":      "006_keep_feet_at_shoulder_distance.mp3",
-    "look in front":         "007_look_in_front_of_you!.mp3",
-    "curling too fast":      "008_slow_down!_curling_too_fast.mp3",
+    "align horizontally":      "001_align_horizontally_GET_IN_POSITION.mp3",
+    "too deep":                "002_don't_go_too_deep_in_squats.mp3",
+    "equalize both hands":     "003_equalize_both_hands.mp3",
+    "extend arms straight":    "004_extendarms_straight_and_directly_in_front_of_you.mp3",
+    "straight line":           "005_form_a_straight_line_with_body!.mp3",
+    "feet at shoulder":        "006_keep_feet_at_shoulder_distance.mp3",
+    "look in front":           "007_look_in_front_of_you!.mp3",
+    "curling too fast":        "008_slow_down!_curling_too_fast.mp3",
     "stand at shoulder width": "009_stand_at_shoulder_width_and_keep_knees_in_front_of_body.mp3",
-    "tuck elbow":            "010_tuck_elbow_closer_to_your_body.mp3",
-    "swing":                 "011_do_not_swing_arm,keep_hands_in_straight_position_without_swinging.mp3",
+    "tuck elbow":              "010_tuck_elbow_closer_to_your_body.mp3",
+    "swing":                   "011_do_not_swing_arm,keep_hands_in_straight_position_without_swinging.mp3",
 }
 
-# Reference ElevenLabs clips in voice/ used to clone Voice ID 6psAnGNeDguzLyTxKYvI locally
-REFERENCE_VOICE_FILES = [
-    "004_extendarms_straight_and_directly_in_front_of_you.mp3",
-    "009_stand_at_shoulder_width_and_keep_knees_in_front_of_body.mp3",
-    "011_do_not_swing_arm,keep_hands_in_straight_position_without_swinging.mp3",
-    "013_please_rest_for_a_while.mp3",
-    "014_lets_start_the_workout.mp3",
-    "015_lets_resume_the_workout.mp3",
-    "016_an_obstacle_is_detected.mp3",
-]
+# ─── Vosk Speech-to-Text Command -> ElevenLabs MP3 Map (in voice/) ───
+COMMAND_VOICE_FILE_MAP = {
+    # Conversational replies
+    "HELLO":        "017_hello_fitbot.mp3",
+    "HOW_ARE_YOU":  "018_how_are_you.mp3",
+    "WHO_ARE_YOU":  "019_who_are_you.mp3",
+    "THANK_YOU":    "020_thank_you.mp3",
+    "GOODBYE":      "021_goodbye.mp3",
+
+    # Session & workout state commands (reuse existing 013-015 or dedicated clips)
+    "PAUSE":        "013_please_rest_for_a_while.mp3",
+    "START":        "014_lets_start_the_workout.mp3",
+    "RESUME":       "015_lets_resume_the_workout.mp3",
+
+    # Mode & movement command confirmations (played automatically when present in voice/)
+    "STOP":         "022_stopping.mp3",
+    "FOLLOW_ME":    "023_following_you.mp3",
+    "BICEP_CURLS":  "024_starting_bicep_curls.mp3",
+    "PUSHUPS":      "025_starting_pushups.mp3",
+    "SQUATS":       "026_starting_squats.mp3",
+    "PLANK":        "027_starting_plank.mp3",
+    "HOME":         "028_returning_to_main_menu.mp3",
+    "ROTATE":       "029_rotating.mp3",
+    "ROTATE_LEFT":  "030_turning_left.mp3",
+    "ROTATE_RIGHT": "031_turning_right.mp3",
+    "MOVE_LEFT":    "032_moving_left.mp3",
+    "MOVE_RIGHT":   "033_moving_right.mp3",
+    "FORWARD":      "034_moving_forward.mp3",
+    "BACKWARD":     "035_moving_backward.mp3",
+}
+
+# ─── Reply Text Substring -> ElevenLabs MP3 Map (fallback when called via speak_text(text)) ───
+REPLY_TEXT_FILE_MAP = {
+    "hello! i am fitbot":        "017_hello_fitbot.mp3",
+    "doing great and ready":     "018_how_are_you.mp3",
+    "smart fitness robot":       "019_who_are_you.mp3",
+    "you are welcome":           "020_thank_you.mp3",
+    "goodbye! stay healthy":     "021_goodbye.mp3",
+}
 
 _current_audio_process = None
 _process_lock = threading.Lock()
 _audio_lock = threading.Semaphore(1)
-_cache_lock = threading.Lock()
 _tts_speaking = threading.Event()
-_xtts_model = None
-_xtts_lock = threading.Lock()
 
 
 def is_tts_speaking():
-    """Return True while FitBot is speaking a synthesized voice response."""
+    """Return True while FitBot is playing a voice response (mutes mic self-triggering)."""
     return _tts_speaking.is_set()
 
 
-def _resolve_elevenlabs_api_key():
-    """Resolve ELEVENLABS_API_KEY from environment, config, or .env file."""
-    key = os.getenv("ELEVENLABS_API_KEY", "").strip() or ELEVENLABS_API_KEY
-    if key:
-        return key
-    env_path = PROJECT_DIR / ".env"
-    if env_path.exists():
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("ELEVENLABS_API_KEY="):
-                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        if val:
-                            os.environ["ELEVENLABS_API_KEY"] = val
-                            return val
-        except OSError:
-            pass
-    return ""
-
-
-def _normalize_phrase_key(text):
-    """Canonical lowercase key for phrase lookup."""
-    return re.sub(r"\s+", " ", str(text).strip()).lower()
-
-
-def _slugify_phrase(text, max_len=42):
-    """Human-readable filename prefix from spoken phrase."""
-    slug = re.sub(r"[^a-z0-9]+", "_", str(text).strip().lower()).strip("_")
-    return (slug[:max_len].rstrip("_") or "tts")
-
-
-def _compute_cache_filename(text, voice_id=None, model_id=None, settings=None):
-    """Compute deterministic MP3 filename for a phrase and voice configuration."""
-    voice_id = voice_id or ELEVENLABS_VOICE_ID
-    model_id = model_id or ELEVENLABS_MODEL_ID
-    settings = settings or get_elevenlabs_voice_settings()
-    norm = _normalize_phrase_key(text)
-    signature = json.dumps(
-        {
-            "text": norm,
-            "voice_id": voice_id,
-            "model_id": model_id,
-            "settings": settings,
-        },
-        sort_keys=True,
-    )
-    digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:10]
-    slug = _slugify_phrase(norm)
-    return f"{slug}_{digest}.mp3"
-
-
-def get_elevenlabs_voice_settings():
-    """Return the configured ElevenLabs voice_settings dictionary."""
-    return {
-        "stability": float(ELEVENLABS_STABILITY),
-        "similarity_boost": float(ELEVENLABS_SIMILARITY_BOOST),
-        "style": float(ELEVENLABS_STYLE),
-        "use_speaker_boost": bool(ELEVENLABS_SPEAKER_BOOST),
-        "speed": float(ELEVENLABS_SPEED),
-    }
-
-
-def _load_cache_manifest(cache_dir):
-    manifest_path = cache_dir / "manifest.json"
-    if manifest_path.exists():
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            pass
-    return {}
-
-
-def _save_cache_manifest(cache_dir, manifest):
-    manifest_path = cache_dir / "manifest.json"
-    tmp_path = cache_dir / "manifest.json.tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, manifest_path)
-    except Exception as exc:
-        print(f"⚠️ Failed to update TTS cache manifest: {exc}")
-
-
-def _get_ffmpeg_exe():
-    """Resolve ffmpeg binary from system PATH or imageio_ffmpeg."""
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return "ffmpeg"
-
-
-def build_reference_voice_wav(cache_dir=None):
-    """
-    Build a combined 22050 Hz mono reference WAV from the existing ElevenLabs MP3
-    clips in `voice/` so XTTS-v2 can clone the exact voice (`6psAnGNeDguzLyTxKYvI`).
-    """
-    cache_dir = Path(cache_dir or TTS_CACHE_DIR)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    ref_wav = cache_dir / f"_reference_voice_{ELEVENLABS_VOICE_ID}.wav"
-    if ref_wav.exists() and ref_wav.stat().st_size > 4096:
-        return ref_wav
-
+def _resolve_voice_file(filename):
+    """Locate an MP3 file in `voice/` (supporting minor apostrophe/spacing filename variants)."""
+    if not filename:
+        return None
     voice_dir = PROJECT_DIR / "voice"
-    input_mp3s = [voice_dir / name for name in REFERENCE_VOICE_FILES if (voice_dir / name).exists()]
-    if not input_mp3s:
-        input_mp3s = sorted(voice_dir.glob("*.mp3"))[:6]
-    if not input_mp3s:
-        return None
+    direct = voice_dir / filename
+    if direct.exists():
+        return direct
 
-    ffmpeg_exe = _get_ffmpeg_exe()
-    cmd = [ffmpeg_exe, "-y"]
-    for mp3 in input_mp3s:
-        cmd.extend(["-i", str(mp3)])
-    n = len(input_mp3s)
-    filter_inputs = "".join(f"[{i}:a]" for i in range(n))
-    filter_complex = f"{filter_inputs}concat=n={n}:v=0:a=1[outa]"
-    cmd.extend([
-        "-filter_complex", filter_complex,
-        "-map", "[outa]",
-        "-ar", "22050",
-        "-ac", "1",
-        str(ref_wav),
-    ])
-    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    if res.returncode == 0 and ref_wav.exists() and ref_wav.stat().st_size > 4096:
-        return ref_wav
+    # Check prefix number (e.g. "017_", "014_") in voice/ directory if user named the rest slightly differently
+    prefix = filename.split("_", 1)[0]
+    if prefix.isdigit() and len(prefix) == 3 and voice_dir.exists():
+        matches = sorted(voice_dir.glob(f"{prefix}_*.mp3"))
+        if matches:
+            return matches[0]
     return None
 
 
-def _generate_via_local_xtts(clean_text, target_path, voice_settings=None):
+def play_command_audio(command_name, audio_file=None, force=True):
     """
-    Synthesize `clean_text` using local Coqui XTTS-v2 voice cloning from
-    the existing ElevenLabs MP3 clips in `voice/`, applying the configured
-    speed (`0.9`) and stability/temperature derived from the ElevenLabs settings.
+    Play the pre-generated ElevenLabs MP3 corresponding to a command identified
+    by the Vosk Speech-to-Text model.
+    Returns True if a matching MP3 file exists in `voice/` and playback started.
     """
-    global _xtts_model
-    voice_settings = voice_settings or get_elevenlabs_voice_settings()
-    cache_dir = Path(TTS_CACHE_DIR)
-    ref_wav = build_reference_voice_wav(cache_dir)
-    if ref_wav is None or not ref_wav.exists():
-        print("⚠️ No reference MP3 clips found in voice/ for local voice cloning.")
-        return None
+    filename = audio_file or COMMAND_VOICE_FILE_MAP.get(str(command_name).upper())
+    file_path = _resolve_voice_file(filename)
+    if file_path is None or not file_path.exists():
+        return False
 
-    # Allow automatic Coqui TOS agreement and keep model cache inside workspace .venv
-    os.environ["COQUI_TOS_AGREED"] = "1"
-    os.environ.setdefault("TTS_HOME", str(PROJECT_DIR / ".venv" / "tts_models_cache"))
-    os.environ.setdefault("HF_HOME", str(PROJECT_DIR / ".venv" / "hf_cache"))
-
-    try:
-        import types
-        import importlib.machinery
-        import torch
-        import torchaudio
-        import soundfile as sf
-
-        if "torchcodec" not in sys.modules:
-            _tc = types.ModuleType("torchcodec")
-            _tc.__spec__ = importlib.machinery.ModuleSpec("torchcodec", None)
-            sys.modules["torchcodec"] = _tc
-
-        if "six" not in sys.modules:
-            _six = types.ModuleType("six")
-            _six.string_types = (str,)
-            _six.integer_types = (int,)
-            _six.text_type = str
-            _six.binary_type = bytes
-            _six.PY3 = True
-            _six.__spec__ = importlib.machinery.ModuleSpec("six", None)
-            sys.modules["six"] = _six
-
-        def _sf_torchaudio_load(filepath, *args, **kwargs):
-            data, sr = sf.read(str(filepath), dtype="float32", always_2d=True)
-            return torch.from_numpy(data.T.copy()), sr
-
-        torchaudio.load = _sf_torchaudio_load
-        from TTS.api import TTS
-    except ImportError:
-        # If running from global Python while coqui-tts is installed in .venv, invoke .venv Python
-        venv_py = PROJECT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        if venv_py.exists() and Path(sys.executable).resolve() != venv_py.resolve():
-            helper_code = (
-                "import sys; from pathlib import Path; "
-                "from audio_manager import _generate_via_local_xtts; "
-                "res = _generate_via_local_xtts(sys.argv[1], Path(sys.argv[2])); "
-                "sys.exit(0 if res else 1)"
-            )
-            proc = subprocess.run([str(venv_py), "-c", helper_code, clean_text, str(target_path)])
-            if proc.returncode == 0 and target_path.exists() and target_path.stat().st_size > 256:
-                return target_path
-        return None
-
-    with _xtts_lock:
-        if _xtts_model is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"🎙️ Loading XTTS-v2 voice cloning model on {device.upper()}...")
-            _xtts_model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-
-        tmp_wav = target_path.with_suffix(".tmp.wav")
-        speed = float(voice_settings.get("speed", 0.9))
-        stability = float(voice_settings.get("stability", 0.50))
-        # Map stability (0..1) -> XTTS temperature (higher stability = lower temperature)
-        temperature = max(0.15, min(0.85, round(1.0 - 0.6 * stability, 2)))
-
-        _xtts_model.tts_to_file(
-            text=clean_text,
-            speaker_wav=str(ref_wav),
-            language="en",
-            file_path=str(tmp_wav),
-            speed=speed,
-            temperature=temperature,
-            split_sentences=True,
-        )
-
-    if not tmp_wav.exists() or tmp_wav.stat().st_size <= 256:
-        return None
-
-    # Convert WAV -> 44.1 kHz 128 kbps MP3 for compact permanent SD card storage
-    ffmpeg_exe = _get_ffmpeg_exe()
-    tmp_mp3 = target_path.with_suffix(".tmp.mp3")
-    conv = subprocess.run(
-        [
-            ffmpeg_exe, "-y",
-            "-i", str(tmp_wav),
-            "-ar", "44100",
-            "-ac", "1",
-            "-b:a", "128k",
-            str(tmp_mp3),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    try:
-        tmp_wav.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-    if conv.returncode == 0 and tmp_mp3.exists() and tmp_mp3.stat().st_size > 256:
-        os.replace(tmp_mp3, target_path)
-        return target_path
-    return None
-
-
-def get_or_create_tts_mp3(text, output_path=None, force_regenerate=False, prefer_local_clone=False):
-    """
-    Return Path to an MP3 file for `text` using the FitBot voice (`6psAnGNeDguzLyTxKYvI`).
-    1. Checks permanent SD card cache (`voice/tts_cache/`) first.
-    2. If missing (or `force_regenerate=True`):
-       - Tries ElevenLabs API (unless `prefer_local_clone=True` or free-tier 402 on library voice)
-       - Falls back to local XTTS-v2 voice cloning trained from `voice/001`–`016.mp3`.
-    3. Saves the MP3 permanently in `voice/tts_cache/` and updates `manifest.json`.
-    """
-    if not text or not str(text).strip():
-        return None
-
-    clean_text = re.sub(r"\s+", " ", str(text).strip())
-    norm_key = _normalize_phrase_key(clean_text)
-    cache_dir = Path(TTS_CACHE_DIR)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    voice_id = ELEVENLABS_VOICE_ID
-    model_id = ELEVENLABS_MODEL_ID
-    voice_settings = get_elevenlabs_voice_settings()
-
-    if output_path is not None:
-        target_path = Path(output_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        filename = _compute_cache_filename(clean_text, voice_id, model_id, voice_settings)
-        target_path = cache_dir / filename
-
-    # 1. Check permanent disk cache first (unless force_regenerate is requested)
-    if not force_regenerate:
-        if target_path.exists() and target_path.stat().st_size > 256:
-            return target_path
-
-        with _cache_lock:
-            manifest = _load_cache_manifest(cache_dir)
-            entry = manifest.get(norm_key)
-            if isinstance(entry, dict) and entry.get("file"):
-                existing = cache_dir / entry["file"]
-                if existing.exists() and existing.stat().st_size > 256:
-                    return existing
-
-    # 2. Try ElevenLabs API if configured and not preferring local clone
-    api_key = _resolve_elevenlabs_api_key()
-    if api_key and not prefer_local_clone:
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128"
-        payload = {
-            "text": clean_text,
-            "model_id": model_id,
-            "voice_settings": voice_settings,
-        }
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
-        }
-        try:
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                audio_bytes = resp.read()
-
-            if audio_bytes and len(audio_bytes) > 256:
-                with _cache_lock:
-                    tmp_file = target_path.with_suffix(".mp3.tmp")
-                    with open(tmp_file, "wb") as f:
-                        f.write(audio_bytes)
-                    os.replace(tmp_file, target_path)
-
-                    if target_path.parent == cache_dir:
-                        manifest = _load_cache_manifest(cache_dir)
-                        manifest[norm_key] = {
-                            "text": clean_text,
-                            "file": target_path.name,
-                            "voice_id": voice_id,
-                            "model_id": model_id,
-                            "engine": "elevenlabs_api",
-                            "voice_settings": voice_settings,
-                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        }
-                        _save_cache_manifest(cache_dir, manifest)
-                return target_path
-        except urllib.error.HTTPError as http_err:
-            # HTTP 402 occurs when using a Community Library voice on a free API plan;
-            # fall through to local XTTS-v2 voice cloning from voice/*.mp3
-            if http_err.code != 402:
-                err_body = ""
-                try:
-                    err_body = http_err.read().decode("utf-8", errors="replace")[:200]
-                except Exception:
-                    pass
-                print(f"⚠️ ElevenLabs API HTTP {http_err.code}: {err_body}")
-        except Exception:
-            pass
-
-    # 3. Generate via local XTTS-v2 voice cloning using `voice/001`–`016.mp3`
-    cloned_path = _generate_via_local_xtts(clean_text, target_path, voice_settings)
-    if cloned_path is not None and cloned_path.exists():
-        with _cache_lock:
-            if cloned_path.parent == cache_dir:
-                manifest = _load_cache_manifest(cache_dir)
-                manifest[norm_key] = {
-                    "text": clean_text,
-                    "file": cloned_path.name,
-                    "voice_id": voice_id,
-                    "model_id": "xtts_v2_clone",
-                    "engine": "local_xtts_v2",
-                    "voice_settings": voice_settings,
-                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                }
-                _save_cache_manifest(cache_dir, manifest)
-        return cloned_path
-
-    return None
-
-
-def _fallback_system_tts(clean_text):
-    """Fallback OS synthesizer if offline and phrase is not yet cached on SD card."""
-    if os.name == "nt":
-        escaped = clean_text.replace("'", "''")
-        ps_cmd = (
-            f"try {{ (New-Object -ComObject SAPI.SpVoice).Speak('{escaped}') }} "
-            f"catch {{ Add-Type -AssemblyName System.Speech; "
-            f"(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{escaped}') }}"
-        )
-        subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-c", ps_cmd],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=12,
-        )
-    else:
-        for cmd in (
-            ["espeak-ng", "-s", "155", clean_text],
-            ["espeak", "-s", "155", clean_text],
-            ["spd-say", "--wait", clean_text],
-            ["flite", "-t", clean_text],
-        ):
-            try:
-                res = subprocess.run(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=12,
-                )
-                if res.returncode == 0:
-                    break
-            except FileNotFoundError:
-                continue
-            except Exception:
-                break
-
-
-def speak_text(text):
-    """
-    Speak a conversational response out loud in a background thread.
-    Plays the permanently cached MP3 from `voice/tts_cache/` (or generates
-    and caches it on first use). Falls back to system TTS only if uncached.
-    """
-    if not text or not str(text).strip():
-        return
-    clean_text = str(text).strip()
-
-    def _run_tts():
+    def _run():
         _tts_speaking.set()
         try:
-            mp3_path = get_or_create_tts_mp3(clean_text)
-            if mp3_path is not None and mp3_path.exists():
+            if force:
+                terminate_current_audio()
                 _audio_lock.acquire(blocking=True)
-                try:
-                    if os.name == "nt":
-                        played = _play_mp3_windows(str(mp3_path))
-                    else:
-                        played = _play_mp3_linux(str(mp3_path))
-                finally:
-                    _audio_lock.release()
-                if played:
+            else:
+                if not _audio_lock.acquire(blocking=False):
                     return
-
-            _fallback_system_tts(clean_text)
-        except Exception:
-            pass
+            try:
+                if os.name == "nt":
+                    _play_mp3_windows(str(file_path))
+                else:
+                    _play_mp3_linux(str(file_path))
+            finally:
+                _audio_lock.release()
         finally:
             time.sleep(0.15)
             _tts_speaking.clear()
 
-    threading.Thread(target=_run_tts, daemon=True).start()
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
+def speak_text(text, command_name=None, audio_file=None):
+    """
+    Play the pre-generated ElevenLabs MP3 for a spoken response.
+    Looks up by `audio_file`, `command_name` (in COMMAND_VOICE_FILE_MAP),
+    or `text` (in REPLY_TEXT_FILE_MAP).
+    """
+    if command_name or audio_file:
+        if play_command_audio(command_name, audio_file=audio_file, force=True):
+            return
+
+    if not text or not str(text).strip():
+        return
+    clean_lower = str(text).strip().lower()
+
+    for key, fname in REPLY_TEXT_FILE_MAP.items():
+        if key in clean_lower:
+            if play_command_audio(None, audio_file=fname, force=True):
+                return
+
+    print(f"ℹ️ [AUDIO] No ElevenLabs MP3 file in voice/ for: \"{text}\"")
 
 
 def terminate_current_audio():
@@ -635,21 +281,11 @@ def play_audio_track(track_number):
         16: "016_an_obstacle_is_detected.mp3"
     }
     filename = track_files.get(track_number)
-    if filename:
-        file_path = PROJECT_DIR / "voice" / filename
-        if not file_path.exists():
-            # Try alternate naming
-            if track_number == 14:
-                alt = PROJECT_DIR / "voice" / "014_let's_start_the_workout.mp3"
-                if alt.exists(): file_path = alt
-            elif track_number == 15:
-                alt = PROJECT_DIR / "voice" / "015_lets_resume_the_workout.mp3"
-                if alt.exists(): file_path = alt
-
-        if file_path.exists():
-            _play_mp3_background(str(file_path), force=True)
-        else:
-            print(f"⚠️ Voice file not found: {file_path}")
+    file_path = _resolve_voice_file(filename)
+    if file_path and file_path.exists():
+        _play_mp3_background(str(file_path), force=True)
+    else:
+        print(f"⚠️ Voice file not found: {PROJECT_DIR / 'voice' / str(filename)}")
 
 
 def play_voice_command(err_msg, is_resting=False, person_missing=False, lost_person_since=None):
@@ -669,8 +305,8 @@ def play_voice_command(err_msg, is_resting=False, person_missing=False, lost_per
     if not matched_file:
         return
 
-    file_path = PROJECT_DIR / "voice" / matched_file
-    if file_path.exists():
+    file_path = _resolve_voice_file(matched_file)
+    if file_path and file_path.exists():
         _play_mp3_background(str(file_path))
     else:
-        print(f"⚠️ Voice file not found: {file_path}")
+        print(f"⚠️ Voice file not found: {PROJECT_DIR / 'voice' / matched_file}")
