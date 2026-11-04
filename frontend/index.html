@@ -695,24 +695,53 @@
         <!-- ================================================================= -->
         <div id="subtabStepsView" class="hidden space-y-4">
 
-          <!-- 1. Smartwatch Status Card -->
-          <div class="glass glass-card rounded-3xl p-4 sm:p-5">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
-                <div
-                  class="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-xl">
-                  ⌚
+          <!-- Top Row: Smartwatch Status Card & Mobile Tracker Button -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-stretch">
+            <!-- 1. Smartwatch Status Card -->
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-center">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                  <div
+                    class="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-xl flex-shrink-0">
+                    ⌚
+                  </div>
+                  <div>
+                    <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide">Smartwatch</h3>
+                    <p class="text-[10px] sm:text-[11px] text-white/40">Wristband Tracker</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide">Smartwatch</h3>
+                <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 border border-white/10 flex-shrink-0">
+                  <span id="fitnessWatchStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                  <span id="fitnessWatchStatusText"
+                    class="text-xs sm:text-sm font-extrabold tracking-wide text-red-400">OFFLINE</span>
                 </div>
-              </div>
-              <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/40 border border-white/10">
-                <span id="fitnessWatchStatusDot" class="w-2.5 h-2.5 rounded-full bg-red-400"></span>
-                <span id="fitnessWatchStatusText"
-                  class="text-xs sm:text-sm font-extrabold tracking-wide text-red-400">OFFLINE</span>
               </div>
             </div>
+
+            <!-- 2. Mobile Tracker Button (Right on desktop, below on mobile) -->
+            <a href="https://admirable-duckanoo-81d784.netlify.app/phone_tracker.html"
+              id="mobileTrackerBtn"
+              onclick="openMobileTracker(event)"
+              class="glass glass-card rounded-3xl p-4 sm:p-5 flex items-center justify-between group hover:border-cyan-400/50 hover:bg-white/[0.07] active:scale-[0.99] transition-all cursor-pointer">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-10 h-10 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-xl flex-shrink-0 group-hover:scale-105 transition-transform">
+                  📱
+                </div>
+                <div>
+                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide group-hover:text-cyan-400 transition-colors">
+                    Mobile Tracker
+                  </h3>
+                  <p class="text-[10px] sm:text-[11px] text-white/40">Phone Pedometer Sync</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-500/15 border border-cyan-400/30 text-xs sm:text-sm font-bold text-cyan-300 group-hover:bg-cyan-500/25 group-hover:border-cyan-400 transition-all shadow-sm flex-shrink-0">
+                <span>Launch</span>
+                <svg class="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                </svg>
+              </div>
+            </a>
           </div>
 
           <!-- Step Count, Calories, Distance, Active Min Card -->
@@ -1079,6 +1108,34 @@
           <span>Save as PDF</span>
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- LOW BATTERY CHARGE WARNING MODAL -->
+  <!-- ========================================================================= -->
+  <div id="batteryChargeModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+    <div class="glass glass-card rounded-3xl p-6 sm:p-7 max-w-sm w-full text-center border border-amber-500/30 shadow-2xl space-y-4">
+      <div class="w-16 h-16 mx-auto rounded-3xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-3xl animate-bounce">
+        🪫
+      </div>
+      <div>
+        <div class="text-[10px] font-black uppercase tracking-widest text-amber-400">Low Battery Warning</div>
+        <h3 class="text-xl font-black text-white mt-1">Please Charge the Robot</h3>
+        <p class="text-xs text-white/60 mt-2 leading-relaxed">
+          The robot battery voltage has reached <span id="chargeModalVoltage" class="font-bold text-amber-400">9.80V</span> (<span id="chargeModalPercent" class="font-bold text-amber-400">50%</span>). Please connect the charger now to ensure continuous exercise tracking and prevent shutdown.
+        </p>
+      </div>
+
+      <div class="p-3 rounded-2xl bg-black/40 border border-white/10 flex items-center justify-between text-xs">
+        <span class="text-white/50">Operating Range:</span>
+        <span class="font-mono font-bold text-white/90">9.0V (0%) – 10.6V (100%)</span>
+      </div>
+
+      <button onclick="closeBatteryChargeModal()"
+        class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-400 to-yellow-500 text-black font-extrabold text-sm shadow-lg shadow-amber-500/25 active:scale-95 transition-all">
+        Got It, I'll Charge the Robot
+      </button>
     </div>
   </div>
 

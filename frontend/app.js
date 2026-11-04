@@ -283,7 +283,44 @@ function showAppView(email) {
     } catch (e) { }
   }
 
-  showTab('live');
+  updateMobileTrackerLink();
+
+  if (!navigateFromUrl()) {
+    showTab('live');
+  }
+}
+
+function navigateFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const hash = (window.location.hash || '').toLowerCase().replace(/^#+/, '');
+    const tabParam = params.get('tab') || params.get('section') || params.get('view') || hash;
+    const subtabParam = params.get('subtab');
+
+    if (tabParam === 'steps' || tabParam === 'step' || tabParam === 'steptracker' || tabParam === 'step-tracker' || tabParam === 'stepsview') {
+      currentFitnessSubtab = 'steps';
+      showTab('steps');
+      switchFitnessSubtab('steps');
+      return true;
+    }
+    if (tabParam === 'fitness' || tabParam === 'exercises') {
+      currentFitnessSubtab = (subtabParam === 'steps' || subtabParam === 'step') ? 'steps' : 'exercises';
+      showTab('steps');
+      switchFitnessSubtab(currentFitnessSubtab);
+      return true;
+    }
+    if (tabParam === 'analytics' || tabParam === 'profile') {
+      showTab('analytics');
+      return true;
+    }
+    if (tabParam === 'live' || tabParam === 'home') {
+      showTab('live');
+      return true;
+    }
+  } catch (e) {
+    console.warn("Error parsing URL navigation params:", e);
+  }
+  return false;
 }
 
 let isCameraStreamLoaded = false;
@@ -466,7 +503,10 @@ function switchFitnessSubtab(subtab) {
   const btnExercises = document.getElementById('btnSubtabExercises');
   const btnSteps = document.getElementById('btnSubtabSteps');
 
+  const startBtn = document.getElementById('startExerciseBtn');
+
   if (subtab === 'exercises') {
+    if (startBtn) startBtn.classList.remove('hidden');
     if (exercisesView) exercisesView.classList.remove('hidden');
     if (stepsView) stepsView.classList.add('hidden');
     if (btnExercises) {
@@ -481,6 +521,7 @@ function switchFitnessSubtab(subtab) {
       startCameraStreamIfNeeded();
     }
   } else {
+    if (startBtn) startBtn.classList.add('hidden');
     if (exercisesView) exercisesView.classList.add('hidden');
     if (stepsView) stepsView.classList.remove('hidden');
     if (btnExercises) {
@@ -1324,6 +1365,55 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
   };
 }
 
+let hasShownLowBatteryModal = false;
+
+function checkBatteryWarning(v, percent) {
+  if (v <= 9.8) {
+    if (!hasShownLowBatteryModal) {
+      showBatteryChargeModal(v, percent);
+      hasShownLowBatteryModal = true;
+    }
+  } else if (v >= 10.1) {
+    // Reset warning threshold once recharged above 10.1V
+    hasShownLowBatteryModal = false;
+  }
+}
+
+function showBatteryChargeModal(v, percent) {
+  const modal = document.getElementById('batteryChargeModal');
+  if (!modal) return;
+  const voltSpan = document.getElementById('chargeModalVoltage');
+  const pctSpan = document.getElementById('chargeModalPercent');
+  if (voltSpan) voltSpan.textContent = `${v.toFixed(2)}V`;
+  if (pctSpan) pctSpan.textContent = `${percent}%`;
+  modal.classList.remove('hidden');
+}
+
+function closeBatteryChargeModal() {
+  const modal = document.getElementById('batteryChargeModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function openMobileTracker(e) {
+  try {
+    const returnUrl = window.location.origin + window.location.pathname + '?tab=steps&subtab=steps#steps';
+    const target = new URL('https://admirable-duckanoo-81d784.netlify.app/phone_tracker.html');
+    target.searchParams.set('dashboard', returnUrl);
+    window.location.href = target.toString();
+    if (e) e.preventDefault();
+  } catch (_) {}
+}
+
+function updateMobileTrackerLink() {
+  const btn = document.getElementById('mobileTrackerBtn');
+  if (btn) {
+    try {
+      const returnUrl = window.location.origin + window.location.pathname + '?tab=steps&subtab=steps#steps';
+      btn.href = `https://admirable-duckanoo-81d784.netlify.app/phone_tracker.html?dashboard=${encodeURIComponent(returnUrl)}`;
+    } catch (_) {}
+  }
+}
+
 function updateBatteryUI(voltage) {
   const v = parseFloat(voltage);
   if (isNaN(v)) return;
@@ -1333,8 +1423,10 @@ function updateBatteryUI(voltage) {
   const fill = document.getElementById('batteryLevelFill');
   const indicator = document.getElementById('batteryIndicator');
 
-  // Standard 3S LiPo battery pack: 10.0V empty -> 12.6V fully charged
-  let percent = Math.round(((v - 10.0) / (12.6 - 10.0)) * 100);
+  // Robot battery range: 9.0V (0%) to 10.6V (100%)
+  const minV = 9.0;
+  const maxV = 10.6;
+  let percent = Math.round(((v - minV) / (maxV - minV)) * 100);
   percent = Math.max(0, Math.min(100, percent));
 
   if (textEl) {
@@ -1343,10 +1435,10 @@ function updateBatteryUI(voltage) {
 
   if (fill) {
     fill.style.height = `${percent}%`;
-    if (percent < 20) {
+    if (v <= 9.8 || percent < 20) {
       fill.style.background = '#ef4444'; // red
       if (textEl) textEl.style.color = '#f87171';
-    } else if (percent < 40) {
+    } else if (percent < 50) {
       fill.style.background = '#f59e0b'; // amber
       if (textEl) textEl.style.color = '#fbbf24';
     } else {
@@ -1357,8 +1449,11 @@ function updateBatteryUI(voltage) {
 
   if (indicator) {
     indicator.classList.remove('hidden');
-    indicator.title = `Robot Battery: ${v.toFixed(2)} V (${percent}%) - Click to toggle V/%`;
+    indicator.title = `Robot Battery: ${v.toFixed(2)} V (${percent}%) - Range: 9.0V (0%) to 10.6V (100%) - Click to toggle V/%`;
   }
+
+  // Pop up a warning message to charge the robot when battery drops to 9.8V or below
+  checkBatteryWarning(v, percent);
 }
 
 function toggleBatteryDisplayMode() {
@@ -3544,6 +3639,7 @@ function formatDate(value) {
 
 (function init() {
   renderStepHistory();
+  updateMobileTrackerLink();
   if (!navigator.bluetooth) {
     const button = document.getElementById('stepConnectBtn');
     if (button) button.disabled = true;
@@ -3602,6 +3698,18 @@ function formatDate(value) {
 
   // Initialize Header Scroll transformation (transforms into solid non-transparent menu with bottom line)
   initHeaderScrollListener();
+
+  // Handle back/forward and hash navigation (e.g. from Phone Tracker "Go to Dashboard")
+  window.addEventListener('hashchange', () => {
+    if (auth && auth.currentUser) {
+      navigateFromUrl();
+    }
+  });
+  window.addEventListener('popstate', () => {
+    if (auth && auth.currentUser) {
+      navigateFromUrl();
+    }
+  });
 
   // Load any previously permitted wristband Bluetooth devices
   loadPermittedWristbandDevices();

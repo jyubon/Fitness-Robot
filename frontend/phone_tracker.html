@@ -27,9 +27,15 @@
   <style>
     body {
       font-family: 'Plus Jakarta Sans', sans-serif;
-      background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.08), transparent 40%),
-        radial-gradient(circle at bottom left, rgba(6, 182, 212, 0.08), transparent 40%),
-        #070a12;
+      background-color: #040507;
+      background-image:
+        radial-gradient(ellipse 75% 50% at 20% -8%, rgba(250, 204, 21, 0.32) 0%, rgba(234, 179, 8, 0.15) 35%, transparent 70%),
+        radial-gradient(ellipse 85% 45% at 50% -10%, rgba(163, 230, 53, 0.25) 0%, rgba(132, 204, 22, 0.10) 40%, transparent 75%),
+        radial-gradient(ellipse 75% 50% at 80% -8%, rgba(34, 197, 94, 0.30) 0%, rgba(16, 185, 129, 0.12) 35%, transparent 70%),
+        linear-gradient(180deg, rgba(24, 32, 12, 0.88) 0%, rgba(14, 20, 10, 0.70) 14%, rgba(8, 12, 8, 0.88) 32%, #040507 55%, #010203 100%);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: cover;
       color: #f1f5f9;
       min-height: 100vh;
       display: flex;
@@ -41,18 +47,22 @@
     }
 
     .glass {
-      background: rgba(15, 23, 42, 0.65);
+      background: rgba(14, 18, 16, 0.72);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
       border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
-    .glow-cyan {
-      box-shadow: 0 0 25px -5px rgba(6, 182, 212, 0.3);
+    .glass:hover {
+      border-color: rgba(163, 230, 53, 0.25);
     }
 
-    .glow-emerald {
-      box-shadow: 0 0 30px -5px rgba(16, 185, 129, 0.35);
+    .glow-athletic {
+      box-shadow: 0 0 28px -4px rgba(163, 230, 53, 0.35);
+    }
+
+    .glow-yellow {
+      box-shadow: 0 0 25px -4px rgba(250, 204, 21, 0.35);
     }
 
     /* Pulse animation for active step tracking */
@@ -79,14 +89,14 @@
   </style>
 </head>
 
-<body class="selection:bg-cyan-500 selection:text-black">
+<body class="selection:bg-lime-400 selection:text-black">
 
   <!-- Header -->
   <header class="w-full px-5 py-4 border-b border-white/10 flex items-center justify-between">
     <div class="flex items-center gap-3">
-      <div class="w-9 h-9 rounded-2xl bg-gradient-to-tr from-cyan-500 to-emerald-400 p-[1.5px] flex-shrink-0">
+      <div class="w-9 h-9 rounded-2xl bg-gradient-to-tr from-yellow-400 via-lime-400 to-emerald-400 p-[1.5px] flex-shrink-0 shadow-sm shadow-lime-500/20">
         <div
-          class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center font-black text-xs text-cyan-400">
+          class="w-full h-full bg-[#0a0d17] rounded-[14px] flex items-center justify-center font-black text-xs text-lime-400">
           FR
         </div>
       </div>
@@ -108,7 +118,7 @@
   <div id="loginSection" class="hidden flex-1 flex flex-col items-center justify-center p-6">
     <div class="glass w-full max-w-sm rounded-3xl p-6 text-center space-y-4">
       <div
-        class="w-12 h-12 mx-auto rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-2xl">
+        class="w-12 h-12 mx-auto rounded-2xl bg-lime-500/10 border border-lime-500/30 flex items-center justify-center text-2xl">
         📱
       </div>
       <div>
@@ -121,18 +131,18 @@
         <div>
           <label class="block text-[11px] font-bold text-white/60 mb-1">Email</label>
           <input id="loginEmail" type="email" placeholder="you@example.com"
-            class="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-400" />
+            class="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-lime-400" />
         </div>
         <div>
           <label class="block text-[11px] font-bold text-white/60 mb-1">Password</label>
           <input id="loginPassword" type="password" placeholder="••••••••"
-            class="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-400" />
+            class="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm focus:outline-none focus:border-lime-400" />
         </div>
         <div id="loginError" class="text-xs text-red-400 hidden"></div>
       </div>
 
       <button onclick="handleLogin()"
-        class="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-sm shadow-lg active:scale-95 transition-all">
+        class="w-full py-3 rounded-xl bg-gradient-to-r from-yellow-400 via-lime-400 to-emerald-400 text-black font-extrabold text-sm shadow-lg shadow-lime-500/20 active:scale-95 transition-all">
         Sign In & Start Pedometer
       </button>
 
@@ -161,19 +171,19 @@
       <div id="displaySteps" class="text-6xl sm:text-7xl font-black text-white tabular-nums tracking-tight">
         0
       </div>
-      <div class="text-xs uppercase font-extrabold tracking-widest text-white/40 mt-1">
+      <div class="text-xs uppercase font-extrabold tracking-widest text-lime-400/70 mt-1">
         STEPS TODAY
       </div>
 
       <!-- Progress bar -->
       <div class="w-full max-w-xs mt-6">
-        <div class="h-2 rounded-full bg-white/10 overflow-hidden">
+        <div class="h-2.5 rounded-full bg-white/10 overflow-hidden">
           <div id="progressBar"
-            class="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 transition-all duration-300"
+            class="h-full rounded-full bg-gradient-to-r from-yellow-400 via-lime-400 to-emerald-400 transition-all duration-300"
             style="width: 0%"></div>
         </div>
         <div class="flex justify-between items-center text-[11px] text-white/50 mt-2 font-medium">
-          <span id="progressPercent">0%</span>
+          <span id="progressPercent" class="text-lime-300 font-bold">0%</span>
           <span>Goal: 10,000</span>
         </div>
       </div>
@@ -182,11 +192,11 @@
     <!-- 3 Metrics: Calories, Distance, Active Time -->
     <div class="grid grid-cols-3 gap-3">
       <div class="glass rounded-2xl p-3.5 text-center">
-        <div id="displayCalories" class="text-xl sm:text-2xl font-black text-amber-400 tabular-nums">0</div>
+        <div id="displayCalories" class="text-xl sm:text-2xl font-black text-yellow-400 tabular-nums">0</div>
         <div class="text-[10px] font-bold text-white/40 uppercase mt-0.5">Calories</div>
       </div>
       <div class="glass rounded-2xl p-3.5 text-center">
-        <div id="displayDistance" class="text-xl sm:text-2xl font-black text-cyan-400 tabular-nums">0.00</div>
+        <div id="displayDistance" class="text-xl sm:text-2xl font-black text-lime-400 tabular-nums">0.00</div>
         <div class="text-[10px] font-bold text-white/40 uppercase mt-0.5">Distance (km)</div>
       </div>
       <div class="glass rounded-2xl p-3.5 text-center">
@@ -200,7 +210,7 @@
 
       <!-- Start / Stop Button -->
       <button id="toggleTrackBtn" onclick="toggleTracking()"
-        class="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-base shadow-lg glow-emerald active:scale-95 transition-all">
+        class="w-full py-4 rounded-2xl bg-gradient-to-r from-yellow-400 via-lime-400 to-emerald-400 text-black font-extrabold text-base shadow-lg glow-athletic active:scale-95 transition-all">
         START STEP TRACKING
       </button>
 
@@ -208,7 +218,7 @@
       <div class="flex items-center justify-between text-xs pt-1 px-1">
         <span class="text-white/60 font-semibold">Sensor Sensitivity:</span>
         <select id="sensitivitySelect" onchange="changeSensitivity(this.value)"
-          class="bg-black/40 border border-white/10 rounded-xl px-2.5 py-1 text-white text-xs focus:outline-none focus:border-cyan-400">
+          class="bg-black/40 border border-white/10 rounded-xl px-2.5 py-1 text-white text-xs focus:outline-none focus:border-lime-400">
           <option value="normal" selected>Normal (Standard)</option>
           <option value="high">High (Pocket/Gentle)</option>
           <option value="low">Low (Armband/Vigorous)</option>
@@ -218,7 +228,7 @@
       <!-- Quick Actions (Reset & Test Simulation) -->
       <div class="grid grid-cols-2 gap-2 pt-1">
         <button onclick="handleSimulateStep()"
-          class="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 border border-white/10 text-xs font-semibold text-cyan-300 transition-all">
+          class="py-2 px-3 rounded-xl bg-lime-500/10 hover:bg-lime-500/20 active:scale-95 border border-lime-500/25 text-xs font-semibold text-lime-300 transition-all">
           +1 Test Step
         </button>
         <button onclick="handleResetSteps()"
@@ -231,7 +241,7 @@
     <!-- Sync status & Links -->
     <div class="flex items-center justify-between px-2 text-xs text-white/40">
       <span id="syncNotice">Cloud Sync: Ready</span>
-      <a href="abc.html" class="text-cyan-400 hover:underline flex items-center gap-1 font-semibold">
+      <a id="goToDashboardLink" href="index.html?tab=steps&subtab=steps#steps" onclick="goToDashboard(event)" class="text-lime-400 hover:text-lime-300 hover:underline flex items-center gap-1.5 font-bold transition-colors">
         <span>Go to Dashboard</span>
         <span>→</span>
       </a>
@@ -252,6 +262,49 @@
     let db = null;
     let currentUser = null;
     let syncThrottleCounter = 0;
+
+    // Cache dashboard URL if passed via ?dashboard=
+    (function initDashboardReturnUrl() {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qDash = urlParams.get('dashboard');
+        if (qDash) {
+          localStorage.setItem('fitness_robot_dashboard_url', decodeURIComponent(qDash));
+        }
+        // Update anchor href if cached or present
+        const saved = qDash ? decodeURIComponent(qDash) : localStorage.getItem('fitness_robot_dashboard_url');
+        const link = document.getElementById('goToDashboardLink');
+        if (link && saved) {
+          link.href = saved;
+        }
+      } catch (_) {}
+    })();
+
+    function goToDashboard(e) {
+      if (e) e.preventDefault();
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qDash = urlParams.get('dashboard');
+        if (qDash) {
+          window.location.href = decodeURIComponent(qDash);
+          return;
+        }
+        const savedDash = localStorage.getItem('fitness_robot_dashboard_url');
+        if (savedDash) {
+          window.location.href = savedDash;
+          return;
+        }
+        if (document.referrer && (document.referrer.includes('index.html') || document.referrer.includes('localhost') || document.referrer.includes('192.168.') || document.referrer.includes('fitness'))) {
+          const refUrl = new URL(document.referrer);
+          refUrl.searchParams.set('tab', 'steps');
+          refUrl.searchParams.set('subtab', 'steps');
+          refUrl.hash = '#steps';
+          window.location.href = refUrl.toString();
+          return;
+        }
+      } catch (_) {}
+      window.location.href = 'index.html?tab=steps&subtab=steps#steps';
+    }
 
     // Initialize Firebase
     if (window.firebaseConfig && window.firebaseConfig.apiKey !== 'PASTE_FIREBASE_WEB_API_KEY') {
@@ -345,7 +398,7 @@
         label.className = 'font-bold text-red-400 uppercase tracking-wider';
         label.textContent = 'STOPPED';
         btn.textContent = 'START STEP TRACKING';
-        btn.className = 'w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-400 via-teal-400 to-cyan-400 text-black font-extrabold text-base shadow-lg glow-emerald active:scale-95 transition-all';
+        btn.className = 'w-full py-4 rounded-2xl bg-gradient-to-r from-yellow-400 via-lime-400 to-emerald-400 text-black font-extrabold text-base shadow-lg glow-athletic active:scale-95 transition-all';
       }
     });
 
