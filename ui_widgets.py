@@ -62,7 +62,7 @@ class GooglyEyesWidget(tk.Canvas):
         height=80,
         eye_radius=None,
         pupil_radius=None,
-        bg="#1E1E24",
+        bg="#000000",
         invert_x=True,
         interactive=True,
         on_click=None,
@@ -248,105 +248,86 @@ class GooglyEyesWidget(tk.Canvas):
         cx = w / 2
         cy = h / 2
 
-        # Eye sizing
-        if self.custom_eye_radius:
-            er = self.custom_eye_radius
-        else:
-            er = min(w * 0.20, h * 0.42)
+        # Scale based on canvas size, precisely matching reference aspect ratio
+        eye_w = min(w * 0.32, h * 0.65 * 2.36)
+        eye_h = eye_w / 2.36
+        spacing = eye_w * 1.58
 
-        if self.custom_pupil_radius:
-            pr = self.custom_pupil_radius
-        else:
-            pr = er * 0.46
+        left_cx = cx - spacing / 2
+        right_cx = cx + spacing / 2
 
-        eye_spacing = er * 2.45
-        left_cx = cx - eye_spacing / 2
-        right_cx = cx + eye_spacing / 2
+        pr = eye_h * 0.256
+        glint_r = pr * 0.262
+        max_travel_x = eye_w * 0.18
+        max_travel_y = eye_h * 0.14
 
-        # Calculate pupil travel range
-        max_travel = er - pr - 3
+        # Parametric curves matching user reference image
+        top_table = [0.040, 0.062, 0.086, 0.112, 0.139, 0.168, 0.198, 0.230, 0.263, 0.298, 0.335, 0.373, 0.412, 0.454, 0.496, 0.541, 0.587, 0.634, 0.683, 0.734, 0.786]
+        bot_table = [0.061, 0.316, 0.520, 0.663, 0.765, 0.837, 0.898, 0.939, 0.969, 0.990, 1.000, 1.000, 1.000, 0.990, 0.969, 0.949, 0.918, 0.888, 0.857, 0.816, 0.786]
 
-        # Eyebrows position offset based on emotion
-        brow_tilt = 0.0
-        if self.state == "FOLLOWING":
-            brow_tilt = 4.0
-        elif self.state == "SEARCHING":
-            brow_tilt = -3.0
+        def get_tbl_y(tbl, t):
+            idx = t * 20.0
+            i = min(19, int(idx))
+            frac = idx - i
+            return tbl[i] + frac * (tbl[i+1] - tbl[i])
 
-        # Draw left and right eyes
         for ecx, eye_sign in ((left_cx, -1), (right_cx, 1)):
-            # Outer dark bezel / shadow
-            self.create_oval(
-                ecx - er - 4, cy - er - 4,
-                ecx + er + 4, cy + er + 4,
-                fill="#121318", outline="#2B2B36", width=2
-            )
+            pts = []
+            steps = 40
+            ex = ecx - eye_w / 2
+            ey = cy - eye_h / 2
 
-            # Sclera (White eye background)
-            self.create_oval(
-                ecx - er, cy - er,
-                ecx + er, cy + er,
-                fill="#FAFAFA", outline="#D2D6DC", width=2
-            )
+            # Top edge: slants down toward center from outer tip to inner tip
+            for i in range(steps + 1):
+                t = i / steps
+                lx = t * eye_w
+                ly = get_tbl_y(top_table, t) * eye_h
+                if eye_sign == 1:
+                    lx = eye_w - lx
+                pts.extend([ex + lx, ey + ly])
 
-            # Subtle 3D inner rim shadow (top arc)
-            self.create_arc(
-                ecx - er + 2, cy - er + 2,
-                ecx + er - 2, cy + er - 2,
-                start=45, extent=120,
-                style="arc", outline="#C8CCD4", width=3
-            )
+            # Bottom edge: curved arc from inner tip back to outer tip
+            for i in range(steps, -1, -1):
+                t = i / steps
+                lx = t * eye_w
+                ly = get_tbl_y(bot_table, t) * eye_h
+                if eye_sign == 1:
+                    lx = eye_w - lx
+                pts.extend([ex + lx, ey + ly])
 
-            # Pupil position
-            px = ecx + self.current_x * max_travel
-            py = cy + self.current_y * max_travel
+            # 1. Solid pure white sclera
+            self.create_polygon(pts, fill="#FFFFFF", outline="#FFFFFF", width=1, smooth=True)
 
-            # Pupil (Googly disc)
+            # 2. Black circular pupil cutting into the top edge
+            base_px = ex + (0.516 if eye_sign == -1 else (1.0 - 0.516)) * eye_w
+            base_py = ey + 0.498 * eye_h
+
+            px = base_px + self.current_x * max_travel_x
+            py = base_py + self.current_y * max_travel_y
+
             self.create_oval(
                 px - pr, py - pr,
                 px + pr, py + pr,
-                fill="#15171C", outline="#0A0B0E", width=1
+                fill="#000000", outline="#000000", width=1
             )
 
-            # Specular catchlight (primary white shiny highlight)
-            hl_r = pr * 0.32
-            hl_x = px - pr * 0.32
-            hl_y = py - pr * 0.32
+            # 3. Crisp white center circular pupil glint
             self.create_oval(
-                hl_x - hl_r, hl_y - hl_r,
-                hl_x + hl_r, hl_y + hl_r,
-                fill="#FFFFFF", outline=""
+                px - glint_r, py - glint_r,
+                px + glint_r, py + glint_r,
+                fill="#FFFFFF", outline="#FFFFFF", width=1
             )
 
-            # Tiny secondary catchlight (bottom right reflection)
-            hl_r2 = pr * 0.16
-            hl_x2 = px + pr * 0.35
-            hl_y2 = py + pr * 0.35
-            self.create_oval(
-                hl_x2 - hl_r2, hl_y2 - hl_r2,
-                hl_x2 + hl_r2, hl_y2 + hl_r2,
-                fill="#E2E8F0", outline=""
-            )
-
-            # Eyelid for Blinking
+            # 4. Smooth black eyelid for blinking
             if self.blink_progress > 0.02:
-                lid_h = er * 2 * self.blink_progress
-                self.create_oval(
-                    ecx - er - 1, cy - er - 1,
-                    ecx + er + 1, cy - er + lid_h,
-                    fill="#1E1E24", outline="#2B2B36", width=2
-                )
-
-            # Expressive Eyebrow
-            brow_y = cy - er - 6
-            b_left_y = brow_y + (brow_tilt * eye_sign)
-            b_right_y = brow_y - (brow_tilt * eye_sign)
-            self.create_line(
-                ecx - er * 0.85, b_left_y,
-                ecx + er * 0.85, b_right_y,
-                fill="#96D75F" if self.state == "FOLLOWING" else "#50AFDF",
-                width=3, capstyle="round"
-            )
+                lid_drop = eye_h * 1.5 * self.blink_progress
+                b_pts = [
+                    ex - eye_w * 0.1, ey - eye_h * 0.5,
+                    ex + eye_w * 1.1, ey - eye_h * 0.5,
+                    ex + eye_w * 1.1, ey + lid_drop,
+                    ex - eye_w * 0.1, ey + lid_drop
+                ]
+                self.create_polygon(b_pts, fill="#000000", outline="#000000", width=1)
 
     def _animate(self):
         if not self.running:
@@ -669,7 +650,7 @@ class FitnessRobotUI(tk.Tk):
             self.main_container,
             width=380,
             height=72,
-            bg="#17171E",
+            bg="#000000",
             invert_x=True,
             interactive=True,
             on_click=self.show_full_face_screen
@@ -1009,7 +990,7 @@ class FitnessRobotUI(tk.Tk):
             self.main_container,
             width=460,
             height=240,
-            bg="#17171E",
+            bg="#000000",
             invert_x=True,
             interactive=True,
             on_click=self.show_home_screen
@@ -1025,6 +1006,8 @@ class FitnessRobotUI(tk.Tk):
             pass
         self.exercise_active = False
         self.home_clicked = False
+        self.configure(bg="#000000")
+        self.main_container.configure(bg="#000000")
 
         if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
             try:
@@ -1044,7 +1027,7 @@ class FitnessRobotUI(tk.Tk):
         # ONLY THE EYES DISPLAYED FULL SCREEN WHEN TURNED ON
         self.home_eyes = GooglyEyesWidget(
             self.main_container,
-            bg="#17171E",
+            bg="#000000",
             invert_x=True,
             interactive=True,
             on_click=self.launch_person_follow
@@ -1064,6 +1047,8 @@ class FitnessRobotUI(tk.Tk):
             publish_robot_state("FOLLOWING")
         except Exception:
             pass
+        self.configure(bg="#000000")
+        self.main_container.configure(bg="#000000")
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -1073,7 +1058,7 @@ class FitnessRobotUI(tk.Tk):
         # ONLY GOOGLY EYES FULL SCREEN DURING PERSON FOLLOWING
         self.follower_eyes = GooglyEyesWidget(
             self.main_container,
-            bg="#17171E",
+            bg="#000000",
             invert_x=True,
             interactive=True,
             on_click=self.stop_following_and_show_dashboard
@@ -1097,6 +1082,8 @@ class FitnessRobotUI(tk.Tk):
             pass
         self.exercise_active = False
         self.home_clicked = False
+        self.configure(bg="#1E1E24")
+        self.main_container.configure(bg="#1E1E24")
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -1122,7 +1109,7 @@ class FitnessRobotUI(tk.Tk):
             self.main_container,
             width=380,
             height=65,
-            bg="#17171E",
+            bg="#000000",
             invert_x=True,
             interactive=True,
             on_click=self.show_eyes_only_screen
