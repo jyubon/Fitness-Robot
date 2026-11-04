@@ -186,11 +186,15 @@ class RoundedFrame(tk.Canvas):
 class FitnessRobotUI(tk.Tk):
     """Main Touch Interface for Fitness Robot on Raspberry Pi 4."""
 
-    def __init__(self, exercise_callbacks=None):
+    def __init__(self, exercise_callbacks=None, fullscreen=True):
         super().__init__()
         self.title("Fitness Robot UI")
 
-        self.attributes("-fullscreen", True)
+        if fullscreen:
+            self.attributes("-fullscreen", True)
+        else:
+            self.geometry("800x480")
+            self.resizable(True, True)
         self.bind("<Escape>", lambda e: self.quit_app())
         self.configure(bg="#1E1E24")
 
@@ -713,3 +717,41 @@ class FitnessRobotUI(tk.Tk):
                 pass
         self.destroy()
         os._exit(0)
+
+
+if __name__ == "__main__":
+    import time
+
+    def mock_exercise_runner(exercise_name):
+        def _runner(ui):
+            print(f"[TEST RUNNER] Starting simulated exercise: {exercise_name}")
+            ui.update_stat_card("Reps", "10")
+            ui.update_stat_card("Target", "15")
+            ui.set_feedback("Great form! Keep going...")
+            ui.update()
+            time.sleep(2)
+            return {
+                'exercise': exercise_name,
+                'metrics': [('Reps Completed', '10'), ('Duration', '32.5s'), ('Target Reps', '15')],
+                'errors': ['Watch back posture on repetition 5']
+            }
+        return _runner
+
+    test_callbacks = {
+        "person_follow": mock_exercise_runner("Person Follower"),
+        "bicep_curls": mock_exercise_runner("Bicep Curls"),
+        "pushups": mock_exercise_runner("Push-ups"),
+        "squats": mock_exercise_runner("Squats"),
+        "plank": mock_exercise_runner("Plank"),
+    }
+
+    print("==================================================")
+    print(" Fitness Robot Touchscreen Dashboard (Preview Mode)")
+    print("==================================================")
+    print("Running in windowed mode (800x480).")
+    print("Click any exercise button to test exercise & summary screens.")
+    print("Press ESC or click EXIT APP to quit.")
+    print("==================================================")
+
+    app = FitnessRobotUI(exercise_callbacks=test_callbacks, fullscreen=False)
+    app.mainloop()
