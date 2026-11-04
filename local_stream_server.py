@@ -59,6 +59,7 @@ _latest_frame = None
 # References to the main application's coordination objects
 _force_stop_event = None
 _remote_mode_queue = None
+_latest_battery_voltage = None
 
 # Active local WebSocket clients
 _connected_clients = set()
@@ -145,6 +146,12 @@ async def _ws_handler(websocket):
         # Send initial online status update to client upon connection
         ack = {"status": "connected", "time": time.time(), "type": "connection_status"}
         await websocket.send(json.dumps(ack))
+        if _latest_battery_voltage is not None:
+            await websocket.send(json.dumps({
+                "type": "battery_voltage",
+                "payload": {"voltage": _latest_battery_voltage},
+                "ts": time.time()
+            }))
         
         async for message in websocket:
             try:
@@ -157,6 +164,8 @@ async def _ws_handler(websocket):
             print(f"[WS] Command Received: {data}")
 
             if action == "force_stop":
+                if _start_exercise_event is not None:
+                    _start_exercise_event.clear()
                 if _force_stop_event is not None:
                     _force_stop_event.set()
                     print("[WS] Force Stop signal set.")
@@ -164,6 +173,10 @@ async def _ws_handler(websocket):
                     print("[WS] ERROR: Force Stop requested, but no event handler configured.")
 
             elif action == "switch_mode":
+                if _force_stop_event is not None:
+                    _force_stop_event.clear()
+                if _start_exercise_event is not None:
+                    _start_exercise_event.clear()
                 mode = data.get("mode")
                 if mode and _remote_mode_queue is not None:
                     _remote_mode_queue.put(("switch", str(mode).upper()))
@@ -172,11 +185,22 @@ async def _ws_handler(websocket):
                     print(f"[WS] ERROR: Mode Switch requested to {mode}, but no queue configured.")
 
             elif action == "start_exercise":
+                if _force_stop_event is not None:
+                    _force_stop_event.clear()
                 if _start_exercise_event is not None:
                     _start_exercise_event.set()
                     print("[WS] Start Exercise signal set.")
                 else:
                     print("[WS] ERROR: Start Exercise requested, but no event handler configured.")
+
+            elif action == "identify":
+                uid = data.get("user_id")
+                email = data.get("user_email")
+                try:
+                    import session_manager
+                    session_manager.set_active_user(uid, email)
+                except Exception as e:
+                    print(f"[WS] Error setting active user: {e}")
 
             # Send acknowledgement back to client
             ack = {"status": "acknowledged", "action": action, "time": time.time()}
@@ -232,7 +256,9 @@ def broadcast_telemetry(event_type, payload):
     :param event_type: event type string (e.g. rep, session_start, robot_state)
     :param payload: dict content payload
     """
-    global _ws_loop, _connected_clients
+    global _ws_loop, _connected_clients, _latest_battery_voltage
+    if event_type == "battery_voltage" and isinstance(payload, dict) and "voltage" in payload:
+        _latest_battery_voltage = payload["voltage"]
     if _ws_loop is not None and _connected_clients:
         msg = json.dumps({"type": event_type, "payload": payload, "ts": time.time()})
         asyncio.run_coroutine_threadsafe(_send_to_all_clients(msg), _ws_loop)

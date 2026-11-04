@@ -9,6 +9,9 @@ let currentUserId = null;
 let currentUserEmail = null;
 let telemetryUnsubscribe = null;
 let watchUnsubscribe = null;
+let batteryUnsubscribe = null;
+let lastKnownBatteryVoltage = null;
+let batteryDisplayMode = 'percent';
 
 let repsChart = null;
 let timeChart = null;
@@ -19,7 +22,11 @@ let currentExercise = 'bicep_curls';
 let latestEventTimestamp = null;
 let robotState = 'READY';
 
-// Bicep curls dual-arm tracking state (8 reps per arm = 1 set)
+// Persistent daily per-exercise state (resets ONLY on Clear History or day rollover)
+let dailyExerciseState = null;
+let lastFormFlawRecordedAt = 0;
+
+// Legacy aliases synced with dailyExerciseState.exercises.bicep_curls
 let bicepCurrentSet = 1;
 let bicepLeftInSet = 0;
 let bicepRightInSet = 0;
@@ -253,6 +260,17 @@ function showAppView(email) {
   updateGreeting();
   setRobotConnectionStatus(localControlSocket && localControlSocket.readyState === 1);
   setWatchConnectionStatus(stepConnected);
+
+  if (localControlSocket && localControlSocket.readyState === 1 && currentUserId) {
+    try {
+      localControlSocket.send(JSON.stringify({
+        action: 'identify',
+        user_id: currentUserId,
+        user_email: currentUserEmail
+      }));
+    } catch (e) { }
+  }
+
   showTab('live');
 }
 
@@ -492,6 +510,130 @@ function selectExerciseFromHome(mode, btn) {
   switchMode(mode);
 }
 
+function getDailyExerciseStorageKey() {
+  return `fitness_daily_exercises_${currentUserId || 'anon'}`;
+}
+
+function createEmptyDailyExercises(dateStr) {
+  return {
+    date: dateStr,
+    exercises: {
+      bicep_curls: {
+        set: 1,
+        repsInSet: 0,
+        totalReps: 0,
+        leftInSet: 0,
+        rightInSet: 0,
+        totalLeft: 0,
+        totalRight: 0,
+        sessionRawLeft: 0,
+        sessionRawRight: 0
+      },
+      pushups: {
+        set: 1,
+        repsInSet: 0,
+        totalReps: 0,
+        sessionRawCount: 0
+      },
+      squats: {
+        set: 1,
+        repsInSet: 0,
+        totalReps: 0,
+        sessionRawCount: 0
+      },
+      plank: {
+        plankTimeS: 0,
+        sessionRawPlank: 0
+      }
+    }
+  };
+}
+
+function saveDailyExerciseState() {
+  if (!dailyExerciseState) return;
+  try {
+    localStorage.setItem(getDailyExerciseStorageKey(), JSON.stringify(dailyExerciseState));
+  } catch (e) { }
+}
+
+function ensureDailyExerciseState() {
+  const todayStr = dateKey(new Date());
+  const storageKey = getDailyExerciseStorageKey();
+
+  if (!dailyExerciseState || dailyExerciseState._storageKey !== storageKey) {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.date === todayStr && parsed.exercises) {
+          const base = createEmptyDailyExercises(todayStr);
+          dailyExerciseState = {
+            _storageKey: storageKey,
+            date: todayStr,
+            exercises: {
+              bicep_curls: { ...base.exercises.bicep_curls, ...(parsed.exercises.bicep_curls || {}) },
+              pushups: { ...base.exercises.pushups, ...(parsed.exercises.pushups || {}) },
+              squats: { ...base.exercises.squats, ...(parsed.exercises.squats || {}) },
+              plank: { ...base.exercises.plank, ...(parsed.exercises.plank || {}) }
+            }
+          };
+        }
+      }
+    } catch (e) { }
+  }
+
+  // Automatic rollover when the calendar day has passed (or first init)
+  if (!dailyExerciseState || dailyExerciseState.date !== todayStr) {
+    dailyExerciseState = {
+      _storageKey: storageKey,
+      ...createEmptyDailyExercises(todayStr)
+    };
+    saveDailyExerciseState();
+  }
+
+  const bc = dailyExerciseState.exercises.bicep_curls;
+  bicepCurrentSet = bc.set || 1;
+  bicepLeftInSet = bc.leftInSet || 0;
+  bicepRightInSet = bc.rightInSet || 0;
+
+  return dailyExerciseState.exercises;
+}
+
+function resetSessionBaselines(exercise) {
+  const exMap = ensureDailyExerciseState();
+  if (!exercise || exercise === 'bicep_curls') {
+    exMap.bicep_curls.sessionRawLeft = 0;
+    exMap.bicep_curls.sessionRawRight = 0;
+  }
+  if (!exercise || exercise === 'pushups') {
+    exMap.pushups.sessionRawCount = 0;
+  }
+  if (!exercise || exercise === 'squats') {
+    exMap.squats.sessionRawCount = 0;
+  }
+  if (!exercise || exercise === 'plank') {
+    exMap.plank.sessionRawPlank = 0;
+  }
+  saveDailyExerciseState();
+}
+
+function resetAllExercisesDailyState() {
+  const todayStr = dateKey(new Date());
+  dailyExerciseState = {
+    _storageKey: getDailyExerciseStorageKey(),
+    ...createEmptyDailyExercises(todayStr)
+  };
+  saveDailyExerciseState();
+  bicepCurrentSet = 1;
+  bicepLeftInSet = 0;
+  bicepRightInSet = 0;
+  bicepSetStartLeft = 0;
+  bicepSetStartRight = 0;
+  bicepHasBaseline = false;
+  lastFinishedBicepSet = 0;
+  syncExerciseUI(currentExercise);
+}
+
 function updateBicepArmUI(left, right, setNum) {
   const leftEl = document.getElementById('leftArmReps');
   const rightEl = document.getElementById('rightArmReps');
@@ -509,44 +651,43 @@ function updateBicepArmUI(left, right, setNum) {
   if (setEl && setNum !== undefined) setEl.textContent = setNum;
 }
 
+function resetExerciseUI(exercise) {
+  // Only reset per-session robot counter baselines; preserve daily sets/reps unless history is cleared or day passes
+  resetSessionBaselines(exercise);
+  syncExerciseUI(exercise || currentExercise);
+}
+
 function handleBicepSetComplete(newSet, rawLeft, rawRight) {
-  const finishedSet = bicepCurrentSet;
-  if (lastFinishedBicepSet === finishedSet && newSet === undefined) {
-    return; // Already processed this set completion
-  }
-  lastFinishedBicepSet = finishedSet;
+  const exMap = ensureDailyExerciseState();
+  const bc = exMap.bicep_curls;
+  const finishedSet = bc.set || 1;
+  bc.set = finishedSet + 1;
+  bc.leftInSet = 0;
+  bc.rightInSet = 0;
+  bc.repsInSet = 0;
+  if (rawLeft !== undefined) bc.sessionRawLeft = Number(rawLeft) || 0;
+  if (rawRight !== undefined) bc.sessionRawRight = Number(rawRight) || 0;
+  saveDailyExerciseState();
 
-  if (newSet !== undefined && Number(newSet) > 0) {
-    bicepCurrentSet = Math.max(bicepCurrentSet, Number(newSet));
-    if (bicepCurrentSet === finishedSet) {
-      bicepCurrentSet = finishedSet + 1;
-    }
-  } else {
-    bicepCurrentSet = finishedSet + 1;
-  }
-
-  // Left count and right count reset again to 0 upon completing a set (8 reps each)
+  bicepCurrentSet = bc.set;
   bicepLeftInSet = 0;
   bicepRightInSet = 0;
 
-  if (rawLeft !== undefined && rawRight !== undefined) {
-    bicepSetStartLeft = rawLeft;
-    bicepSetStartRight = rawRight;
-  }
-
-  updateBicepArmUI(0, 0, bicepCurrentSet);
+  updateBicepArmUI(0, 0, bc.set);
 
   const repsEl = document.getElementById('currentReps');
   if (repsEl) repsEl.textContent = '0';
 
   const detailEl = document.getElementById('repsDetail');
-  if (detailEl) detailEl.textContent = 'Set Complete - Rest';
+  if (detailEl) detailEl.textContent = `Set ${finishedSet} Complete • Total today: ${bc.totalReps}`;
 
   appendExerciseLog(`🎉 Bicep Curls: Set ${finishedSet} Complete! Both arms reached 8 reps.`);
 }
 
 function syncExerciseUI(exercise) {
   if (!exercise) return;
+  const exMap = ensureDailyExerciseState();
+
   const currentWorkoutEl = document.getElementById('currentWorkout');
   if (currentWorkoutEl) currentWorkoutEl.textContent = formatExercise(exercise);
 
@@ -558,33 +699,48 @@ function syncExerciseUI(exercise) {
     select.value = exercise;
   }
 
-  // Show plank time when plank is selected; in other times keep only reps and sets
+  const setEl = document.getElementById('currentSet');
+  const repsEl = document.getElementById('currentReps');
+  const detailEl = document.getElementById('repsDetail');
   const plankBox = document.getElementById('plankTimeBox');
-  if (plankBox) {
-    if (exercise === 'plank') {
-      plankBox.classList.remove('hidden');
-    } else {
-      plankBox.classList.add('hidden');
-    }
-  }
-
-  // Show dual arm tracking box when bicep curls is selected; in other times keep hidden
+  const plankEl = document.getElementById('plankTime');
   const bicepBox = document.getElementById('bicepArmsBox');
-  if (bicepBox) {
-    if (exercise === 'bicep_curls') {
-      bicepBox.classList.remove('hidden');
-      updateBicepArmUI(bicepLeftInSet, bicepRightInSet, bicepCurrentSet);
-      const setEl = document.getElementById('currentSet');
-      if (setEl && (setEl.textContent === '—' || !setEl.textContent)) {
-        setEl.textContent = bicepCurrentSet;
-      }
-      const repsEl = document.getElementById('currentReps');
-      if (repsEl && (repsEl.textContent === '—' || !repsEl.textContent)) {
-        repsEl.textContent = Math.min(bicepLeftInSet, bicepRightInSet);
-      }
-    } else {
-      bicepBox.classList.add('hidden');
+
+  if (exercise === 'plank') {
+    if (plankBox) plankBox.classList.remove('hidden');
+    if (bicepBox) bicepBox.classList.add('hidden');
+    if (setEl) setEl.textContent = '—';
+    if (repsEl) repsEl.textContent = '—';
+    if (detailEl) detailEl.textContent = '';
+    const pTime = Math.round(Number(exMap.plank?.plankTimeS || 0));
+    if (plankEl) plankEl.textContent = pTime > 0 ? formatSeconds(pTime) : '0s';
+  } else if (exercise === 'bicep_curls') {
+    if (plankBox) plankBox.classList.add('hidden');
+    if (bicepBox) bicepBox.classList.remove('hidden');
+    const bc = exMap.bicep_curls;
+    if (setEl) setEl.textContent = bc.set || 1;
+    if (repsEl) repsEl.textContent = bc.repsInSet || 0;
+    if (detailEl) {
+      detailEl.textContent = bc.totalReps > 0
+        ? `L:${bc.leftInSet}/8  R:${bc.rightInSet}/8 • Total today: ${bc.totalReps}`
+        : `L:${bc.leftInSet}/8  R:${bc.rightInSet}/8`;
     }
+    updateBicepArmUI(bc.leftInSet, bc.rightInSet, bc.set);
+  } else if (exercise === 'pushups' || exercise === 'squats') {
+    if (plankBox) plankBox.classList.add('hidden');
+    if (bicepBox) bicepBox.classList.add('hidden');
+    const st = exMap[exercise] || { set: 1, repsInSet: 0, totalReps: 0 };
+    if (setEl) setEl.textContent = st.set || 1;
+    if (repsEl) repsEl.textContent = st.repsInSet || 0;
+    if (detailEl) {
+      detailEl.textContent = st.totalReps > 0 ? `Total today: ${st.totalReps} reps` : '';
+    }
+  } else {
+    if (plankBox) plankBox.classList.add('hidden');
+    if (bicepBox) bicepBox.classList.add('hidden');
+    if (setEl) setEl.textContent = '—';
+    if (repsEl) repsEl.textContent = '—';
+    if (detailEl) detailEl.textContent = '';
   }
 
   updateModeButtons(exercise);
@@ -703,14 +859,25 @@ function connectRealtime() {
       if (doc.exists) handleTelemetryMessage({ type: 'watch_steps', ...doc.data() });
     });
 
+  batteryUnsubscribe = db.collection('users').doc(currentUserId)
+    .collection('device_status')
+    .doc('battery')
+    .onSnapshot((doc) => {
+      if (doc.exists && doc.data() && doc.data().voltage !== undefined) {
+        updateBatteryUI(doc.data().voltage);
+      }
+    });
+
   appendSystemLog('Connected to Firebase telemetry');
 }
 
 function disconnectRealtime() {
   if (telemetryUnsubscribe) telemetryUnsubscribe();
   if (watchUnsubscribe) watchUnsubscribe();
+  if (batteryUnsubscribe) batteryUnsubscribe();
   telemetryUnsubscribe = null;
   watchUnsubscribe = null;
+  batteryUnsubscribe = null;
 }
 
 function handleTelemetryMessage(msg) {
@@ -718,16 +885,14 @@ function handleTelemetryMessage(msg) {
   const payload = msg.payload || msg;
 
   if (type === 'session_start') {
-    currentSessionId = msg.session_id || payload.session_id || msg.id;
-    currentExercise = msg.exercise_type || payload.exercise_type || currentExercise;
-    if (currentExercise === 'bicep_curls') {
-      bicepCurrentSet = 1;
-      bicepLeftInSet = 0;
-      bicepRightInSet = 0;
-      bicepHasBaseline = false;
-      lastFinishedBicepSet = 0;
-      updateBicepArmUI(0, 0, 1);
+    const sid = msg.session_id || payload.session_id || msg.id;
+    const ex = msg.exercise_type || payload.exercise_type || currentExercise;
+    if (sid && sid === currentSessionId && ex === currentExercise) {
+      return;
     }
+    currentSessionId = sid;
+    currentExercise = ex;
+    resetSessionBaselines(currentExercise);
     syncExerciseUI(currentExercise);
     appendExerciseLog(`Session started: ${formatExercise(currentExercise)}`);
     return;
@@ -736,7 +901,9 @@ function handleTelemetryMessage(msg) {
   if (type === 'session_end') {
     const activeSec = Number(payload.active_duration_s || 0);
     appendExerciseLog(`Session ended. Active: ${activeSec.toFixed(1)}s`);
-    recordLiveSessionEnd(activeSec);
+    resetSessionBaselines(currentExercise);
+    recordLiveSessionEnd(activeSec, payload);
+    syncExerciseUI(currentExercise);
     currentSessionId = null;
     return;
   }
@@ -752,11 +919,13 @@ function handleTelemetryMessage(msg) {
     robotState = state;
 
     if (payload.exercise) {
-      currentExercise = payload.exercise;
+      if (payload.exercise !== currentExercise) {
+        currentExercise = payload.exercise;
+      }
       syncExerciseUI(currentExercise);
     } else if (state === 'READY' || state === 'STOPPED') {
       const select = document.getElementById('fitnessExerciseSelect');
-      if (select && select.value) {
+      if (select && select.value && select.value !== currentExercise) {
         currentExercise = select.value;
       }
       syncExerciseUI(currentExercise);
@@ -771,117 +940,130 @@ function handleTelemetryMessage(msg) {
   }
 
   if (type === 'rep') {
-    currentExercise = payload.exercise || currentExercise;
-    syncExerciseUI(currentExercise);
+    const ex = payload.exercise || currentExercise;
+    if (ex && ex !== currentExercise) {
+      currentExercise = ex;
+    }
+    const exMap = ensureDailyExerciseState();
 
-    if (payload.exercise === 'bicep_curls' || currentExercise === 'bicep_curls') {
+    if (ex === 'bicep_curls') {
+      const bc = exMap.bicep_curls;
       const rawLeft = Number(payload.left ?? payload.count ?? 0);
       const rawRight = Number(payload.right ?? payload.count ?? 0);
 
-      // Check if backend reports an updated set number
-      if (payload.set !== undefined && Number(payload.set) > 0) {
-        if (Number(payload.set) > bicepCurrentSet) {
-          bicepCurrentSet = Number(payload.set);
-          bicepSetStartLeft = rawLeft;
-          bicepSetStartRight = rawRight;
-          bicepLeftInSet = 0;
-          bicepRightInSet = 0;
-        }
+      if (rawLeft < bc.sessionRawLeft || rawRight < bc.sessionRawRight) {
+        bc.sessionRawLeft = 0;
+        bc.sessionRawRight = 0;
       }
 
-      if (!bicepHasBaseline) {
-        if (rawLeft > 8 || rawRight > 8) {
-          bicepSetStartLeft = rawLeft - (rawLeft % 8);
-          bicepSetStartRight = rawRight - (rawRight % 8);
-        } else {
-          bicepSetStartLeft = 0;
-          bicepSetStartRight = 0;
-        }
-        bicepHasBaseline = true;
+      const deltaL = Math.max(0, rawLeft - bc.sessionRawLeft);
+      const deltaR = Math.max(0, rawRight - bc.sessionRawRight);
+      if (deltaL === 0 && deltaR === 0) {
+        return; // Duplicate telemetry packet
       }
 
-      // Current set reps relative to set start (or explicit in-set counts)
-      let lReps = payload.left_in_set !== undefined ? Number(payload.left_in_set) : (rawLeft - bicepSetStartLeft);
-      let rReps = payload.right_in_set !== undefined ? Number(payload.right_in_set) : (rawRight - bicepSetStartRight);
-      if (lReps < 0) { bicepSetStartLeft = rawLeft; lReps = 0; }
-      if (rReps < 0) { bicepSetStartRight = rawRight; rReps = 0; }
+      bc.sessionRawLeft = rawLeft;
+      bc.sessionRawRight = rawRight;
 
-      bicepLeftInSet = lReps;
-      bicepRightInSet = rReps;
-
-      // Completed reps in set (both arms synchronized towards 8 reps goal)
-      const completedSetReps = Math.min(bicepLeftInSet, bicepRightInSet);
-      const repsEl = document.getElementById('currentReps');
-      const detailEl = document.getElementById('repsDetail');
-      if (repsEl) repsEl.textContent = completedSetReps;
-      if (detailEl) detailEl.textContent = `L:${bicepLeftInSet}/8  R:${bicepRightInSet}/8`;
-
-      updateBicepArmUI(bicepLeftInSet, bicepRightInSet, bicepCurrentSet);
-
-      // A set should have 8 reps from both arms.
-      // Left count and right count reset again to 0 upon completing a set.
-      if (bicepLeftInSet >= 8 && bicepRightInSet >= 8) {
-        handleBicepSetComplete(bicepCurrentSet + 1, rawLeft, rawRight);
+      if (bc.leftInSet >= 8 && bc.rightInSet >= 8) {
+        bc.set = (bc.set || 1) + 1;
+        bc.leftInSet = 0;
+        bc.rightInSet = 0;
+        bc.repsInSet = 0;
       }
 
-      recordLiveRep(currentExercise, completedSetReps, bicepLeftInSet, bicepRightInSet);
+      bc.totalLeft = (bc.totalLeft || 0) + deltaL;
+      bc.totalRight = (bc.totalRight || 0) + deltaR;
+      bc.leftInSet = Math.min(8, (bc.leftInSet || 0) + deltaL);
+      bc.rightInSet = Math.min(8, (bc.rightInSet || 0) + deltaR);
+
+      const prevRepsInSet = bc.repsInSet || 0;
+      bc.repsInSet = Math.min(bc.leftInSet, bc.rightInSet);
+      const newFullReps = Math.max(0, bc.repsInSet - prevRepsInSet);
+      bc.totalReps = (bc.totalReps || 0) + newFullReps;
+
+      if (bc.leftInSet >= 8 && bc.rightInSet >= 8) {
+        const finishedSet = bc.set || 1;
+        bc.set = finishedSet + 1;
+        bc.leftInSet = 0;
+        bc.rightInSet = 0;
+        bc.repsInSet = 0;
+        appendExerciseLog(`🎉 Bicep Curls: Set ${finishedSet} Complete! Both arms reached 8 reps.`);
+      }
+
+      saveDailyExerciseState();
+      syncExerciseUI('bicep_curls');
+
+      if (newFullReps > 0 || payload.is_full_rep) {
+        recordLiveRep('bicep_curls', bc.totalReps, bc.leftInSet, bc.rightInSet, Math.max(1, newFullReps));
+      }
       return;
-    } else {
-      if (payload.set !== undefined) {
-        const setEl = document.getElementById('currentSet');
-        if (setEl) setEl.textContent = payload.set;
+    } else if (ex === 'pushups' || ex === 'squats') {
+      const st = exMap[ex] || (exMap[ex] = { set: 1, repsInSet: 0, totalReps: 0, sessionRawCount: 0 });
+      const rawCount = Number(payload.count ?? payload.total ?? payload.in_set ?? payload.reps ?? 0);
+
+      if (rawCount < st.sessionRawCount) {
+        st.sessionRawCount = 0;
       }
-      const repCount = payload.count ?? payload.reps ?? payload.total ?? 0;
-      const repsEl = document.getElementById('currentReps');
-      const detailEl = document.getElementById('repsDetail');
-      if (repsEl) repsEl.textContent = repCount;
-      if (detailEl) detailEl.textContent = '';
-      recordLiveRep(currentExercise, repCount);
+
+      const delta = Math.max(0, rawCount - st.sessionRawCount);
+      if (delta === 0) {
+        return; // Duplicate telemetry packet
+      }
+
+      st.sessionRawCount = rawCount;
+      st.totalReps = (st.totalReps || 0) + delta;
+      st.repsInSet = (st.repsInSet || 0) + delta;
+
+      while (st.repsInSet >= 8) {
+        const finishedSet = st.set || 1;
+        st.set = finishedSet + 1;
+        st.repsInSet -= 8;
+        appendExerciseLog(`🎉 ${formatExercise(ex)}: Set ${finishedSet} Complete! (8 reps)`);
+      }
+
+      saveDailyExerciseState();
+      syncExerciseUI(ex);
+      recordLiveRep(ex, st.totalReps, undefined, undefined, delta);
       return;
     }
   }
 
   if (type === 'plank_time' || type === 'plank') {
-    const val = payload.value ?? payload.plank_timer ?? 0;
+    const rawVal = Number(payload.value ?? payload.plank_timer ?? 0);
+    const exMap = ensureDailyExerciseState();
+    const pl = exMap.plank;
+
+    if (rawVal < pl.sessionRawPlank) {
+      pl.sessionRawPlank = 0;
+    }
+
+    const deltaSec = Math.max(0, rawVal - pl.sessionRawPlank);
+    if (deltaSec <= 0) {
+      return;
+    }
+
+    pl.sessionRawPlank = rawVal;
+    pl.plankTimeS = Math.round(((pl.plankTimeS || 0) + deltaSec) * 10) / 10;
+    saveDailyExerciseState();
+
     const plankEl = document.getElementById('plankTime');
-    if (plankEl) plankEl.textContent = formatSeconds(val);
-    recordLivePlank(val);
+    if (plankEl) plankEl.textContent = formatSeconds(Math.round(pl.plankTimeS));
+    recordLivePlank(pl.plankTimeS);
     return;
   }
 
   if (type === 'form_error' || type === 'encouragement') {
-    appendExerciseLog(payload.message || JSON.stringify(payload), true);
+    const msgText = payload.message || JSON.stringify(payload);
+    appendExerciseLog(msgText, true);
     if (type === 'form_error') {
-      recordLiveFormError();
+      recordLiveFormError(msgText);
     }
     return;
   }
 
   if (type === 'battery_voltage') {
-    const v = parseFloat(payload.voltage);
-    if (!isNaN(v)) {
-      const textEl = document.getElementById('batteryVoltageText');
-      if (textEl) textEl.textContent = v.toFixed(2) + ' V';
-      const fill = document.getElementById('batteryLevelFill');
-      const indicator = document.getElementById('batteryIndicator');
-      let percent = ((v - 10.0) / (12.6 - 10.0)) * 100;
-      percent = Math.max(0, Math.min(100, percent));
-      if (fill) {
-        fill.style.height = percent + '%';
-        fill.style.width = '100%';
-
-        if (percent < 20) {
-          fill.style.background = '#ef4444'; // red
-        } else if (percent < 40) {
-          fill.style.background = '#f59e0b'; // amber
-        } else {
-          fill.style.background = '#10b981'; // emerald
-        }
-      }
-      if (indicator) {
-        indicator.title = `Robot Battery: ${v.toFixed(2)} V (${Math.round(percent)}%)`;
-      }
-    }
+    updateBatteryUI(payload.voltage);
     return;
   }
 
@@ -899,10 +1081,27 @@ function handleTelemetryMessage(msg) {
   }
 
   if (type === 'set_complete') {
+    const ex = payload.exercise || currentExercise;
+    const exMap = ensureDailyExerciseState();
     appendExerciseLog(`Set ${payload.set} complete (${payload.reps ?? '?'} reps)`);
-    if (payload.exercise === 'bicep_curls' || currentExercise === 'bicep_curls') {
-      const nextSet = payload.set !== undefined ? Number(payload.set) + 1 : (bicepCurrentSet + 1);
-      handleBicepSetComplete(nextSet);
+    if (ex === 'bicep_curls') {
+      const bc = exMap.bicep_curls;
+      if (bc.leftInSet > 0 || bc.rightInSet > 0) {
+        bc.set = (bc.set || 1) + 1;
+        bc.leftInSet = 0;
+        bc.rightInSet = 0;
+        bc.repsInSet = 0;
+        saveDailyExerciseState();
+      }
+      syncExerciseUI('bicep_curls');
+    } else if (ex === 'pushups' || ex === 'squats') {
+      const st = exMap[ex];
+      if (st && st.repsInSet > 0) {
+        st.set = (st.set || 1) + 1;
+        st.repsInSet = 0;
+        saveDailyExerciseState();
+      }
+      syncExerciseUI(ex);
     }
     return;
   }
@@ -984,9 +1183,21 @@ function connectLocalWebSocket(piIp) {
     setRobotConnectionStatus(true);
     const pill = document.getElementById('robotState');
     if (pill) {
-      pill.textContent = "CONNECTED";
-      pill.setAttribute('data-state', 'CONNECTED');
+      if (!robotState || robotState === 'OFFLINE') {
+        pill.textContent = "CONNECTED";
+        pill.setAttribute('data-state', 'CONNECTED');
+      }
     }
+    if (currentUserId) {
+      try {
+        localControlSocket.send(JSON.stringify({
+          action: 'identify',
+          user_id: currentUserId,
+          user_email: currentUserEmail
+        }));
+      } catch (err) { }
+    }
+    updateExerciseButtonStates();
   };
 
   localControlSocket.onmessage = (event) => {
@@ -1015,54 +1226,72 @@ function connectLocalWebSocket(piIp) {
   };
 }
 
+function updateBatteryUI(voltage) {
+  const v = parseFloat(voltage);
+  if (isNaN(v)) return;
+  lastKnownBatteryVoltage = v;
+
+  const textEl = document.getElementById('batteryVoltageText');
+  const fill = document.getElementById('batteryLevelFill');
+  const indicator = document.getElementById('batteryIndicator');
+
+  // Standard 3S LiPo battery pack: 10.0V empty -> 12.6V fully charged
+  let percent = Math.round(((v - 10.0) / (12.6 - 10.0)) * 100);
+  percent = Math.max(0, Math.min(100, percent));
+
+  if (textEl) {
+    textEl.textContent = (batteryDisplayMode === 'voltage') ? `${v.toFixed(1)}V` : `${percent}%`;
+  }
+
+  if (fill) {
+    fill.style.height = `${percent}%`;
+    if (percent < 20) {
+      fill.style.background = '#ef4444'; // red
+      if (textEl) textEl.style.color = '#f87171';
+    } else if (percent < 40) {
+      fill.style.background = '#f59e0b'; // amber
+      if (textEl) textEl.style.color = '#fbbf24';
+    } else {
+      fill.style.background = '#10b981'; // emerald
+      if (textEl) textEl.style.color = '#34d399';
+    }
+  }
+
+  if (indicator) {
+    indicator.classList.remove('hidden');
+    indicator.title = `Robot Battery: ${v.toFixed(2)} V (${percent}%) - Click to toggle V/%`;
+  }
+}
+
+function toggleBatteryDisplayMode() {
+  batteryDisplayMode = (batteryDisplayMode === 'percent') ? 'voltage' : 'percent';
+  if (lastKnownBatteryVoltage !== null) {
+    updateBatteryUI(lastKnownBatteryVoltage);
+  }
+}
+
 function updateExerciseButtonStates() {
   const startBtn = document.getElementById('startExerciseBtn');
   const stopBtn = document.getElementById('fitnessStopBtn');
   const upperState = (robotState || '').toUpperCase();
   const select = document.getElementById('fitnessExerciseSelect');
-  const hasExercise = Boolean(currentExercise || select?.value);
-  const isFollowing = (upperState === 'FOLLOWING' || upperState === 'LOADING');
-  const isStarted = (upperState === 'ACTIVE' || isFollowing);
+  const isActive = (upperState === 'ACTIVE');
 
   if (startBtn) {
-    if (hasExercise && isFollowing) {
-      startBtn.classList.remove('opacity-50', 'opacity-60', 'cursor-not-allowed');
-      startBtn.classList.add('opacity-100', 'cursor-pointer');
-      startBtn.title = `Start detecting ${formatExercise(currentExercise || select?.value)}`;
-    } else if (upperState === 'ACTIVE') {
-      startBtn.classList.remove('opacity-100', 'cursor-pointer');
-      startBtn.classList.add('opacity-50', 'cursor-not-allowed');
-      startBtn.title = 'Exercise is already active and running';
-    } else {
-      startBtn.classList.remove('opacity-100', 'cursor-pointer');
-      startBtn.classList.add('opacity-60', 'cursor-pointer');
-      startBtn.title = 'Robot must be in FOLLOWING mode to start';
-    }
+    startBtn.classList.remove('opacity-50', 'opacity-60', 'cursor-not-allowed');
+    startBtn.classList.add('opacity-100', 'cursor-pointer');
+    startBtn.title = isActive ? 'Restart / trigger start detecting' : `Start detecting ${formatExercise(currentExercise || select?.value || 'exercise')}`;
   }
 
   if (stopBtn) {
-    if (isStarted) {
-      stopBtn.classList.remove('opacity-50', 'opacity-60');
-      stopBtn.classList.add('opacity-100', 'cursor-pointer');
-      stopBtn.title = 'Stop current exercise';
-    } else {
-      stopBtn.classList.remove('opacity-100');
-      stopBtn.classList.add('opacity-60', 'cursor-pointer');
-      stopBtn.title = 'No exercise currently running';
-    }
+    stopBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    stopBtn.classList.add('opacity-100', 'cursor-pointer');
+    stopBtn.title = isActive ? 'Stop current exercise' : 'Stop exercise / reset robot';
   }
 }
 
 async function sendForceStop() {
   const upperState = (robotState || '').toUpperCase();
-  const isStarted = (upperState === 'ACTIVE' || upperState === 'FOLLOWING' || upperState === 'LOADING');
-
-  if (!isStarted) {
-    appendExerciseLog(`⚠️ Exercise is not running (Robot state: ${upperState || 'STOPPED'}).`, true);
-    // Still send force_stop command to ensure any motor movement is stopped
-    await sendControlCommand({ action: 'force_stop' }, 'Stop signal sent to robot');
-    return;
-  }
 
   appendExerciseLog(`⛔ Stopping exercise (${formatExercise(currentExercise)})...`);
 
@@ -1072,6 +1301,7 @@ async function sendForceStop() {
     pill.textContent = 'STOPPED';
     pill.setAttribute('data-state', 'STOPPED');
   }
+  resetExerciseUI(currentExercise);
   updateExerciseButtonStates();
 
   await sendControlCommand({ action: 'force_stop' }, 'Exercise stopped');
@@ -1079,7 +1309,7 @@ async function sendForceStop() {
 
 async function sendStartExercise() {
   const select = document.getElementById('fitnessExerciseSelect');
-  const selectedExercise = currentExercise || (select ? select.value : null);
+  const selectedExercise = currentExercise || (select ? select.value : 'bicep_curls');
 
   // 1. Must have an exercise selected
   if (!selectedExercise) {
@@ -1087,31 +1317,8 @@ async function sendStartExercise() {
     return;
   }
 
-  // 2. Robot must be in following mode
-  const upperState = (robotState || '').toUpperCase();
-  const isFollowing = (upperState === 'FOLLOWING' || upperState === 'LOADING');
-
-  if (!isFollowing) {
-    if (upperState === 'ACTIVE') {
-      appendExerciseLog("⚠️ Exercise is already running.", true);
-      return;
-    }
-    if (upperState === 'OFFLINE') {
-      appendExerciseLog("⚠️ Robot is offline. Connect robot to start exercise.", true);
-      return;
-    }
-    appendExerciseLog(`⚠️ Robot is in ${upperState || 'STOPPED'} mode. Robot must be in FOLLOWING mode to start the exercise.`, true);
-    return;
-  }
-
-  // 3. Exercise selected and robot in following mode -> Start exercise!
   toggleCameraView(true);
-  if (selectedExercise === 'bicep_curls') {
-    bicepHasBaseline = false;
-    bicepLeftInSet = 0;
-    bicepRightInSet = 0;
-    updateBicepArmUI(0, 0, bicepCurrentSet);
-  }
+  resetExerciseUI(selectedExercise);
 
   appendExerciseLog(`🚀 Starting ${formatExercise(selectedExercise)}! Detecting form and counting reps...`);
 
@@ -1122,6 +1329,23 @@ async function sendStartExercise() {
     pill.setAttribute('data-state', 'ACTIVE');
   }
   updateExerciseButtonStates();
+
+  const mapping = {
+    bicep_curls: 'BICEP_CURLS',
+    pushups: 'PUSHUPS',
+    squats: 'SQUATS',
+    plank: 'PLANK',
+    person_follow: 'PERSON_FOLLOW'
+  };
+
+  const upperState = (robotState || '').toUpperCase();
+  const isWaitingInExercise = (upperState === 'FOLLOWING' || upperState === 'LOADING');
+  if (!isWaitingInExercise) {
+    await sendControlCommand({
+      action: 'switch_mode',
+      mode: mapping[selectedExercise] || selectedExercise.toUpperCase()
+    }, `Selected ${formatExercise(selectedExercise)}. Launching exercise...`);
+  }
 
   await sendControlCommand({
     action: 'start_exercise',
@@ -1138,11 +1362,7 @@ async function switchMode(mode) {
   }
 
   currentExercise = mode;
-  if (mode === 'bicep_curls') {
-    bicepHasBaseline = false;
-    bicepLeftInSet = 0;
-    bicepRightInSet = 0;
-  }
+  resetExerciseUI(currentExercise);
   syncExerciseUI(currentExercise);
   updateExerciseButtonStates();
 
@@ -1576,7 +1796,7 @@ function getExerciseIcon(exercise) {
 }
 
 // Live fitness measurement recording into statistics
-function recordLiveRep(exercise, count, left, right) {
+function recordLiveRep(exercise, count, left, right, goodIncrement = 1) {
   if (!exercise) return;
   const todayStr = dateKey(new Date());
   let dayData = cachedDailyMap.get(todayStr);
@@ -1586,13 +1806,11 @@ function recordLiveRep(exercise, count, left, right) {
   }
   if (!dayData.reps) dayData.reps = {};
 
-  let repNum = Number(count || 1);
-  if (exercise === 'bicep_curls' && (left !== undefined || right !== undefined)) {
-    repNum = Math.min(Number(left || 0), Number(right || 0));
-  }
-
+  const repNum = Math.max(0, Number(count || 1));
   dayData.reps[exercise] = Math.max(Number(dayData.reps[exercise] || 0), repNum);
-  dayData.form_good_count = (dayData.form_good_count || 0) + 1;
+  const inc = Math.max(1, Number(goodIncrement || 1));
+  const totalDayReps = Number(dayData.reps.bicep_curls || 0) + Number(dayData.reps.pushups || 0) + Number(dayData.reps.squats || 0);
+  dayData.form_good_count = Math.max(Number(dayData.form_good_count || 0) + inc, totalDayReps);
 
   if (db && currentUserId) {
     db.collection('users').doc(currentUserId)
@@ -1602,7 +1820,6 @@ function recordLiveRep(exercise, count, left, right) {
         date: todayStr,
         reps: dayData.reps,
         form_good_count: dayData.form_good_count,
-        form_flaw_count: dayData.form_flaw_count || 0,
         updated_at: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true }).catch(() => { });
   }
@@ -1633,7 +1850,19 @@ function recordLivePlank(seconds) {
   updateProfileViewForSelectedDate();
 }
 
-function recordLiveFormError() {
+function recordLiveFormError(message) {
+  const msgUpper = String(message || '').toUpperCase();
+  // Ignore camera positioning instructions so stepping into frame doesn't mark exercises as flawed
+  if (msgUpper.includes('GET IN POSITION') || msgUpper.includes('POSITIONING') || msgUpper.includes('STAND IN FRONT')) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - lastFormFlawRecordedAt < 3000) {
+    return;
+  }
+  lastFormFlawRecordedAt = now;
+
   const todayStr = dateKey(new Date());
   let dayData = cachedDailyMap.get(todayStr);
   if (!dayData) {
@@ -1656,7 +1885,7 @@ function recordLiveFormError() {
   updateProfileViewForSelectedDate();
 }
 
-function recordLiveSessionEnd(activeSec) {
+function recordLiveSessionEnd(activeSec, payload) {
   const todayStr = dateKey(new Date());
   let dayData = cachedDailyMap.get(todayStr);
   if (!dayData) {
@@ -1667,6 +1896,40 @@ function recordLiveSessionEnd(activeSec) {
   dayData.active_time_s = (dayData.active_time_s || 0) + sec;
   dayData.total_time_s = (dayData.total_time_s || 0) + sec;
 
+  // Sync with today's persistent per-exercise state
+  const exMap = ensureDailyExerciseState();
+  if (!dayData.reps) dayData.reps = {};
+  dayData.reps.bicep_curls = Math.max(Number(dayData.reps.bicep_curls || 0), Number(exMap.bicep_curls?.totalReps || 0));
+  dayData.reps.pushups = Math.max(Number(dayData.reps.pushups || 0), Number(exMap.pushups?.totalReps || 0));
+  dayData.reps.squats = Math.max(Number(dayData.reps.squats || 0), Number(exMap.squats?.totalReps || 0));
+  dayData.plank_time_s = Math.max(Number(dayData.plank_time_s || 0), Math.round(Number(exMap.plank?.plankTimeS || 0)));
+
+  // Extract from summary if present
+  if (payload && payload.summary) {
+    const sum = payload.summary;
+    const ex = payload.exercise_type || currentExercise;
+    if (ex === 'plank') {
+      let pTime = Number(sum.total_plank_time_s || sum.plank_time_s || 0);
+      if (!pTime && Array.isArray(sum.metrics)) {
+        for (const [mName, mVal] of sum.metrics) {
+          if (String(mName).includes('Hold Time')) {
+            pTime = parseFloat(String(mVal).replace('s', '')) || 0;
+          }
+        }
+      }
+      if (pTime > 0) {
+        dayData.plank_time_s = Math.max(Number(dayData.plank_time_s || 0), Math.round(pTime));
+      }
+    } else if (sum.total_reps !== undefined && ex) {
+      dayData.reps[ex] = Math.max(Number(dayData.reps[ex] || 0), Number(sum.total_reps));
+    }
+  }
+
+  const totalDayReps = Number(dayData.reps.bicep_curls || 0) + Number(dayData.reps.pushups || 0) + Number(dayData.reps.squats || 0);
+  if (totalDayReps > 0) {
+    dayData.form_good_count = Math.max(Number(dayData.form_good_count || 0), totalDayReps);
+  }
+
   if (db && currentUserId) {
     db.collection('users').doc(currentUserId)
       .collection('daily_aggregates')
@@ -1675,6 +1938,9 @@ function recordLiveSessionEnd(activeSec) {
         date: todayStr,
         active_time_s: dayData.active_time_s,
         total_time_s: dayData.total_time_s,
+        reps: dayData.reps || {},
+        plank_time_s: dayData.plank_time_s || 0,
+        form_good_count: dayData.form_good_count || 0,
         updated_at: firebase.firestore.FieldValue.serverTimestamp()
       }, { merge: true }).catch(() => { });
   }
@@ -1693,6 +1959,9 @@ function connectAnalyticsListeners() {
   const { minDate, today } = getSevenDaysWindow();
 
   function rebuildAndRender() {
+    const todayStr = dateKey(new Date());
+    const prevToday = cachedDailyMap.get(todayStr);
+
     cachedDailyMap.clear();
 
     const { days } = getSevenDaysWindow();
@@ -1704,15 +1973,140 @@ function connectAnalyticsListeners() {
     cachedAggDocs.forEach(data => {
       const k = data.date || data._docId;
       if (k) {
-        cachedDailyMap.set(k, { ...emptyDaily(k), ...data });
+        const base = emptyDaily(k);
+        const mergedReps = {
+          bicep_curls: Math.max(Number(data.reps?.bicep_curls || 0), Number(data['reps.bicep_curls'] || 0)),
+          pushups: Math.max(Number(data.reps?.pushups || 0), Number(data['reps.pushups'] || 0)),
+          squats: Math.max(Number(data.reps?.squats || 0), Number(data['reps.squats'] || 0))
+        };
+        cachedDailyMap.set(k, {
+          ...base,
+          ...data,
+          reps: mergedReps
+        });
       }
     });
 
-    const todayStr = dateKey(new Date());
-    if (watchStepsToday > 0) {
-      const todayAgg = cachedDailyMap.get(todayStr);
-      if (todayAgg) todayAgg.steps = Math.max(todayAgg.steps || 0, watchStepsToday);
+    // Group and SUM all completed sessions by day
+    const sessionsByDay = new Map();
+    cachedSessionDocs.forEach(s => {
+      if (s.cleared) return;
+      const rawDate = s.started_at || s.ended_at;
+      if (!rawDate) return;
+      const sDate = rawDate.toDate ? rawDate.toDate() : new Date(rawDate);
+      const sKey = dateKey(sDate);
+      if (!sessionsByDay.has(sKey)) {
+        sessionsByDay.set(sKey, {
+          reps: { bicep_curls: 0, pushups: 0, squats: 0 },
+          plank_time_s: 0,
+          active_time_s: 0,
+          total_time_s: 0
+        });
+      }
+      const daySum = sessionsByDay.get(sKey);
+      const sum = s.summary || {};
+      const ex = s.exercise_type || sum.exercise;
+
+      if (ex === 'plank') {
+        let pSec = Number(sum.total_plank_time_s || sum.plank_time_s || 0);
+        if (!pSec && Array.isArray(sum.metrics)) {
+          for (const [mName, mVal] of sum.metrics) {
+            if (String(mName).includes('Hold Time')) {
+              pSec = parseFloat(String(mVal).replace('s', '')) || 0;
+            }
+          }
+        }
+        daySum.plank_time_s += pSec;
+      } else if (ex && (sum.total_reps !== undefined || sum.reps !== undefined)) {
+        const rCount = Number(sum.total_reps ?? sum.reps ?? 0);
+        daySum.reps[ex] = (daySum.reps[ex] || 0) + rCount;
+      }
+
+      if (s.active_duration_s) {
+        daySum.active_time_s += Number(s.active_duration_s || 0);
+      }
+      if (s.total_duration_s) {
+        daySum.total_time_s += Number(s.total_duration_s || 0);
+      }
+    });
+
+    // Merge sessions sums with daily_aggregates (take max of incremental vs summed sessions to ensure no reps missed)
+    days.forEach(d => {
+      const k = dateKey(d);
+      const day = cachedDailyMap.get(k) || emptyDaily(k);
+      if (!day.reps) day.reps = { bicep_curls: 0, pushups: 0, squats: 0 };
+      const sSum = sessionsByDay.get(k);
+      if (sSum) {
+        day.reps.bicep_curls = Math.max(Number(day.reps.bicep_curls || 0), Number(sSum.reps.bicep_curls || 0));
+        day.reps.pushups = Math.max(Number(day.reps.pushups || 0), Number(sSum.reps.pushups || 0));
+        day.reps.squats = Math.max(Number(day.reps.squats || 0), Number(sSum.reps.squats || 0));
+        day.plank_time_s = Math.max(Number(day.plank_time_s || 0), Math.round(Number(sSum.plank_time_s || 0)));
+        day.active_time_s = Math.max(Number(day.active_time_s || 0), Math.round(Number(sSum.active_time_s || 0)));
+        day.total_time_s = Math.max(Number(day.total_time_s || 0), Math.round(Number(sSum.total_time_s || 0)));
+      }
+
+      const dayTotalReps = Number(day.reps.bicep_curls || 0) + Number(day.reps.pushups || 0) + Number(day.reps.squats || 0);
+      if (dayTotalReps > 0) {
+        day.form_good_count = Math.max(Number(day.form_good_count || 0), dayTotalReps);
+      }
+      cachedDailyMap.set(k, day);
+    });
+
+    // Preserve live today progress and sync with persistent daily exercise state
+    const todayAgg = cachedDailyMap.get(todayStr) || emptyDaily(todayStr);
+    const exMap = ensureDailyExerciseState();
+    if (!todayAgg.reps) todayAgg.reps = { bicep_curls: 0, pushups: 0, squats: 0 };
+
+    if (prevToday) {
+      todayAgg.reps.bicep_curls = Math.max(Number(todayAgg.reps.bicep_curls || 0), Number(prevToday.reps?.bicep_curls || 0));
+      todayAgg.reps.pushups = Math.max(Number(todayAgg.reps.pushups || 0), Number(prevToday.reps?.pushups || 0));
+      todayAgg.reps.squats = Math.max(Number(todayAgg.reps.squats || 0), Number(prevToday.reps?.squats || 0));
+      todayAgg.plank_time_s = Math.max(Number(todayAgg.plank_time_s || 0), Number(prevToday.plank_time_s || 0));
+      todayAgg.form_good_count = Math.max(Number(todayAgg.form_good_count || 0), Number(prevToday.form_good_count || 0));
+      todayAgg.form_flaw_count = Math.max(Number(todayAgg.form_flaw_count || 0), Number(prevToday.form_flaw_count || 0));
     }
+
+    todayAgg.reps.bicep_curls = Math.max(Number(todayAgg.reps.bicep_curls || 0), Number(exMap.bicep_curls?.totalReps || 0));
+    todayAgg.reps.pushups = Math.max(Number(todayAgg.reps.pushups || 0), Number(exMap.pushups?.totalReps || 0));
+    todayAgg.reps.squats = Math.max(Number(todayAgg.reps.squats || 0), Number(exMap.squats?.totalReps || 0));
+    todayAgg.plank_time_s = Math.max(Number(todayAgg.plank_time_s || 0), Math.round(Number(exMap.plank?.plankTimeS || 0)));
+
+    const totalTodayReps = Number(todayAgg.reps.bicep_curls || 0) + Number(todayAgg.reps.pushups || 0) + Number(todayAgg.reps.squats || 0);
+    if (totalTodayReps > 0) {
+      todayAgg.form_good_count = Math.max(Number(todayAgg.form_good_count || 0), totalTodayReps);
+    }
+
+    // Hydrate dailyExerciseState if cloud has higher totals for today (e.g. after page reload)
+    let stateUpdated = false;
+    ['bicep_curls', 'pushups', 'squats'].forEach(exKey => {
+      const cloudReps = Number(todayAgg.reps[exKey] || 0);
+      const localSt = exMap[exKey];
+      if (localSt && cloudReps > (localSt.totalReps || 0)) {
+        localSt.totalReps = cloudReps;
+        localSt.set = Math.floor(cloudReps / 8) + 1;
+        localSt.repsInSet = cloudReps % 8;
+        if (exKey === 'bicep_curls') {
+          localSt.leftInSet = localSt.repsInSet;
+          localSt.rightInSet = localSt.repsInSet;
+          localSt.totalLeft = Math.max(localSt.totalLeft || 0, cloudReps);
+          localSt.totalRight = Math.max(localSt.totalRight || 0, cloudReps);
+        }
+        stateUpdated = true;
+      }
+    });
+    if (Number(todayAgg.plank_time_s || 0) > Number(exMap.plank?.plankTimeS || 0)) {
+      exMap.plank.plankTimeS = Number(todayAgg.plank_time_s || 0);
+      stateUpdated = true;
+    }
+    if (stateUpdated) {
+      saveDailyExerciseState();
+      syncExerciseUI(currentExercise);
+    }
+
+    if (watchStepsToday > 0) {
+      todayAgg.steps = Math.max(todayAgg.steps || 0, watchStepsToday);
+    }
+    cachedDailyMap.set(todayStr, todayAgg);
 
     updateProfileViewForSelectedDate();
   }
@@ -1721,7 +2115,6 @@ function connectAnalyticsListeners() {
   analyticsAggUnsubscribe = db.collection('users').doc(currentUserId)
     .collection('daily_aggregates')
     .where('date', '>=', dateKey(minDate))
-    .where('date', '<=', dateKey(today))
     .onSnapshot(snap => {
       cachedAggDocs = snap.docs.map(doc => ({ _docId: doc.id, ...doc.data() }));
       rebuildAndRender();
@@ -1897,20 +2290,56 @@ async function clearWorkoutHistory() {
     return;
   }
 
+  // 1. Clear in-memory caches immediately
   cachedAggDocs = [];
   cachedSessionDocs = [];
   cachedDailyMap.clear();
+  watchStepsToday = 0;
 
+  // 2. Clear local storage step history & update step history list
+  localStorage.removeItem(STEP_HISTORY_KEY);
+  if (typeof renderStepHistory === 'function') {
+    renderStepHistory();
+  }
+
+  // 3. Clear cloud collections in Firestore
   if (db && currentUserId) {
     try {
-      const batch = db.batch();
-      const aggSnap = await db.collection('users').doc(currentUserId).collection('daily_aggregates').get();
-      aggSnap.forEach(doc => batch.delete(doc.ref));
+      const userDocRef = db.collection('users').doc(currentUserId);
+      const collectionsToClear = ['daily_aggregates', 'sessions', 'events', 'workout_sessions', 'watch_data'];
 
-      const sessionSnap = await db.collection('users').doc(currentUserId).collection('sessions').get();
-      sessionSnap.forEach(doc => batch.delete(doc.ref));
-
-      await batch.commit();
+      for (const collName of collectionsToClear) {
+        try {
+          const snap = await userDocRef.collection(collName).get();
+          if (!snap.empty) {
+            const docs = snap.docs;
+            for (let i = 0; i < docs.length; i += 400) {
+              const batch = db.batch();
+              const slice = docs.slice(i, i + 400);
+              slice.forEach(d => batch.delete(d.ref));
+              try {
+                await batch.commit();
+              } catch (delErr) {
+                console.warn(`Direct delete failed for ${collName}, falling back to zero-resetting:`, delErr);
+                // Fallback in case delete permission is blocked: reset values to zero so they don't load again
+                const resetBatch = db.batch();
+                slice.forEach(d => {
+                  if (collName === 'daily_aggregates') {
+                    resetBatch.set(d.ref, emptyDaily(d.id));
+                  } else if (collName === 'sessions' || collName === 'workout_sessions') {
+                    resetBatch.set(d.ref, { summary: {}, cleared: true, total_duration_s: 0, active_duration_s: 0 }, { merge: true });
+                  } else if (collName === 'watch_data') {
+                    resetBatch.set(d.ref, { steps: 0 });
+                  }
+                });
+                await resetBatch.commit().catch(() => {});
+              }
+            }
+          }
+        } catch (subErr) {
+          console.warn(`Error clearing collection ${collName}:`, subErr);
+        }
+      }
       appendSystemLog("Workout history cleared from cloud.");
     } catch (err) {
       console.error("Error clearing history in Firestore:", err);
@@ -1918,14 +2347,38 @@ async function clearWorkoutHistory() {
     }
   }
 
+  // 4. Re-populate 7-day window with zeroed daily maps
   const { days } = getSevenDaysWindow();
   days.forEach(d => {
     const k = dateKey(d);
     cachedDailyMap.set(k, emptyDaily(k));
   });
 
+  // 5. Update KPI and charts
   updateProfileViewForSelectedDate();
-  alert("Workout history has been cleared.");
+
+  // 6. Reset live exercise metrics and logs in the Fitness tab
+  resetAllExercisesDailyState();
+  const exLog = document.getElementById('exerciseLog');
+  if (exLog) exLog.innerHTML = '';
+
+  appendSystemLog("Workout history has been cleared.");
+  appendExerciseLog("Workout history has been cleared.");
+
+  // Non-intrusive feedback on the Clear History button
+  const clearBtn = document.getElementById('clearHistoryBtn');
+  if (clearBtn) {
+    const originalContent = clearBtn.innerHTML;
+    clearBtn.innerHTML = `
+      <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+      </svg>
+      <span class="text-emerald-400 font-bold">Cleared!</span>
+    `;
+    setTimeout(() => {
+      clearBtn.innerHTML = originalContent;
+    }, 2500);
+  }
 }
 
 // ---------- Workout Snapshot Image & PDF Generation ----------
@@ -2944,7 +3397,16 @@ function formatSeconds(sec) {
 }
 
 function dateKey(date) {
-  return date.toISOString().slice(0, 10);
+  if (!date) return '';
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return date;
+  }
+  const d = (date instanceof Date) ? date : (date && date.toDate ? date.toDate() : new Date(date));
+  if (isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function toDate(value) {

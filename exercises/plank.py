@@ -174,6 +174,7 @@ class PlankRunner(ExerciseRunner):
     def build_session_summary(self):
         return {
             'exercise': 'Plank',
+            'total_plank_time_s': round(self.plank_timer, 2),
             'metrics': [
                 ('Total Hold Time', f"{self.plank_timer:.1f}s"),
                 ('Total Sets', max(0, self.current_set - 1))

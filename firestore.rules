@@ -11,46 +11,43 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read, create, update: if ownsUser(userId);
-      allow delete: if false;
+      allow read, create, update, delete: if ownsUser(userId);
 
       match /sessions/{sessionId} {
-        allow read: if ownsUser(userId);
-        allow create, update: if ownsUser(userId);
-        allow delete: if false;
+        allow read, create, update, delete: if ownsUser(userId);
+      }
+
+      match /workout_sessions/{sessionId} {
+        allow read, create, update, delete: if ownsUser(userId);
       }
 
       // events: Pi writes via Admin SDK (bypasses rules), but allow create
-      // from the web for demo/testing and allow read for the live log.
+      // from the web for demo/testing, read for the live log, and delete for clear history.
       match /events/{eventId} {
-        allow read: if ownsUser(userId);
-        allow create: if ownsUser(userId);
-        allow update, delete: if false;
+        allow read, create, delete: if ownsUser(userId);
+        allow update: if false;
       }
 
       match /daily_aggregates/{dateId} {
-        allow read: if ownsUser(userId);
-        allow create, update: if ownsUser(userId);
-        allow delete: if false;
+        allow read, create, update, delete: if ownsUser(userId);
       }
 
       // watch_data: written by the web page via BLE sync.
       // Steps must be a non-negative number (int or float from JS).
       match /watch_data/{dateId} {
-        allow read: if ownsUser(userId);
+        allow read, delete: if ownsUser(userId);
         allow create, update: if ownsUser(userId)
           && request.resource.data.steps is number
           && request.resource.data.steps >= 0;
-        allow delete: if false;
       }
 
       match /control_commands/{commandId} {
-        allow read: if ownsUser(userId);
+        allow read, delete: if ownsUser(userId);
         allow create: if ownsUser(userId)
           && request.resource.data.from == "web"
           && request.resource.data.status == "pending"
-          && request.resource.data.action in ["force_stop", "switch_mode"];
-        allow update, delete: if false;
+          && request.resource.data.action in ["force_stop", "switch_mode", "start_exercise"];
+        allow update: if false;
       }
     }
   }

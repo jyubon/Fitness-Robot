@@ -43,10 +43,6 @@ class PushupsRunner(ExerciseRunner):
                 self.pushup_stage = 'up'
                 self.pushup_counter += 1
                 print(f"  Push-ups Count: {self.pushup_counter}")
-                try:
-                    publish_rep("pushups", set_num=self.current_set, count=self.pushup_counter)
-                except Exception:
-                    pass
 
         return is_body_straight, elbow_angle
 
@@ -97,6 +93,10 @@ class PushupsRunner(ExerciseRunner):
                             self.reps_in_set = 0
                             self.set_finished = False
                         self.reps_in_set += 1
+                        try:
+                            publish_rep("pushups", set_num=self.current_set, count=self.pushup_counter, in_set=self.reps_in_set)
+                        except Exception:
+                            pass
 
                         if self.reps_in_set >= 8:
                             print(f"\n✅ Push-up Set {self.current_set} Finished! Please rest.")
@@ -152,6 +152,7 @@ class PushupsRunner(ExerciseRunner):
     def build_session_summary(self):
         return {
             'exercise': 'Push-ups',
+            'total_reps': self.pushup_counter,
             'metrics': [
                 ('Total Push-ups', self.pushup_counter),
                 ('Total Sets', self.current_set)

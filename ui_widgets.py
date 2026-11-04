@@ -391,6 +391,14 @@ class FitnessRobotUI(tk.Tk):
             pass
 
     def launch_by_name(self, name):
+        if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
+            try:
+                self.after_cancel(self.summary_timer_id)
+            except Exception:
+                pass
+            self.summary_timer_id = None
+
+        force_stop.clear()
         name = str(name).upper().replace("-", "_").replace(" ", "_")
         if name in ("BICEP_CURLS", "BICEP_CURL"):
             self.launch_bicep_curls()
@@ -431,6 +439,11 @@ class FitnessRobotUI(tk.Tk):
             self.run_exercise("Plank", cb)
 
     def show_exercise_screen(self, exercise_name):
+        try:
+            publish_robot_state("FOLLOWING")
+        except Exception:
+            pass
+
         for widget in self.main_container.winfo_children():
             widget.destroy()
 

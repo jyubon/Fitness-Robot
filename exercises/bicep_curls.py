@@ -138,6 +138,7 @@ class BicepCurlsRunner(ExerciseRunner):
 
         prev_l = self.arms['left']['counter']
         prev_r = self.arms['right']['counter']
+        prev_min = min(prev_l, prev_r)
 
         if self.workout_state != "DOING_SET" or self.is_mid_workout_rest:
             l_fb, l_clr, l_stg, l_swing = "REST", ACCENT_GREEN, "REST", False
@@ -159,13 +160,23 @@ class BicepCurlsRunner(ExerciseRunner):
                 self.left_reps_at_set_start = prev_l
                 self.right_reps_at_set_start = prev_r
                 self.set_finished = False
+            cur_l = max(0, self.arms['left']['counter'] - self.left_reps_at_set_start)
+            cur_r = max(0, self.arms['right']['counter'] - self.right_reps_at_set_start)
+            self.reps_in_set = min(cur_l, cur_r)
             self.last_rep_time = now
+            total_curls = min(self.arms['left']['counter'], self.arms['right']['counter'])
+            is_full = total_curls > prev_min
             try:
                 publish_rep(
                     "bicep_curls",
                     set_num=self.current_set,
                     left=self.arms['left']['counter'],
-                    right=self.arms['right']['counter']
+                    right=self.arms['right']['counter'],
+                    count=total_curls,
+                    left_in_set=cur_l,
+                    right_in_set=cur_r,
+                    in_set=self.reps_in_set,
+                    is_full_rep=is_full
                 )
             except Exception:
                 pass
@@ -222,6 +233,7 @@ class BicepCurlsRunner(ExerciseRunner):
     def build_session_summary(self):
         return {
             'exercise': 'Bicep Curls',
+            'total_reps': min(self.arms['left']['counter'], self.arms['right']['counter']),
             'metrics': [
                 ('Left Reps', self.arms['left']['counter']),
                 ('Right Reps', self.arms['right']['counter']),

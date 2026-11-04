@@ -172,7 +172,7 @@ class SquatsRunner(ExerciseRunner):
                         self.last_rep_time = time.time()
                         self.set_started = True
                         try:
-                            publish_rep("squats", set_num=self.current_set, count=self.reps_in_set)
+                            publish_rep("squats", set_num=self.current_set, count=self.counter, in_set=self.reps_in_set)
                         except Exception:
                             pass
 
@@ -268,6 +268,7 @@ class SquatsRunner(ExerciseRunner):
     def build_session_summary(self):
         return {
             'exercise': 'Squats',
+            'total_reps': self.counter,
             'metrics': [
                 ('Total Reps', self.counter),
                 ('Total Sets', self.current_set)

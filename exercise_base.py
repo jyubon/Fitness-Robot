@@ -215,6 +215,8 @@ class ExerciseRunner:
         landmarker = None
         hand_landmarker = None
         session_started = False
+        force_stop.clear()
+        self.waiting_for_start = True
 
         window_name = self.exercise_title
         if self.ui is None:
@@ -238,6 +240,8 @@ class ExerciseRunner:
             landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
             hand_landmarker = create_hand_landmarker()
 
+            publish_robot_state("FOLLOWING", exercise=self.exercise_key)
+
             failed_reads = 0
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -252,7 +256,12 @@ class ExerciseRunner:
 
                 if force_stop.is_set():
                     print("  [REMOTE] Force Stop received from web UI")
+                    force_stop.clear()
                     send_command("STOP")
+                    try:
+                        publish_robot_state("STOPPED", exercise=self.exercise_key)
+                    except Exception:
+                        pass
                     break
 
                 self.frame_counter += 1
@@ -447,7 +456,12 @@ class ExerciseRunner:
                     pass
         finally:
             exercise_executing.clear()
+            force_stop.clear()
             send_command("STOP")
+            try:
+                publish_robot_state("STOPPED", exercise=self.exercise_key)
+            except Exception:
+                pass
             if landmarker is not None:
                 try: landmarker.close()
                 except Exception: pass

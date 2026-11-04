@@ -38,6 +38,14 @@ except Exception as e:
 
 _resolved_firebase_uid = FIREBASE_USER_ID
 
+def set_active_user(user_id, user_email=None):
+    """Set or update the active Firebase user ID from authenticated dashboard."""
+    global _resolved_firebase_uid
+    if not user_id:
+        return
+    _resolved_firebase_uid = user_id
+    print(f"✅ Firebase active user synced from client: {user_id} ({user_email})")
+
 def _resolve_firebase_user_id():
     """Resolve dashboard account while keeping explicit UID authoritative."""
     global _resolved_firebase_uid
@@ -154,6 +162,11 @@ def publish_event(event_type, payload):
                     "payload": p,
                     "ts": now
                 })
+                if event_type == "battery_voltage":
+                    user_ref.collection("device_status").document("battery").set({
+                        "voltage": p.get("voltage"),
+                        "updated_at": now
+                    }, merge=True)
                 _update_daily_aggregate_from_event(user_ref, event_type, p, now)
                 return
             except Exception:
@@ -168,7 +181,7 @@ def publish_event(event_type, payload):
 
 def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
     try:
-        date_str = ts.date().isoformat()
+        date_str = datetime.now().astimezone().strftime("%Y-%m-%d")
         aggregate_ref = user_ref.collection("daily_aggregates").document(date_str)
 
         if event_type == "rep":
@@ -178,11 +191,21 @@ def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
                 "form_good_count": firestore.Increment(1),
                 "updated_at": firestore.SERVER_TIMESTAMP
             }
-            if exercise in ("pushups", "squats", "bicep_curls"):
-                updates[f"reps.{exercise}"] = firestore.Increment(1)
+            if exercise in ("pushups", "squats"):
+                updates["reps"] = {exercise: firestore.Increment(1)}
+            elif exercise == "bicep_curls":
+                if payload.get("is_full_rep"):
+                    updates["reps"] = {exercise: firestore.Increment(1)}
+                elif payload.get("left") is not None and payload.get("right") is not None and payload.get("left") == payload.get("right"):
+                    updates["reps"] = {exercise: firestore.Increment(1)}
+                elif payload.get("left") is None and payload.get("right") is None:
+                    updates["reps"] = {exercise: firestore.Increment(1)}
             aggregate_ref.set(updates, merge=True)
 
         elif event_type == "form_error":
+            msg = str(payload.get("message") or "")
+            if "GET IN POSITION" in msg.upper() or "POSITIONING" in msg.upper():
+                return
             aggregate_ref.set({
                 "date": date_str,
                 "form_flaw_count": firestore.Increment(1),
@@ -202,6 +225,13 @@ def _update_daily_aggregate_from_event(user_ref, event_type, payload, ts):
             exercise = payload.get("exercise_type") or summary.get("exercise") or payload.get("exercise")
             if exercise == "plank":
                 plank_time = float(summary.get("total_plank_time_s") or summary.get("plank_time_s") or 0)
+                if not plank_time:
+                    for m_name, m_val in summary.get("metrics", []):
+                        if "Hold Time" in str(m_name):
+                            try:
+                                plank_time = float(str(m_val).replace("s", "").strip())
+                            except Exception:
+                                pass
                 if plank_time:
                     updates["plank_time_s"] = firestore.Increment(round(plank_time, 2))
 
@@ -393,8 +423,6 @@ def log_session_error(err_msg, cooldown=3.0, is_resting=False, person_missing=Fa
 
 def save_session_to_firestore(summary):
     """Save finalized session summary into Firestore user workout_sessions collection."""
-    global _session_id
-    _session_id = None
     if db is None:
         print("⚠️ Cannot save to Firestore: Database not initialized.")
         return
@@ -430,13 +458,14 @@ def print_session_error_summary():
 # ─── Firestore Remote Control Listener Thread ───
 def _control_listener():
     """Poll Firestore control commands for force_stop, switch_mode, start_exercise."""
-    user_ref = _firebase_user_ref()
-    if user_ref is None:
-        return
-
     processed = set()
     while True:
         try:
+            user_ref = _firebase_user_ref()
+            if user_ref is None:
+                time.sleep(1.0)
+                continue
+
             commands = user_ref.collection("control_commands").where("status", "==", "pending").stream()
             for doc in commands:
                 if doc.id in processed:
@@ -445,12 +474,16 @@ def _control_listener():
                 data = doc.to_dict() or {}
                 action = str(data.get("action") or "").lower()
                 if action == "force_stop":
+                    start_exercise.clear()
                     force_stop.set()
                 elif action == "switch_mode":
+                    force_stop.clear()
+                    start_exercise.clear()
                     mode = data.get("mode")
                     if mode:
                         remote_mode_queue.put(("switch", str(mode).upper()))
                 elif action == "start_exercise":
+                    force_stop.clear()
                     start_exercise.set()
 
                 processed.add(doc.id)
