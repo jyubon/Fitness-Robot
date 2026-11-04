@@ -727,6 +727,11 @@ body {
   .mobile-fab-force-stop {
     display: none !important;
   }
+
+  /* Remove Mobile Tracker card in non-mobile views */
+  #mobileTrackerBtn {
+    display: none !important;
+  }
 }
 
 /* Animations */

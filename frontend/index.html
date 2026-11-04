@@ -696,7 +696,7 @@
         <div id="subtabStepsView" class="hidden space-y-4">
 
           <!-- Top Row: Smartwatch Status Card & Mobile Tracker Button -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-stretch">
+          <div class="grid grid-cols-1 gap-4 items-stretch">
             <!-- 1. Smartwatch Status Card -->
             <div class="glass glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-center">
               <div class="flex items-center justify-between">
@@ -718,24 +718,24 @@
               </div>
             </div>
 
-            <!-- 2. Mobile Tracker Button (Right on desktop, below on mobile) -->
+            <!-- 2. Mobile Tracker Button (Visible only on mobile views; removed/hidden in non-mobile views) -->
             <a href="https://admirable-duckanoo-81d784.netlify.app/phone_tracker.html"
               id="mobileTrackerBtn"
               onclick="openMobileTracker(event)"
-              class="glass glass-card rounded-3xl p-4 sm:p-5 flex items-center justify-between group hover:border-cyan-400/50 hover:bg-white/[0.07] active:scale-[0.99] transition-all cursor-pointer">
+              class="flex md:hidden glass glass-card rounded-3xl p-4 sm:p-5 items-center justify-between group hover:border-lime-400/50 hover:bg-white/[0.07] active:scale-[0.99] transition-all cursor-pointer">
               <div class="flex items-center gap-3">
                 <div
-                  class="w-10 h-10 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-xl flex-shrink-0 group-hover:scale-105 transition-transform">
+                  class="w-10 h-10 rounded-2xl bg-lime-500/10 border border-lime-500/20 flex items-center justify-center text-xl flex-shrink-0 group-hover:scale-105 transition-transform">
                   📱
                 </div>
                 <div>
-                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide group-hover:text-cyan-400 transition-colors">
+                  <h3 class="text-sm sm:text-base font-extrabold text-white tracking-wide group-hover:text-lime-300 transition-colors">
                     Mobile Tracker
                   </h3>
                   <p class="text-[10px] sm:text-[11px] text-white/40">Phone Pedometer Sync</p>
                 </div>
               </div>
-              <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-500/15 border border-cyan-400/30 text-xs sm:text-sm font-bold text-cyan-300 group-hover:bg-cyan-500/25 group-hover:border-cyan-400 transition-all shadow-sm flex-shrink-0">
+              <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-lime-500/15 border border-lime-400/30 text-xs sm:text-sm font-bold text-lime-300 group-hover:bg-lime-500/25 group-hover:border-lime-400 transition-all shadow-sm flex-shrink-0">
                 <span>Launch</span>
                 <svg class="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
