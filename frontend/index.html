@@ -477,6 +477,11 @@
                   <div id="robotState" class="px-3 py-1.5 rounded-full text-xs font-bold shadow-md"
                     data-state="STOPPED">STOPPED</div>
                 </div>
+                <!-- Googly Eyes Touchscreen Widget -->
+                <div class="mt-2.5 pt-2 border-t border-white/10 text-center">
+                  <canvas id="frontendGooglyCanvas" width="220" height="64" class="rounded-2xl cursor-pointer mx-auto touch-none"></canvas>
+                  <div id="frontendEyeText" class="text-[10px] font-bold text-cyan-400 mt-1 uppercase tracking-wider">FitBot Eyes • Active</div>
+                </div>
               </div>
 
               <!-- 2. Robot Camera and Vision (Fixed & vertically centered on desktop; toggled on mobile) -->
@@ -1172,6 +1177,193 @@
 
   <!-- Script linked to app.js -->
   <script src="app.js"></script>
+  <script>
+  // ════════════════════════════════════════════════
+  //  TOUCHSCREEN GOOGLY EYES COMPONENT
+  // ════════════════════════════════════════════════
+  (function() {
+    const canvas = document.getElementById('frontendGooglyCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const label = document.getElementById('frontendEyeText');
+
+    let state = 'IDLE';
+    let targetX = 0, targetY = 0;
+    let currentX = 0, currentY = 0;
+    let velX = 0, velY = 0;
+    const springK = 0.22, damping = 0.72, restitution = 0.45;
+
+    let blinkProgress = 0, isBlinking = false, blinkClosing = true;
+    let lastBlink = performance.now(), nextBlink = 3000 + Math.random() * 3000;
+    let lastSaccade = performance.now(), saccadeInterval = 2000 + Math.random() * 2000;
+
+    function updatePhysics(now) {
+      const stateEl = document.getElementById('robotState');
+      const curState = stateEl ? (stateEl.textContent || '').trim().toUpperCase() : 'IDLE';
+
+      if (curState.includes('FOLLOW') || curState.includes('TRACK')) {
+        state = 'FOLLOWING';
+        if (label) label.textContent = '👀 Following User • Eyes Locked';
+      } else if (curState.includes('SEARCH')) {
+        state = 'SEARCHING';
+        if (label) label.textContent = '🔍 Searching for Motion...';
+      } else if (state !== 'INTERACTIVE') {
+        state = 'IDLE';
+        if (label) label.textContent = 'FitBot Eyes • Active';
+      }
+
+      if (state === 'SEARCHING') {
+        targetX = Math.sin(now * 0.005) * 0.95;
+        targetY = Math.sin(now * 0.0025) * 0.25;
+      } else if (state === 'IDLE') {
+        if (now - lastSaccade > saccadeInterval) {
+          lastSaccade = now;
+          saccadeInterval = 1800 + Math.random() * 2500;
+          if (Math.random() < 0.45) {
+            targetX = (Math.random() - 0.5) * 1.3;
+            targetY = (Math.random() - 0.5) * 0.9;
+          } else {
+            targetX = (Math.random() - 0.5) * 0.3;
+            targetY = (Math.random() - 0.5) * 0.2;
+          }
+        }
+      }
+
+      if (!isBlinking && (now - lastBlink > nextBlink)) {
+        isBlinking = true;
+        blinkClosing = true;
+        lastBlink = now;
+        nextBlink = 3000 + Math.random() * 4000;
+      }
+      if (isBlinking) {
+        if (blinkClosing) {
+          blinkProgress += 0.22;
+          if (blinkProgress >= 1.0) { blinkProgress = 1.0; blinkClosing = false; }
+        } else {
+          blinkProgress -= 0.22;
+          if (blinkProgress <= 0.0) { blinkProgress = 0.0; isBlinking = false; }
+        }
+      }
+
+      velX = (velX + (targetX - currentX) * springK) * damping;
+      velY = (velY + (targetY - currentY) * springK) * damping;
+      currentX += velX;
+      currentY += velY;
+
+      const dist = Math.hypot(currentX, currentY);
+      if (dist > 1.0) {
+        const nx = currentX / dist, ny = currentY / dist;
+        currentX = nx; currentY = ny;
+        const dot = velX * nx + velY * ny;
+        if (dot > 0) {
+          velX -= (1.0 + restitution) * dot * nx;
+          velY -= (1.0 + restitution) * dot * ny;
+        }
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const w = canvas.width, h = canvas.height;
+      const cx = w / 2, cy = h / 2;
+      const er = Math.min(w * 0.18, h * 0.42);
+      const pr = er * 0.46;
+      const spacing = er * 2.45;
+      const maxTravel = er - pr - 3;
+
+      [-1, 1].forEach(sign => {
+        const ecx = cx + sign * (spacing / 2);
+        ctx.beginPath();
+        ctx.arc(ecx, cy, er + 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#0a0d17';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(ecx, cy, er, 0, Math.PI * 2);
+        ctx.fillStyle = '#f8fafc';
+        ctx.fill();
+        ctx.strokeStyle = '#cbd5e1';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(ecx, cy, er - 2, Math.PI * 0.2, Math.PI * 0.8, false);
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        const px = ecx + currentX * maxTravel;
+        const py = cy + currentY * maxTravel;
+        ctx.beginPath();
+        ctx.arc(px, py, pr, 0, Math.PI * 2);
+        ctx.fillStyle = '#0f172a';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(px - pr * 0.32, py - pr * 0.32, pr * 0.32, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(px + pr * 0.35, py + pr * 0.35, pr * 0.16, 0, Math.PI * 2);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fill();
+
+        if (blinkProgress > 0.02) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(ecx, cy, er, 0, Math.PI * 2);
+          ctx.clip();
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(ecx - er, cy - er, er * 2, er * 2 * blinkProgress);
+          ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(ecx - er, cy - er, er * 2, er * 2 * blinkProgress);
+          ctx.restore();
+        }
+
+        const browTilt = state === 'FOLLOWING' ? 3.5 : (state === 'SEARCHING' ? -3.0 : 0);
+        const by = cy - er - 5;
+        ctx.beginPath();
+        ctx.moveTo(ecx - er * 0.85, by + browTilt * sign);
+        ctx.lineTo(ecx + er * 0.85, by - browTilt * sign);
+        ctx.strokeStyle = state === 'FOLLOWING' ? '#00e5a0' : '#38bdf8';
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      });
+    }
+
+    function loop(now) {
+      updatePhysics(now);
+      draw();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    function handlePointer(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const normX = ((clientX - rect.left) / rect.width - 0.5) * 2.2;
+      const normY = ((clientY - rect.top) / rect.height - 0.5) * 2.2;
+      targetX = Math.max(-1, Math.min(1, normX));
+      targetY = Math.max(-1, Math.min(1, normY));
+      state = 'INTERACTIVE';
+      if (label) label.textContent = '👀 Touch Tracking • Looking At You!';
+    }
+
+    canvas.addEventListener('pointerdown', handlePointer);
+    canvas.addEventListener('pointermove', (e) => { if (e.buttons === 1) handlePointer(e); });
+    canvas.addEventListener('click', () => {
+      velX += (Math.random() - 0.5) * 0.35;
+      velY += (Math.random() - 0.5) * 0.35;
+    });
+  })();
+  </script>
 </body>
 
 </html>

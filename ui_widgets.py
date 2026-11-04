@@ -8,6 +8,17 @@ import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import math
+import random
+import threading
+import time
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+from config import CAMERA_INDEX
 from audio_manager import terminate_current_audio
 from session_manager import (
     publish_robot_state,
@@ -29,6 +40,406 @@ except ImportError:
 
 # Global state for session summary
 last_session_summary = None
+
+
+
+class GooglyEyesWidget(tk.Canvas):
+    """
+    Animated Interactive Googly Eyes Widget for Touchscreen UI.
+    Simulates physical googly eyes with:
+      - Spring-damper physics with inertia and bouncing boundaries
+      - Specular glassy highlights for authentic 3D plastic craft look
+      - Smooth blinking and expressive eyelids/brows
+      - Real-time tracking of person (x, y) coordinates
+      - Interactive touch/drag tracking on touchscreen
+      - Autonomous lifelike saccades and curiosity when idle
+      - Emotional states: IDLE, FOLLOWING, SEARCHING, LOST, SURPRISED, INTERACTIVE
+    """
+    def __init__(
+        self,
+        parent,
+        width=380,
+        height=80,
+        eye_radius=None,
+        pupil_radius=None,
+        bg="#1E1E24",
+        invert_x=True,
+        interactive=True,
+        on_click=None,
+        **kwargs
+    ):
+        super().__init__(parent, width=width, height=height, bg=bg, highlightthickness=0, borderwidth=0, **kwargs)
+        self.w = width
+        self.h = height
+        self.invert_x = invert_x
+        self.interactive = interactive
+        self.on_click = on_click
+
+        # Eye geometries
+        self.custom_eye_radius = eye_radius
+        self.custom_pupil_radius = pupil_radius
+
+        # Physics parameters
+        # Normalized target [-1.0, 1.0]
+        self.target_x = 0.0
+        self.target_y = 0.0
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.vel_x = 0.0
+        self.vel_y = 0.0
+
+        # Physical constants
+        self.spring_k = 0.22      # Spring responsiveness
+        self.damping = 0.72       # Inertial damping (lower = more bouncy/wobbly)
+        self.restitution = 0.45   # Bounce off wall
+
+        # State & Emotion
+        self.state = "IDLE"       # IDLE, FOLLOWING, SEARCHING, LOST, SURPRISED, INTERACTIVE
+        self.last_target_update = time.time()
+        self.last_saccade_time = time.time()
+        self.saccade_interval = random.uniform(1.8, 3.5)
+
+        # Blinking state
+        self.blink_progress = 0.0 # 0.0 (open) to 1.0 (closed)
+        self.is_blinking = False
+        self.blink_speed = 0.22   # Blink step
+        self.blink_closing = True
+        self.last_blink_time = time.time()
+        self.next_blink_delay = random.uniform(3.0, 6.0)
+
+        # Bind touch/mouse events for touchscreen interactivity
+        if self.interactive:
+            self.bind("<Button-1>", self._on_touch)
+            self.bind("<B1-Motion>", self._on_touch)
+            self.bind("<ButtonRelease-1>", self._on_release)
+            self.bind("<Motion>", self._on_hover)
+
+        self.bind("<Configure>", self._on_resize)
+        self.running = True
+        self._animate()
+
+    def _on_resize(self, event):
+        if event.width > 10 and event.height > 10:
+            self.w = event.width
+            self.h = event.height
+            self._redraw()
+
+    def set_target(self, norm_x, norm_y, mode="FOLLOWING"):
+        """Set normalized target coordinate in [-1.0, 1.0]."""
+        self.state = mode
+        self.last_target_update = time.time()
+        tx = -norm_x if self.invert_x else norm_x
+        self.target_x = max(-1.0, min(1.0, tx))
+        self.target_y = max(-1.0, min(1.0, norm_y))
+
+    def set_mode(self, mode):
+        """Set emotion/tracking mode (IDLE, FOLLOWING, SEARCHING, LOST, SURPRISED)."""
+        self.state = mode
+        self.last_target_update = time.time()
+
+    def trigger_blink(self):
+        """Force a blink animation."""
+        self.is_blinking = True
+        self.blink_closing = True
+
+    def _on_touch(self, event):
+        """Touchscreen interaction: look directly at the finger."""
+        norm_x = (event.x / max(1, self.w) - 0.5) * 2.2
+        norm_y = (event.y / max(1, self.h) - 0.5) * 2.2
+        self.target_x = max(-1.0, min(1.0, norm_x))
+        self.target_y = max(-1.0, min(1.0, norm_y))
+        self.state = "INTERACTIVE"
+        self.last_target_update = time.time()
+        if callable(self.on_click):
+            try:
+                self.on_click()
+            except Exception:
+                pass
+
+    def _on_hover(self, event):
+        if self.state == "IDLE":
+            norm_x = (event.x / max(1, self.w) - 0.5) * 1.6
+            norm_y = (event.y / max(1, self.h) - 0.5) * 1.6
+            self.target_x = max(-0.8, min(0.8, norm_x))
+            self.target_y = max(-0.8, min(0.8, norm_y))
+            self.last_target_update = time.time()
+
+    def _on_release(self, event):
+        # Give a fun little wobble on release
+        self.vel_x += random.uniform(-0.18, 0.18)
+        self.vel_y += random.uniform(-0.18, 0.18)
+
+    def _update_physics(self):
+        now = time.time()
+
+        # Handle autonomous behaviors when idle or searching
+        if self.state == "SEARCHING":
+            # Rapid scanning search sweep
+            sweep = math.sin(now * 5.0) * 0.95
+            self.target_x = sweep
+            self.target_y = math.sin(now * 2.5) * 0.25
+        elif self.state == "LOST":
+            # Look up and around quizzically
+            self.target_x = math.sin(now * 2.0) * 0.6
+            self.target_y = -0.7 + math.cos(now * 3.0) * 0.2
+        elif self.state in ("IDLE", "INTERACTIVE"):
+            # If no target update for 2.5 seconds, resume natural saccades
+            if now - self.last_target_update > 2.5:
+                self.state = "IDLE"
+            if self.state == "IDLE":
+                if now - self.last_saccade_time > self.saccade_interval:
+                    self.last_saccade_time = now
+                    self.saccade_interval = random.uniform(1.8, 4.0)
+                    if random.random() < 0.45:
+                        self.target_x = random.uniform(-0.65, 0.65)
+                        self.target_y = random.uniform(-0.45, 0.45)
+                    else:
+                        self.target_x = random.uniform(-0.15, 0.15)
+                        self.target_y = random.uniform(-0.1, 0.1)
+
+        # Handle Blinking
+        if not self.is_blinking and (now - self.last_blink_time > self.next_blink_delay):
+            self.is_blinking = True
+            self.blink_closing = True
+            self.last_blink_time = now
+            self.next_blink_delay = random.uniform(3.0, 6.0)
+
+        if self.is_blinking:
+            if self.blink_closing:
+                self.blink_progress += self.blink_speed
+                if self.blink_progress >= 1.0:
+                    self.blink_progress = 1.0
+                    self.blink_closing = False
+            else:
+                self.blink_progress -= self.blink_speed
+                if self.blink_progress <= 0.0:
+                    self.blink_progress = 0.0
+                    self.is_blinking = False
+
+        # Spring-damper physics
+        acc_x = (self.target_x - self.current_x) * self.spring_k
+        acc_y = (self.target_y - self.current_y) * self.spring_k
+
+        self.vel_x = (self.vel_x + acc_x) * self.damping
+        self.vel_y = (self.vel_y + acc_y) * self.damping
+
+        self.current_x += self.vel_x
+        self.current_y += self.vel_y
+
+        # Bounding inside circular/elliptical eye dome
+        dist = math.hypot(self.current_x, self.current_y)
+        if dist > 1.0:
+            nx = self.current_x / dist
+            ny = self.current_y / dist
+            self.current_x = nx
+            self.current_y = ny
+            # Restitution bounce
+            dot = self.vel_x * nx + self.vel_y * ny
+            if dot > 0:
+                self.vel_x -= (1.0 + self.restitution) * dot * nx
+                self.vel_y -= (1.0 + self.restitution) * dot * ny
+
+    def _redraw(self):
+        self.delete("all")
+        w, h = self.w, self.h
+        if w < 20 or h < 20:
+            return
+
+        cx = w / 2
+        cy = h / 2
+
+        # Eye sizing
+        if self.custom_eye_radius:
+            er = self.custom_eye_radius
+        else:
+            er = min(w * 0.20, h * 0.42)
+
+        if self.custom_pupil_radius:
+            pr = self.custom_pupil_radius
+        else:
+            pr = er * 0.46
+
+        eye_spacing = er * 2.45
+        left_cx = cx - eye_spacing / 2
+        right_cx = cx + eye_spacing / 2
+
+        # Calculate pupil travel range
+        max_travel = er - pr - 3
+
+        # Eyebrows position offset based on emotion
+        brow_tilt = 0.0
+        if self.state == "FOLLOWING":
+            brow_tilt = 4.0
+        elif self.state == "SEARCHING":
+            brow_tilt = -3.0
+
+        # Draw left and right eyes
+        for ecx, eye_sign in ((left_cx, -1), (right_cx, 1)):
+            # Outer dark bezel / shadow
+            self.create_oval(
+                ecx - er - 4, cy - er - 4,
+                ecx + er + 4, cy + er + 4,
+                fill="#121318", outline="#2B2B36", width=2
+            )
+
+            # Sclera (White eye background)
+            self.create_oval(
+                ecx - er, cy - er,
+                ecx + er, cy + er,
+                fill="#FAFAFA", outline="#D2D6DC", width=2
+            )
+
+            # Subtle 3D inner rim shadow (top arc)
+            self.create_arc(
+                ecx - er + 2, cy - er + 2,
+                ecx + er - 2, cy + er - 2,
+                start=45, extent=120,
+                style="arc", outline="#C8CCD4", width=3
+            )
+
+            # Pupil position
+            px = ecx + self.current_x * max_travel
+            py = cy + self.current_y * max_travel
+
+            # Pupil (Googly disc)
+            self.create_oval(
+                px - pr, py - pr,
+                px + pr, py + pr,
+                fill="#15171C", outline="#0A0B0E", width=1
+            )
+
+            # Specular catchlight (primary white shiny highlight)
+            hl_r = pr * 0.32
+            hl_x = px - pr * 0.32
+            hl_y = py - pr * 0.32
+            self.create_oval(
+                hl_x - hl_r, hl_y - hl_r,
+                hl_x + hl_r, hl_y + hl_r,
+                fill="#FFFFFF", outline=""
+            )
+
+            # Tiny secondary catchlight (bottom right reflection)
+            hl_r2 = pr * 0.16
+            hl_x2 = px + pr * 0.35
+            hl_y2 = py + pr * 0.35
+            self.create_oval(
+                hl_x2 - hl_r2, hl_y2 - hl_r2,
+                hl_x2 + hl_r2, hl_y2 + hl_r2,
+                fill="#E2E8F0", outline=""
+            )
+
+            # Eyelid for Blinking
+            if self.blink_progress > 0.02:
+                lid_h = er * 2 * self.blink_progress
+                self.create_oval(
+                    ecx - er - 1, cy - er - 1,
+                    ecx + er + 1, cy - er + lid_h,
+                    fill="#1E1E24", outline="#2B2B36", width=2
+                )
+
+            # Expressive Eyebrow
+            brow_y = cy - er - 6
+            b_left_y = brow_y + (brow_tilt * eye_sign)
+            b_right_y = brow_y - (brow_tilt * eye_sign)
+            self.create_line(
+                ecx - er * 0.85, b_left_y,
+                ecx + er * 0.85, b_right_y,
+                fill="#96D75F" if self.state == "FOLLOWING" else "#50AFDF",
+                width=3, capstyle="round"
+            )
+
+    def _animate(self):
+        if not self.running:
+            return
+        self._update_physics()
+        self._redraw()
+        self.after(25, self._animate)
+
+    def destroy(self):
+        self.running = False
+        super().destroy()
+
+
+class HomeMotionTracker:
+    """
+    Lightweight background camera motion tracker for Home Screen ("just powered on").
+    Detects person motion in front of the camera and guides Googly Eyes.
+    Cleanly releases camera whenever an exercise or follower mode starts.
+    """
+    def __init__(self, camera_index=CAMERA_INDEX, on_motion_callback=None):
+        self.camera_index = camera_index
+        self.on_motion = on_motion_callback
+        self.running = False
+        self.thread = None
+        self._stop_event = threading.Event()
+
+    def start(self):
+        if self.running or cv2 is None:
+            return
+        self.running = True
+        self._stop_event.clear()
+        self.thread = threading.Thread(target=self._run, daemon=True, name="HomeMotionTracker")
+        self.thread.start()
+
+    def stop(self, timeout=0.8):
+        if not self.running:
+            return
+        self.running = False
+        self._stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=timeout)
+        self.thread = None
+
+    def _run(self):
+        if cv2 is None:
+            return
+        cap = None
+        try:
+            cap = cv2.VideoCapture(self.camera_index)
+            if not cap.isOpened():
+                return
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+
+            last_gray = None
+            while not self._stop_event.is_set():
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    time.sleep(0.1)
+                    continue
+
+                small = cv2.resize(frame, (160, 120))
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                gray = cv2.GaussianBlur(gray, (15, 15), 0)
+
+                if last_gray is None:
+                    last_gray = gray
+                    time.sleep(0.08)
+                    continue
+
+                diff = cv2.absdiff(last_gray, gray)
+                thresh = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)[1]
+                thresh = cv2.dilate(thresh, None, iterations=2)
+
+                M = cv2.moments(thresh)
+                if M["m00"] > 350:
+                    cx = M["m10"] / M["m00"]
+                    cy = M["m01"] / M["m00"]
+                    norm_x = (cx / 160.0 - 0.5) * 2.0
+                    norm_y = (cy / 120.0 - 0.5) * 2.0
+                    if self.on_motion:
+                        self.on_motion(norm_x, norm_y)
+
+                last_gray = gray
+                time.sleep(0.06)
+        except Exception:
+            pass
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
 
 
 class RoundedButton(tk.Canvas):
@@ -186,11 +597,15 @@ class RoundedFrame(tk.Canvas):
 class FitnessRobotUI(tk.Tk):
     """Main Touch Interface for Fitness Robot on Raspberry Pi 4."""
 
-    def __init__(self, exercise_callbacks=None):
+    def __init__(self, exercise_callbacks=None, fullscreen=True):
         super().__init__()
         self.title("Fitness Robot UI")
 
-        self.attributes("-fullscreen", True)
+        if fullscreen:
+            self.attributes("-fullscreen", True)
+        else:
+            self.geometry("800x480")
+            self.resizable(True, True)
         self.bind("<Escape>", lambda e: self.quit_app())
         self.configure(bg="#1E1E24")
 
@@ -207,8 +622,12 @@ class FitnessRobotUI(tk.Tk):
         self.is_resting = False
         self.stat_cards = {}
         self.exercise_callbacks = exercise_callbacks or {}
+        self.home_motion_tracker = None
+        self.home_eyes = None
+        self.follower_eyes = None
 
-        self.show_home_screen()
+        # Turn on screen: ONLY Googly Eyes displayed
+        self.show_eyes_only_screen()
         self.after(200, self.check_remote_commands)
 
     def show_home_screen(self):
@@ -234,24 +653,40 @@ class FitnessRobotUI(tk.Tk):
         except Exception:
             pass
 
+        # Header Title
         title_canvas = OutlinedLabel(
             self.main_container,
             text="FITNESS ROBOT",
-            font=("Helvetica", 24, "bold"),
+            font=("Helvetica", 18, "bold"),
             fg="#96D75F",
             outline_color="#000000",
-            height=40
+            height=30
         )
-        title_canvas.pack(pady=(5, 10))
+        title_canvas.pack(pady=(2, 2))
 
+        # Animated Interactive Googly Eyes ("just powered on" face)
+        self.home_eyes = GooglyEyesWidget(
+            self.main_container,
+            width=380,
+            height=72,
+            bg="#17171E",
+            invert_x=True,
+            interactive=True,
+            on_click=self.show_full_face_screen
+        )
+        self.home_eyes.pack(fill="x", padx=6, pady=(0, 4))
+
+        # Exercise & Mode Grid (Including Person Follow and Full Face Mode)
         grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
         grid_frame.pack(fill="both", expand=True)
 
         exercises = [
-            ("Bicep Curls", self.launch_bicep_curls, "#96D75F"),
-            ("Push-ups", self.launch_pushups, "#96D75F"),
-            ("Squats", self.launch_squats, "#96D75F"),
-            ("Plank", self.launch_plank, "#96D75F"),
+            ("👀 Person Follow", self.launch_person_follow, "#50AFDF"),
+            ("💪 Bicep Curls", self.launch_bicep_curls, "#96D75F"),
+            ("🤸 Push-ups", self.launch_pushups, "#96D75F"),
+            ("🏋️ Squats", self.launch_squats, "#96D75F"),
+            ("⏱️ Plank", self.launch_plank, "#96D75F"),
+            ("🤖 Robot Face", self.show_full_face_screen, "#E5B05E"),
         ]
 
         for i, (name, callback, color) in enumerate(exercises):
@@ -264,17 +699,20 @@ class FitnessRobotUI(tk.Tk):
                 outline_color=color,
                 outline_width=2,
                 radius=10,
-                font=("Helvetica", 12, "bold"),
-                height=45
+                font=("Helvetica", 11, "bold"),
+                height=38
             )
-            row = i // 2
-            col = i % 2
-            btn.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
+            row = i // 3
+            col = i % 3
+            btn.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
 
-        grid_frame.columnconfigure(0, weight=1)
-        grid_frame.columnconfigure(1, weight=1)
+        for col_idx in range(3):
+            grid_frame.columnconfigure(col_idx, weight=1)
         grid_frame.rowconfigure(0, weight=1)
         grid_frame.rowconfigure(1, weight=1)
+
+        # Start camera motion tracking on Home screen
+        self.start_home_camera()
 
         sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
         sys_frame.pack(fill="x", pady=(10, 5))
@@ -313,12 +751,16 @@ class FitnessRobotUI(tk.Tk):
 
     def run_exercise(self, exercise_name, func):
         global last_session_summary
+        self.stop_home_camera()
         self.exercise_active = True
         exercise_executing.set()
         self.home_clicked = False
         force_stop.clear()
         try:
-            self.show_exercise_screen(exercise_name)
+            if exercise_name == "Person Following":
+                self.show_follower_screen()
+            else:
+                self.show_exercise_screen(exercise_name)
             self.update()
             summary = func(self)
             if summary:
@@ -342,6 +784,12 @@ class FitnessRobotUI(tk.Tk):
                     self.next_remote_mode = None
                     force_stop.clear()
                     self.launch_by_name(mode)
+                elif exercise_name == "Person Following":
+                    # When robot came to a stop after person following -> show exercise selection dashboard!
+                    try:
+                        self.show_exercise_dashboard()
+                    except tk.TclError:
+                        pass
                 else:
                     try:
                         self.show_summary_screen()
@@ -524,6 +972,253 @@ class FitnessRobotUI(tk.Tk):
         )
         self.voice_status_label.pack(side="top", pady=5)
 
+
+    def start_home_camera(self):
+        """Start background camera motion tracker for home screen Googly Eyes."""
+        if cv2 is None:
+            return
+        try:
+            if self.home_motion_tracker is None:
+                def _on_motion(nx, ny):
+                    if hasattr(self, 'home_eyes') and self.home_eyes is not None and self.home_eyes.winfo_exists():
+                        self.home_eyes.set_target(nx, ny, mode="FOLLOWING")
+                self.home_motion_tracker = HomeMotionTracker(camera_index=CAMERA_INDEX, on_motion_callback=_on_motion)
+            self.home_motion_tracker.start()
+        except Exception:
+            pass
+
+    def stop_home_camera(self):
+        """Stop background camera motion tracker so exercises get exclusive camera access."""
+        if self.home_motion_tracker is not None:
+            try:
+                self.home_motion_tracker.stop(timeout=0.6)
+            except Exception:
+                pass
+
+    def show_full_face_screen(self):
+        """Display giant full-screen Googly Eyes on touchscreen."""
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+
+        top_bar = tk.Frame(self.main_container, bg="#1E1E24")
+        top_bar.pack(fill="x", pady=2)
+        tk.Label(top_bar, text="🤖 FITBOT FACE • Touch anywhere to exit", font=("Helvetica", 10, "bold"), fg="#50AFDF", bg="#1E1E24").pack(side="left", padx=10)
+        RoundedButton(top_bar, text="HOME", command=self.show_home_screen, bg_color="#FF9500", fg_color="#FFFFFF", radius=8, width=70, height=26, font=("Helvetica", 9, "bold")).pack(side="right", padx=10)
+
+        self.home_eyes = GooglyEyesWidget(
+            self.main_container,
+            width=460,
+            height=240,
+            bg="#17171E",
+            invert_x=True,
+            interactive=True,
+            on_click=self.show_home_screen
+        )
+        self.home_eyes.pack(fill="both", expand=True, padx=10, pady=5)
+        self.start_home_camera()
+
+    def show_eyes_only_screen(self):
+        """Turn-on / Standby screen: ONLY Googly Eyes displayed full screen."""
+        try:
+            publish_robot_state("READY")
+        except Exception:
+            pass
+        self.exercise_active = False
+        self.home_clicked = False
+
+        if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
+            try:
+                self.after_cancel(self.summary_timer_id)
+            except Exception:
+                pass
+            self.summary_timer_id = None
+
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+
+        try:
+            send_command("STOP")
+        except Exception:
+            pass
+
+        # ONLY THE EYES DISPLAYED FULL SCREEN WHEN TURNED ON
+        self.home_eyes = GooglyEyesWidget(
+            self.main_container,
+            bg="#17171E",
+            invert_x=True,
+            interactive=True,
+            on_click=self.launch_person_follow
+        )
+        self.home_eyes.pack(fill="both", expand=True)
+
+        # Start camera motion tracking so eyes track people in the room
+        self.start_home_camera()
+
+    def show_home_screen(self):
+        """Alias to show_eyes_only_screen."""
+        self.show_eyes_only_screen()
+
+    def show_follower_screen(self):
+        """Person Following screen: Googly Eyes FULL SCREEN."""
+        try:
+            publish_robot_state("FOLLOWING")
+        except Exception:
+            pass
+
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+
+        self.is_resting = False
+
+        # ONLY GOOGLY EYES FULL SCREEN DURING PERSON FOLLOWING
+        self.follower_eyes = GooglyEyesWidget(
+            self.main_container,
+            bg="#17171E",
+            invert_x=True,
+            interactive=True,
+            on_click=self.stop_following_and_show_dashboard
+        )
+        self.follower_eyes.pack(fill="both", expand=True)
+
+    def stop_following_and_show_dashboard(self):
+        """User tapped screen while following: stop following and display exercise dashboard."""
+        self.home_clicked = True
+        force_stop.set()
+        try:
+            send_command("STOP")
+        except Exception:
+            pass
+
+    def show_exercise_dashboard(self):
+        """Exercise selection dashboard displayed ONLY when robot comes to a stop after following."""
+        try:
+            publish_robot_state("READY")
+        except Exception:
+            pass
+        self.exercise_active = False
+        self.home_clicked = False
+
+        for widget in self.main_container.winfo_children():
+            widget.destroy()
+
+        try:
+            send_command("STOP")
+        except Exception:
+            pass
+
+        # Title Header
+        title_canvas = OutlinedLabel(
+            self.main_container,
+            text="CHOOSE YOUR WORKOUT",
+            font=("Helvetica", 17, "bold"),
+            fg="#96D75F",
+            outline_color="#000000",
+            height=30
+        )
+        title_canvas.pack(pady=(4, 2))
+
+        # Compact Googly Eyes Face Banner on Dashboard
+        self.home_eyes = GooglyEyesWidget(
+            self.main_container,
+            width=380,
+            height=65,
+            bg="#17171E",
+            invert_x=True,
+            interactive=True,
+            on_click=self.show_eyes_only_screen
+        )
+        self.home_eyes.pack(fill="x", padx=6, pady=(0, 4))
+
+        # Exercise Grid (Bicep Curls, Push-ups, Squats, Plank)
+        grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        grid_frame.pack(fill="both", expand=True, padx=4)
+
+        exercises = [
+            ("💪 Bicep Curls", self.launch_bicep_curls, "#96D75F"),
+            ("🤸 Push-ups", self.launch_pushups, "#96D75F"),
+            ("🏋️ Squats", self.launch_squats, "#96D75F"),
+            ("⏱️ Plank", self.launch_plank, "#96D75F"),
+            ("👀 Follow Again", self.launch_person_follow, "#50AFDF"),
+            ("🤖 Back to Eyes", self.show_eyes_only_screen, "#E5B05E"),
+        ]
+
+        for i, (name, callback, color) in enumerate(exercises):
+            btn = RoundedButton(
+                grid_frame,
+                text=name,
+                command=callback,
+                bg_color="#2B2B36",
+                fg_color=color,
+                outline_color=color,
+                outline_width=2,
+                radius=10,
+                font=("Helvetica", 11, "bold"),
+                height=36
+            )
+            row = i // 3
+            col = i % 3
+            btn.grid(row=row, column=col, sticky="nsew", padx=4, pady=3)
+
+        for col_idx in range(3):
+            grid_frame.columnconfigure(col_idx, weight=1)
+        grid_frame.rowconfigure(0, weight=1)
+        grid_frame.rowconfigure(1, weight=1)
+
+        # System Bar: Reboot, Shutdown, Exit
+        sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        sys_frame.pack(fill="x", pady=(4, 2))
+        for i in range(3):
+            sys_frame.columnconfigure(i, weight=1)
+
+        sys_buttons = [
+            ("REBOOT", self.confirm_reboot, "#E5B05E"),
+            ("SHUTDOWN", self.confirm_shutdown, "#5F5FDF"),
+            ("EXIT APP", self.quit_app, "#5F5FDF"),
+        ]
+
+        for i, (name, callback, color) in enumerate(sys_buttons):
+            btn = RoundedButton(
+                sys_frame,
+                text=name,
+                command=callback,
+                bg_color="#2B2B36",
+                fg_color=color,
+                outline_color=color,
+                outline_width=2,
+                radius=8,
+                font=("Helvetica", 9, "bold"),
+                height=28
+            )
+            btn.grid(row=0, column=i, sticky="ew", padx=4)
+
+        self.voice_status_label = tk.Label(
+            self.main_container,
+            text="🎤 Voice: Say 'FitBot start <exercise>' or 'FitBot follow me'",
+            font=("Helvetica", 9, "bold"),
+            fg="#96D75F",
+            bg="#1E1E24"
+        )
+        self.voice_status_label.pack(side="bottom", pady=(2, 2))
+
+        self.start_home_camera()
+
+    def update_follower_eyes(self, person_x=None, person_y=None, command="STOP", state="TRACKING", d_zone="GOOD", h_zone="CENTER"):
+        """Update the Googly Eyes and UI labels during Person Following mode."""
+        try:
+            if not self.winfo_exists():
+                return
+            if hasattr(self, 'follower_eyes') and self.follower_eyes is not None and self.follower_eyes.winfo_exists():
+                if command == "SEARCH" or "SEARCH" in str(state).upper():
+                    self.follower_eyes.set_mode("SEARCHING")
+                elif state == "LOST" or person_x is None:
+                    self.follower_eyes.set_mode("LOST")
+                else:
+                    norm_x = (person_x - 0.5) * 2.0
+                    norm_y = (person_y - 0.5) * 2.0 if person_y is not None else 0.0
+                    self.follower_eyes.set_target(norm_x, norm_y, mode="FOLLOWING")
+        except Exception:
+            pass
+
     def update_stat_card(self, label, value, color="#96D75F"):
         try:
             if not self.winfo_exists():
@@ -697,6 +1392,7 @@ class FitnessRobotUI(tk.Tk):
                 subprocess.run(["shutdown", "/r", "/t", "0"])
 
     def quit_app(self):
+        self.stop_home_camera()
         try:
             terminate_current_audio()
         except Exception:
@@ -713,3 +1409,41 @@ class FitnessRobotUI(tk.Tk):
                 pass
         self.destroy()
         os._exit(0)
+
+
+if __name__ == "__main__":
+    import time
+
+    def mock_exercise_runner(exercise_name):
+        def _runner(ui):
+            print(f"[TEST RUNNER] Starting simulated exercise: {exercise_name}")
+            ui.update_stat_card("Reps", "10")
+            ui.update_stat_card("Target", "15")
+            ui.set_feedback("Great form! Keep going...")
+            ui.update()
+            time.sleep(2)
+            return {
+                'exercise': exercise_name,
+                'metrics': [('Reps Completed', '10'), ('Duration', '32.5s'), ('Target Reps', '15')],
+                'errors': ['Watch back posture on repetition 5']
+            }
+        return _runner
+
+    test_callbacks = {
+        "person_follow": mock_exercise_runner("Person Follower"),
+        "bicep_curls": mock_exercise_runner("Bicep Curls"),
+        "pushups": mock_exercise_runner("Push-ups"),
+        "squats": mock_exercise_runner("Squats"),
+        "plank": mock_exercise_runner("Plank"),
+    }
+
+    print("==================================================")
+    print(" Fitness Robot Touchscreen Dashboard (Preview Mode)")
+    print("==================================================")
+    print("Running in windowed mode (800x480).")
+    print("Click any exercise button to test exercise & summary screens.")
+    print("Press ESC or click EXIT APP to quit.")
+    print("==================================================")
+
+    app = FitnessRobotUI(exercise_callbacks=test_callbacks, fullscreen=False)
+    app.mainloop()

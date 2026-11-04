@@ -258,6 +258,8 @@ def main(ui=None):
     h_zone = "CENTER"
     last_results = None
     lost_since = None
+    has_followed = False
+    stopped_at_dest_since = None
 
     while True:
         ret, frame = cap.read()
@@ -300,6 +302,19 @@ def main(ui=None):
                 command, state, d_zone, h_zone = calculate_command(person_x, body_height)
                 send_command(command)
 
+                # Check if robot has actively followed and now came to a stop in front of user
+                if command not in ("STOP", "SEARCH"):
+                    has_followed = True
+                    stopped_at_dest_since = None
+                elif has_followed and command == "STOP" and d_zone == "GOOD" and h_zone == "CENTER":
+                    now_stop = time.time()
+                    if stopped_at_dest_since is None:
+                        stopped_at_dest_since = now_stop
+                    elif now_stop - stopped_at_dest_since >= 2.0:
+                        print("🎯 Robot followed user and came to a stop! Transitioning to exercise selection dashboard...")
+                        send_command("STOP")
+                        break
+
                 try:
                     if person_x is not None and command not in ("STOP", "SEARCH"):
                         publish_robot_state("FOLLOWING", command)
@@ -309,6 +324,11 @@ def main(ui=None):
                         publish_robot_state("STOPPED", command)
                 except Exception:
                     pass
+
+                # Update touchscreen UI Googly Eyes with person's motion
+                if ui is not None and hasattr(ui, 'update_follower_eyes'):
+                    person_y = nose[1] if nose else 0.5
+                    ui.update_follower_eyes(person_x, person_y, command=command, state=state, d_zone=d_zone, h_zone=h_zone)
             else:
                 now = time.time()
                 if lost_since is None:
@@ -323,6 +343,10 @@ def main(ui=None):
 
                 d_zone = "GOOD"
                 h_zone = "CENTER"
+
+                # Update touchscreen UI Googly Eyes when lost or searching
+                if ui is not None and hasattr(ui, 'update_follower_eyes'):
+                    ui.update_follower_eyes(person_x=None, person_y=None, command=command, state=state, d_zone=d_zone, h_zone=h_zone)
 
             if DEBUG and SHOW_FPS and frame_counter % (30 * FRAME_SKIP) == 0:
                 det = "👤" if person_x is not None else "❌"

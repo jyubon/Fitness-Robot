@@ -48,7 +48,6 @@ COMMAND_VOICE_FILE_MAP = {
     "PUSHUPS":      "025_starting_pushups.mp3",
     "SQUATS":       "026_starting_squats.mp3",
     "PLANK":        "027_starting_plank.mp3",
-    "HOME":         "028_returning_to_main_menu.mp3",
     "ROTATE":       "029_rotating.mp3",
     "ROTATE_LEFT":  "030_turning_left.mp3",
     "ROTATE_RIGHT": "031_turning_right.mp3",
