@@ -25,3 +25,7 @@ firebase-admin>=6.5
 # Optional: if you want to run the Pi-side publisher with asyncio WS client
 # (already covered by websocket-client above for simple thread-based, or use 'websockets' for async)
 pyserial>=3.5
+
+# --- Vosk Offline Voice Recognition ---
+vosk>=0.3.45
+sounddevice>=0.4.6
