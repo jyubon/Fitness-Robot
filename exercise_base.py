@@ -318,6 +318,16 @@ class ExerciseRunner:
                             if not self._handle_person_lost():
                                 break
 
+                        if self.ui is not None and hasattr(self.ui, 'update_follower_eyes'):
+                            if results and results.pose_landmarks:
+                                lm = results.pose_landmarks[0]
+                                nose = get_pt(lm, 0)
+                                person_x = (lm[23].x + lm[24].x) / 2 if len(lm) > 24 else lm[0].x
+                                person_y = nose[1] if nose else 0.5
+                                self.ui.update_follower_eyes(person_x, person_y, command="FORWARD", state="FOLLOWING")
+                            else:
+                                self.ui.update_follower_eyes(person_x=None, person_y=None, command="SEARCH", state="SEARCHING")
+
                         draw_follow_phase_overlay(image, self.view_position)
                         local_stream_server.update_frame(image)
 
