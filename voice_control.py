@@ -167,29 +167,30 @@ def _execute_timed_motion(direction, duration=2.5):
     then automatically issue STOP, unless interrupted.
     Uses manual override so active camera tracking does not clobber the move.
     """
-    global _motion_thread
-    _motion_stop_event.set()
-    if _motion_thread and _motion_thread.is_alive():
-        _motion_thread.join(timeout=0.5)
-    _motion_stop_event.clear()
-
-    def _worker():
-        set_manual_motion_override(True)
-        try:
-            send_command(direction, manual=True)
-            start_ts = time.time()
-            while time.time() - start_ts < duration:
-                if _motion_stop_event.wait(0.4):
-                    break
-                # Heartbeat to avoid ESP32 failsafe timeout (2.0s)
-                send_command(direction, manual=True)
-        finally:
-            send_command("STOP", manual=True)
-            set_manual_motion_override(False)
-            print(f"🤖 [ROBOT] Completed {direction} movement.")
-
-    _motion_thread = threading.Thread(target=_worker, daemon=True)
-    _motion_thread.start()
+    # ── EXHIBITION STATIONARY MODE: Motion execution disabled for reuse later ──
+    # global _motion_thread
+    # _motion_stop_event.set()
+    # if _motion_thread and _motion_thread.is_alive():
+    #     _motion_thread.join(timeout=0.5)
+    # _motion_stop_event.clear()
+    #
+    # def _worker():
+    #     set_manual_motion_override(True)
+    #     try:
+    #         send_command(direction, manual=True)
+    #         start_ts = time.time()
+    #         while time.time() - start_ts < duration:
+    #             if _motion_stop_event.wait(0.4):
+    #                 break
+    #             send_command(direction, manual=True)
+    #     finally:
+    #         send_command("STOP", manual=True)
+    #         set_manual_motion_override(False)
+    #         print(f"🤖 [ROBOT] Completed {direction} movement.")
+    #
+    # _motion_thread = threading.Thread(target=_worker, daemon=True)
+    # _motion_thread.start()
+    send_command("STOP", manual=True)
 
 
 def _execute_stop_motion():
@@ -233,12 +234,14 @@ def _run_action(intent, text):
         force_stop.set()
 
     elif a_type == "motion":
-        reg = get_registry()
-        max_dur = float(getattr(reg, "MAX_MOTION_DURATION", 10.0))
-        duration = float(params.get("duration", action.get("duration", 2.0)))
-        duration *= float(params.get("scale", 1.0))
-        duration = max(0.3, min(duration, max_dur))
-        _execute_timed_motion(action.get("direction", "STOP"), duration=duration)
+        # ── EXHIBITION STATIONARY MODE: Motion action disabled for reuse later ──
+        # reg = get_registry()
+        # max_dur = float(getattr(reg, "MAX_MOTION_DURATION", 10.0))
+        # duration = float(params.get("duration", action.get("duration", 2.0)))
+        # duration *= float(params.get("scale", 1.0))
+        # duration = max(0.3, min(duration, max_dur))
+        # _execute_timed_motion(action.get("direction", "STOP"), duration=duration)
+        send_command("STOP", manual=True)
 
     elif a_type == "mode":
         mode = action.get("mode")

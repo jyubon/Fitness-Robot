@@ -299,19 +299,25 @@ class ExerciseRunner:
                         if results and results.pose_landmarks:
                             self.lost_start_time = None
                             draw_skeleton(image, results)
-                            robot_status = adjust_robot_position(
-                                self.exercise_key.upper(), results,
-                                in_exercise_mode=False,
-                                get_pt_fn=get_pt,
-                                get_body_height_fn=get_body_height
-                            )
+                            # ── EXHIBITION STATIONARY MODE: Keep robot stationary while tracking for reuse later ──
+                            # robot_status = adjust_robot_position(
+                            #     self.exercise_key.upper(), results,
+                            #     in_exercise_mode=False,
+                            #     get_pt_fn=get_pt,
+                            #     get_body_height_fn=get_body_height
+                            # )
+                            robot_status = "TRACKING"
+                            send_command("STOP")
                         else:
-                            robot_status = adjust_robot_position(
-                                self.exercise_key.upper(), None,
-                                in_exercise_mode=False,
-                                get_pt_fn=get_pt,
-                                get_body_height_fn=get_body_height
-                            )
+                            # ── EXHIBITION STATIONARY MODE: Keep robot stationary while searching for reuse later ──
+                            # robot_status = adjust_robot_position(
+                            #     self.exercise_key.upper(), None,
+                            #     in_exercise_mode=False,
+                            #     get_pt_fn=get_pt,
+                            #     get_body_height_fn=get_body_height
+                            # )
+                            robot_status = "TRACKING"
+                            send_command("STOP")
 
                         if robot_status == "LOST_TIMEOUT":
                             send_command("STOP")

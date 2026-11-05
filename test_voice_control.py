@@ -48,31 +48,32 @@ def test_home_screen_commands():
     clear_wake_word_window()
 
     test_phrases = {
-        # Safety & movement
+        # Safety & stationary controls
         "stop": "STOP",
         "freeze robot": "STOP",
         "halt": "STOP",
-        "rotate": "ROTATE",
-        "fitbot rotate": "ROTATE",
-        "spin around": "ROTATE",
-        "rotate left": "ROTATE_LEFT",
-        "turn left now": "ROTATE_LEFT",
-        "rotate right": "ROTATE_RIGHT",
-        "turn right": "ROTATE_RIGHT",
-        "move left": "MOVE_LEFT",
-        "fitbot move left": "MOVE_LEFT",
-        "slide left": "MOVE_LEFT",
-        "move right": "MOVE_RIGHT",
-        "fitbot move right": "MOVE_RIGHT",
-        "go right a bit": "MOVE_RIGHT",
-        "go forward": "FORWARD",
-        "robot could you please move forward a little bit": "FORWARD",
-        "please drive backward": "BACKWARD",
-        "go forward left": "FWD_LEFT",
+        # ── EXHIBITION STATIONARY MODE: Movement tests commented out for reuse later ──
+        # "rotate": "ROTATE",
+        # "fitbot rotate": "ROTATE",
+        # "spin around": "ROTATE",
+        # "rotate left": "ROTATE_LEFT",
+        # "turn left now": "ROTATE_LEFT",
+        # "rotate right": "ROTATE_RIGHT",
+        # "turn right": "ROTATE_RIGHT",
+        # "move left": "MOVE_LEFT",
+        # "fitbot move left": "MOVE_LEFT",
+        # "slide left": "MOVE_LEFT",
+        # "move right": "MOVE_RIGHT",
+        # "fitbot move right": "MOVE_RIGHT",
+        # "go right a bit": "MOVE_RIGHT",
+        # "go forward": "FORWARD",
+        # "robot could you please move forward a little bit": "FORWARD",
+        # "please drive backward": "BACKWARD",
+        # "go forward left": "FWD_LEFT",
         # Follow me & exercise modes
-        "follow me": "FOLLOW_ME",
-        "can you follow me please": "FOLLOW_ME",
-        "fitbot follow me": "FOLLOW_ME",
+        # "follow me": "FOLLOW_ME",
+        # "can you follow me please": "FOLLOW_ME",
+        # "fitbot follow me": "FOLLOW_ME",
         "hey robot i think i want to start squats now": "SQUATS",
         "let us do pushups": "PUSHUPS",
         "okay lets do some push ups": "PUSHUPS",
@@ -151,12 +152,13 @@ def test_exercise_mode_wake_word():
             "fitbot pause the workout": "PAUSE",
             "fitbot resume": "RESUME",
             "fitbot start": "START",
-            "fitbot rotate": "ROTATE",
-            "fitbot rotate left": "ROTATE_LEFT",
-            "fitbot rotate right": "ROTATE_RIGHT",
-            "fitbot move left": "MOVE_LEFT",
-            "fitbot move right": "MOVE_RIGHT",
-            "fitbot follow me": "FOLLOW_ME",
+            # ── EXHIBITION STATIONARY MODE: Exercise motion tests commented out for reuse later ──
+            # "fitbot rotate": "ROTATE",
+            # "fitbot rotate left": "ROTATE_LEFT",
+            # "fitbot rotate right": "ROTATE_RIGHT",
+            # "fitbot move left": "MOVE_LEFT",
+            # "fitbot move right": "MOVE_RIGHT",
+            # "fitbot follow me": "FOLLOW_ME",
             "fitbot go home": "HOME",
             "fitbot what's the time now": "TIME_NOW",
             "fitbot what is the date today": "DATE_TODAY",
@@ -164,9 +166,10 @@ def test_exercise_mode_wake_word():
             "fitbot hello": "HELLO",
             "hello fitbot": "HELLO",
             # Common Vosk 2-word phonetic transcriptions of "FitBot"
-            "fit bot move left": "MOVE_LEFT",
-            "fit but rotate": "ROTATE",
-            "feet bot follow me": "FOLLOW_ME",
+            # "fit bot move left": "MOVE_LEFT",
+            # "fit but rotate": "ROTATE",
+            # "feet bot follow me": "FOLLOW_ME",
+            "fit bot pause": "PAUSE",
         }
         failures = []
         for phrase, expected in accepted_during_exercise.items():
@@ -179,9 +182,9 @@ def test_exercise_mode_wake_word():
         # 3. Two-step wake word: saying "FitBot" alone wakes FitBot, then next command executes
         clear_wake_word_window()
         assert parse_voice_command("FitBot", exercising=True) == "WAKE_UP"
-        assert parse_voice_command("move left", exercising=True) == "MOVE_LEFT"
+        assert parse_voice_command("pause", exercising=True) == "PAUSE"
         # Window is consumed after one command
-        assert parse_voice_command("move right", exercising=True) is None
+        assert parse_voice_command("resume", exercising=True) is None
 
         print("✅ Exercise mode 'FitBot' wake-word enforcement tests passed!")
     finally:
@@ -200,8 +203,9 @@ def test_param_extraction():
     assert extract_params(normalize("move back for three seconds"))["duration"] == 3.0
     assert extract_params(normalize("do ten reps"))["count"] == 10
     assert extract_params(normalize("move forward a little"))["scale"] == 0.5
-    intent = extract_intent("FitBot go forward for four seconds", exercising=True)
-    assert intent.name == "FORWARD" and intent.params["duration"] == 4.0
+    # ── EXHIBITION STATIONARY MODE: FORWARD command disabled, testing parameter extraction helper directly
+    # intent = extract_intent("FitBot go forward for four seconds", exercising=True)
+    # assert intent.name == "FORWARD" and intent.params["duration"] == 4.0
     print("✅ Parameter extraction tests passed!")
 
 
@@ -217,32 +221,25 @@ def test_command_execution():
     assert execute_voice_command("What's the time now")
     assert "time now is" in get_last_voice_reply().lower()
 
-    # 2. Movement commands (rotate, move left, move right)
-    assert execute_voice_command("rotate", exercising=False)
-    assert get_voice_state()[3] == "ROTATE"
+    # 2. Stationary Stop command
+    assert execute_voice_command("stop", exercising=False)
+    assert get_voice_state()[3] == "STOP"
     _execute_stop_motion()
 
-    assert execute_voice_command("move left", exercising=False)
-    assert get_voice_state()[3] == "MOVE_LEFT"
-    _execute_stop_motion()
+    # ── EXHIBITION STATIONARY MODE: Movement execution tests commented out for reuse later ──
+    # assert execute_voice_command("rotate", exercising=False)
+    # assert get_voice_state()[3] == "ROTATE"
+    # _execute_stop_motion()
+    # assert execute_voice_command("move left", exercising=False)
+    # assert get_voice_state()[3] == "MOVE_LEFT"
+    # _execute_stop_motion()
+    # assert execute_voice_command("follow me", exercising=False)
+    # cmd_type, mode = remote_mode_queue.get_nowait()
+    # assert (cmd_type, mode) == ("switch", "PERSON_FOLLOW")
 
-    assert execute_voice_command("move right", exercising=False)
-    assert get_voice_state()[3] == "MOVE_RIGHT"
-    _execute_stop_motion()
-
-    # 3. Follow me command
-    assert execute_voice_command("follow me", exercising=False)
-    cmd_type, mode = remote_mode_queue.get_nowait()
-    assert (cmd_type, mode) == ("switch", "PERSON_FOLLOW")
-
-    # 4. During exercise execution: require "FitBot"
+    # 3. During exercise execution: require "FitBot"
     exercise_executing.set()
     try:
-        assert not execute_voice_command("move left")  # rejected without FitBot
-        assert execute_voice_command("FitBot move left")  # accepted with FitBot
-        assert get_voice_state()[3] == "MOVE_LEFT"
-        _execute_stop_motion()
-
         pause_request.clear()
         assert not execute_voice_command("pause")  # rejected without FitBot
         assert execute_voice_command("FitBot pause")  # accepted with FitBot
