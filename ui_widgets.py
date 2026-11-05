@@ -1039,7 +1039,7 @@ class FitnessRobotUI(tk.Tk):
             bg="#000000",
             invert_x=True,
             interactive=True,
-            on_click=self.launch_person_follow
+            on_click=self.show_exercise_dashboard
         )
         self.home_eyes.pack(fill="both", expand=True)
 
@@ -1104,40 +1104,29 @@ class FitnessRobotUI(tk.Tk):
         except Exception:
             pass
 
+        self.stop_home_camera()
+        self.home_eyes = None
+
         # Title Header
         title_canvas = OutlinedLabel(
             self.main_container,
             text="CHOOSE YOUR WORKOUT",
-            font=("Helvetica", 17, "bold"),
+            font=("Helvetica", 16, "bold"),
             fg="#96D75F",
             outline_color="#000000",
-            height=30
+            height=32
         )
-        title_canvas.pack(pady=(4, 2))
+        title_canvas.pack(pady=(6, 8))
 
-        # Compact Googly Eyes Face Banner on Dashboard
-        self.home_eyes = GooglyEyesWidget(
-            self.main_container,
-            width=380,
-            height=65,
-            bg="#000000",
-            invert_x=True,
-            interactive=True,
-            on_click=self.show_eyes_only_screen
-        )
-        self.home_eyes.pack(fill="x", padx=6, pady=(0, 4))
-
-        # Exercise Grid (Bicep Curls, Push-ups, Squats, Plank)
+        # Exercise Grid - 4 Exercise Modes in 2x2 Grid
         grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        grid_frame.pack(fill="both", expand=True, padx=4)
+        grid_frame.pack(fill="both", expand=True, padx=8, pady=(0, 6))
 
         exercises = [
-            ("💪 Bicep Curls", self.launch_bicep_curls, "#96D75F"),
-            ("🤸 Push-ups", self.launch_pushups, "#96D75F"),
-            ("🏋️ Squats", self.launch_squats, "#96D75F"),
-            ("⏱️ Plank", self.launch_plank, "#96D75F"),
-            ("👀 Follow Again", self.launch_person_follow, "#50AFDF"),
-            ("🤖 Back to Eyes", self.show_eyes_only_screen, "#E5B05E"),
+            ("Bicep Curls", self.launch_bicep_curls, "#96D75F"),
+            ("Push-ups", self.launch_pushups, "#96D75F"),
+            ("Squats", self.launch_squats, "#96D75F"),
+            ("Plank", self.launch_plank, "#96D75F"),
         ]
 
         for i, (name, callback, color) in enumerate(exercises):
@@ -1149,15 +1138,15 @@ class FitnessRobotUI(tk.Tk):
                 fg_color=color,
                 outline_color=color,
                 outline_width=2,
-                radius=10,
-                font=("Helvetica", 11, "bold"),
-                height=36
+                radius=12,
+                font=("Helvetica", 14, "bold"),
+                height=52
             )
-            row = i // 3
-            col = i % 3
-            btn.grid(row=row, column=col, sticky="nsew", padx=4, pady=3)
+            row = i // 2
+            col = i % 2
+            btn.grid(row=row, column=col, sticky="nsew", padx=6, pady=5)
 
-        for col_idx in range(3):
+        for col_idx in range(2):
             grid_frame.columnconfigure(col_idx, weight=1)
         grid_frame.rowconfigure(0, weight=1)
         grid_frame.rowconfigure(1, weight=1)
