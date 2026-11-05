@@ -58,8 +58,8 @@ class GooglyEyesWidget(tk.Canvas):
     def __init__(
         self,
         parent,
-        width=380,
-        height=80,
+        width=480,
+        height=320,
         eye_radius=None,
         pupil_radius=None,
         bg="#000000",
@@ -248,10 +248,18 @@ class GooglyEyesWidget(tk.Canvas):
         cx = w / 2
         cy = h / 2
 
-        # Scale based on canvas size, precisely matching reference aspect ratio
-        eye_w = min(w * 0.32, h * 0.65 * 2.36)
-        eye_h = eye_w / 2.36
-        spacing = eye_w * 1.58
+        # Scale based on canvas size, fitted for 480x320 screen resolution
+        if h > 100:
+            # Full screen mode: calibrated to 480x320 screen resolution
+            outer_span = min(w * 0.90, h * 1.38)
+            eye_w = outer_span / 2.50
+            spacing = eye_w * 1.50
+            eye_h = eye_w / 2.15
+        else:
+            # Compact banner on dashboard header
+            eye_w = min(w * 0.32, h * 0.65 * 2.36)
+            eye_h = eye_w / 2.36
+            spacing = eye_w * 1.58
 
         left_cx = cx - spacing / 2
         right_cx = cx + spacing / 2
@@ -585,7 +593,7 @@ class FitnessRobotUI(tk.Tk):
         if fullscreen:
             self.attributes("-fullscreen", True)
         else:
-            self.geometry("800x480")
+            self.geometry("480x320")
             self.resizable(True, True)
         self.bind("<Escape>", lambda e: self.quit_app())
         self.configure(bg="#1E1E24")
@@ -1008,6 +1016,7 @@ class FitnessRobotUI(tk.Tk):
         self.home_clicked = False
         self.configure(bg="#000000")
         self.main_container.configure(bg="#000000")
+        self.main_container.pack_configure(padx=0, pady=0)
 
         if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
             try:
@@ -1049,6 +1058,7 @@ class FitnessRobotUI(tk.Tk):
             pass
         self.configure(bg="#000000")
         self.main_container.configure(bg="#000000")
+        self.main_container.pack_configure(padx=0, pady=0)
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -1084,6 +1094,7 @@ class FitnessRobotUI(tk.Tk):
         self.home_clicked = False
         self.configure(bg="#1E1E24")
         self.main_container.configure(bg="#1E1E24")
+        self.main_container.pack_configure(padx=5, pady=5)
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -1427,7 +1438,7 @@ if __name__ == "__main__":
     print("==================================================")
     print(" Fitness Robot Touchscreen Dashboard (Preview Mode)")
     print("==================================================")
-    print("Running in windowed mode (800x480).")
+    print("Running in windowed mode (480x320).")
     print("Click any exercise button to test exercise & summary screens.")
     print("Press ESC or click EXIT APP to quit.")
     print("==================================================")
