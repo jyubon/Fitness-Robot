@@ -814,7 +814,9 @@ class FitnessRobotUI(tk.Tk):
 
     def show_exercise_screen(self, exercise_name):
         try:
-            publish_robot_state("FOLLOWING")
+            # ── EXHIBITION MODE: State ACTIVE immediately (positioning bypassed) ──
+            # publish_robot_state("FOLLOWING")
+            publish_robot_state("ACTIVE")
         except Exception:
             pass
 
@@ -853,7 +855,7 @@ class FitnessRobotUI(tk.Tk):
 
         self.feedback_label = tk.Label(
             self.main_container,
-            text="Aligning and tracking...",
+            text="",
             font=("Helvetica", 14, "bold"),
             fg="#EBEBEF",
             bg="#000000",
@@ -866,18 +868,20 @@ class FitnessRobotUI(tk.Tk):
         self.bottom_bar = tk.Frame(self.main_container, bg="#000000")
         self.bottom_bar.pack(fill="x", side="bottom", pady=10)
 
-        self.start_btn = RoundedButton(
-            self.bottom_bar,
-            text="Start",
-            command=self.set_start_clicked,
-            bg_color="#96D75F",
-            fg_color="#000000",
-            radius=10,
-            width=100,
-            height=35,
-            font=("Helvetica", 12, "bold")
-        )
-        self.start_btn.pack(side="left", padx=10)
+        # ── EXHIBITION MODE: Start button commented out for reuse later ──
+        # self.start_btn = RoundedButton(
+        #     self.bottom_bar,
+        #     text="Start",
+        #     command=self.set_start_clicked,
+        #     bg_color="#96D75F",
+        #     fg_color="#000000",
+        #     radius=10,
+        #     width=100,
+        #     height=35,
+        #     font=("Helvetica", 12, "bold")
+        # )
+        # self.start_btn.pack(side="left", padx=10)
+        self.start_btn = None
 
         self.home_btn = RoundedButton(
             self.bottom_bar,
