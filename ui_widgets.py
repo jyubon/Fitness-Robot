@@ -432,17 +432,19 @@ class HomeMotionTracker:
 
 
 class RoundedButton(tk.Canvas):
-    def __init__(self, parent, text, command, bg_color, fg_color="#1E1E24", radius=15, font=("Helvetica", 12, "bold"), height=50, width=None, outline_color=None, outline_width=3, **kwargs):
+    def __init__(self, parent, text, command, bg_color, fg_color="#1E1E24", radius=15, font=("Helvetica", 12, "bold"), height=50, width=None, outline_color=None, outline_width=3, gradient_color=None, **kwargs):
         super().__init__(parent, borderwidth=0, highlightthickness=0, bg=parent["bg"], height=height, **kwargs)
         if width:
             self.configure(width=width)
         self.command = command
         self.bg_color = bg_color
+        self.gradient_color = gradient_color
         self.fg_color = fg_color
         self.radius = radius
         self.text = text
         self.font = font
         self.pressed = False
+        self.hovered = False
         self.outline_color = outline_color
         self.outline_width = outline_width
 
@@ -452,51 +454,108 @@ class RoundedButton(tk.Canvas):
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
 
-    def _draw(self, event=None):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        r = min(self.radius, w // 2, h // 2)
-        bw = self.outline_width if self.outline_color else 0
+    def _hex_to_rgb(self, h):
+        h = h.lstrip("#")
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-        if w <= 0 or h <= 0:
-            return
-
-        color = self.bg_color
-        if self.pressed:
-            color = self._darken_color(self.bg_color)
-
-        self.create_oval(bw, bw, r*2+bw, r*2+bw, fill=color, outline=color)
-        self.create_oval(w - r*2 - bw, bw, w - bw, r*2+bw, fill=color, outline=color)
-        self.create_oval(bw, h - r*2 - bw, r*2+bw, h - bw, fill=color, outline=color)
-        self.create_oval(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, fill=color, outline=color)
-
-        self.create_rectangle(r+bw, bw, w - r - bw, h - bw, fill=color, outline=color)
-        self.create_rectangle(bw, r+bw, w - bw, h - r - bw, fill=color, outline=color)
-
-        if self.outline_color and bw > 0:
-            self.create_arc(bw, bw, r*2+bw, r*2+bw, start=90, extent=90, style="arc", outline=self.outline_color, width=bw)
-            self.create_arc(w - r*2 - bw, bw, w - bw, r*2+bw, start=0, extent=90, style="arc", outline=self.outline_color, width=bw)
-            self.create_arc(bw, h - r*2 - bw, r*2+bw, h - bw, start=180, extent=90, style="arc", outline=self.outline_color, width=bw)
-            self.create_arc(w - r*2 - bw, h - r*2 - bw, w - bw, h - bw, start=270, extent=90, style="arc", outline=self.outline_color, width=bw)
-
-            self.create_line(r+bw, bw, w - r - bw, bw, fill=self.outline_color, width=bw)
-            self.create_line(r+bw, h - bw, w - r - bw, h - bw, fill=self.outline_color, width=bw)
-            self.create_line(bw, r+bw, bw, h - r - bw, fill=self.outline_color, width=bw)
-            self.create_line(w - bw, r+bw, w - bw, h - r - bw, fill=self.outline_color, width=bw)
-
-        self.create_text(w // 2, h // 2, text=self.text, fill=self.fg_color, font=self.font)
-
-    def _darken_color(self, hex_color):
+    def _brighten_color(self, hex_color, amount=22):
         try:
             if hex_color.startswith("#"):
                 r = int(hex_color[1:3], 16)
                 g = int(hex_color[3:5], 16)
                 b = int(hex_color[5:7], 16)
-                return f"#{max(0, r-30):02x}{max(0, g-30):02x}{max(0, b-30):02x}"
+                return f"#{min(255, r+amount):02x}{min(255, g+amount):02x}{min(255, b+amount):02x}"
         except Exception:
             pass
         return hex_color
+
+    def _darken_color(self, hex_color, amount=30):
+        try:
+            if hex_color.startswith("#"):
+                r = int(hex_color[1:3], 16)
+                g = int(hex_color[3:5], 16)
+                b = int(hex_color[5:7], 16)
+                return f"#{max(0, r-amount):02x}{max(0, g-amount):02x}{max(0, b-amount):02x}"
+        except Exception:
+            pass
+        return hex_color
+
+    def _draw(self, event=None):
+        self.delete("all")
+        w = self.winfo_width()
+        h = self.winfo_height()
+        r = min(self.radius, w // 2, h // 2)
+        bw = self.outline_width if (self.outline_color and self.outline_width > 0) else 0
+
+        if w <= 0 or h <= 0:
+            return
+
+        if self.gradient_color:
+            c1 = self.bg_color
+            c2 = self.gradient_color
+            if self.pressed:
+                c1 = self._darken_color(c1, 40)
+                c2 = self._darken_color(c2, 40)
+            elif self.hovered:
+                c1 = self._brighten_color(c1, 20)
+                c2 = self._brighten_color(c2, 20)
+
+            rgb1 = self._hex_to_rgb(c1)
+            rgb2 = self._hex_to_rgb(c2)
+
+            for y in range(h):
+                t = y / max(1, h - 1)
+                cr = int(rgb1[0] + (rgb2[0] - rgb1[0]) * t)
+                cg = int(rgb1[1] + (rgb2[1] - rgb1[1]) * t)
+                cb = int(rgb1[2] + (rgb2[2] - rgb1[2]) * t)
+                line_color = f"#{cr:02x}{cg:02x}{cb:02x}"
+                if y < r:
+                    dx = r - math.sqrt(max(0, r * r - (r - y) ** 2))
+                elif y > h - r:
+                    dy = y - (h - r)
+                    dx = r - math.sqrt(max(0, r * r - dy * dy))
+                else:
+                    dx = 0
+                self.create_line(int(dx), y, int(w - dx), y, fill=line_color)
+        else:
+            color = self.bg_color
+            if self.pressed:
+                color = self._darken_color(self.bg_color)
+            elif self.hovered:
+                color = self._brighten_color(self.bg_color)
+
+            self.create_oval(bw, bw, r * 2 + bw, r * 2 + bw, fill=color, outline=color)
+            self.create_oval(w - r * 2 - bw, bw, w - bw, r * 2 + bw, fill=color, outline=color)
+            self.create_oval(bw, h - r * 2 - bw, r * 2 + bw, h - bw, fill=color, outline=color)
+            self.create_oval(w - r * 2 - bw, h - r * 2 - bw, w - bw, h - bw, fill=color, outline=color)
+
+            self.create_rectangle(r + bw, bw, w - r - bw, h - bw, fill=color, outline=color)
+            self.create_rectangle(bw, r + bw, w - bw, h - r - bw, fill=color, outline=color)
+
+        if self.outline_color and bw > 0:
+            self.create_arc(bw, bw, r * 2 + bw, r * 2 + bw, start=90, extent=90, style="arc", outline=self.outline_color, width=bw)
+            self.create_arc(w - r * 2 - bw, bw, w - bw, r * 2 + bw, start=0, extent=90, style="arc", outline=self.outline_color, width=bw)
+            self.create_arc(bw, h - r * 2 - bw, r * 2 + bw, h - bw, start=180, extent=90, style="arc", outline=self.outline_color, width=bw)
+            self.create_arc(w - r * 2 - bw, h - r * 2 - bw, w - bw, h - bw, start=270, extent=90, style="arc", outline=self.outline_color, width=bw)
+
+            self.create_line(r + bw, bw, w - r - bw, bw, fill=self.outline_color, width=bw)
+            self.create_line(r + bw, h - bw, w - r - bw, h - bw, fill=self.outline_color, width=bw)
+            self.create_line(bw, r + bw, bw, h - r - bw, fill=self.outline_color, width=bw)
+            self.create_line(w - bw, r + bw, w - bw, h - r - bw, fill=self.outline_color, width=bw)
+
+        self.create_text(w // 2, h // 2, text=self.text, fill=self.fg_color, font=self.font)
+
+    def _on_enter(self, event):
+        self.hovered = True
+        self.configure(cursor="hand2")
+        self._draw()
+
+    def _on_leave(self, event):
+        self.hovered = False
+        self.configure(cursor="")
+        if self.pressed:
+            self.pressed = False
+        self._draw()
 
     def _on_press(self, event):
         self.pressed = True
@@ -509,14 +568,7 @@ class RoundedButton(tk.Canvas):
             if self.command:
                 self.command()
 
-    def _on_enter(self, event):
-        self.configure(cursor="hand2")
 
-    def _on_leave(self, event):
-        self.configure(cursor="")
-        if self.pressed:
-            self.pressed = False
-            self._draw()
 
 
 class OutlinedLabel(tk.Canvas):
@@ -977,9 +1029,9 @@ class FitnessRobotUI(tk.Tk):
             pass
         self.exercise_active = False
         self.home_clicked = False
-        self.configure(bg="#1E1E24")
-        self.main_container.configure(bg="#1E1E24")
-        self.main_container.pack_configure(padx=5, pady=5)
+        self.configure(bg="#000000")
+        self.main_container.configure(bg="#000000")
+        self.main_container.pack_configure(padx=8, pady=6)
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -992,44 +1044,46 @@ class FitnessRobotUI(tk.Tk):
         self.stop_home_camera()
         self.home_eyes = None
 
-        # Title Header
+        # Title Header with #C6FF34 text & #7F3AED violet outline on #000000
         title_canvas = OutlinedLabel(
             self.main_container,
             text="CHOOSE YOUR WORKOUT",
             font=("Helvetica", 16, "bold"),
-            fg="#96D75F",
-            outline_color="#000000",
-            height=32
+            fg="#C6FF34",
+            outline_color="#7F3AED",
+            height=32,
+            bg_color="#000000"
         )
-        title_canvas.pack(pady=(6, 8))
+        title_canvas.pack(pady=(4, 6))
 
-        # Exercise Grid - 4 Exercise Modes in 2x2 Grid
-        grid_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        grid_frame.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        # Exercise Grid - 4 Exercise Modes in 2x2 Grid (Border removed, #7F3AED to #1E0638 gradient, #C6FF34 text)
+        grid_frame = tk.Frame(self.main_container, bg="#000000")
+        grid_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
 
         exercises = [
-            ("Bicep Curls", self.launch_bicep_curls, "#96D75F"),
-            ("Push-ups", self.launch_pushups, "#96D75F"),
-            ("Squats", self.launch_squats, "#96D75F"),
-            ("Plank", self.launch_plank, "#96D75F"),
+            ("Bicep Curls", self.launch_bicep_curls),
+            ("Push-ups", self.launch_pushups),
+            ("Squats", self.launch_squats),
+            ("Plank", self.launch_plank),
         ]
 
-        for i, (name, callback, color) in enumerate(exercises):
+        for i, (name, callback) in enumerate(exercises):
             btn = RoundedButton(
                 grid_frame,
                 text=name,
                 command=callback,
-                bg_color="#2B2B36",
-                fg_color=color,
-                outline_color=color,
-                outline_width=2,
-                radius=12,
+                bg_color="#7F3AED",
+                gradient_color="#1E0638",
+                fg_color="#C6FF34",
+                outline_color=None,
+                outline_width=0,
+                radius=14,
                 font=("Helvetica", 14, "bold"),
                 height=52
             )
             row = i // 2
             col = i % 2
-            btn.grid(row=row, column=col, sticky="nsew", padx=6, pady=5)
+            btn.grid(row=row, column=col, sticky="nsew", padx=6, pady=4)
 
         for col_idx in range(2):
             grid_frame.columnconfigure(col_idx, weight=1)
@@ -1037,15 +1091,15 @@ class FitnessRobotUI(tk.Tk):
         grid_frame.rowconfigure(1, weight=1)
 
         # System Bar: Reboot, Shutdown, Exit
-        sys_frame = tk.Frame(self.main_container, bg="#1E1E24")
-        sys_frame.pack(fill="x", pady=(4, 2))
+        sys_frame = tk.Frame(self.main_container, bg="#000000")
+        sys_frame.pack(fill="x", pady=(2, 2))
         for i in range(3):
             sys_frame.columnconfigure(i, weight=1)
 
         sys_buttons = [
-            ("REBOOT", self.confirm_reboot, "#E5B05E"),
-            ("SHUTDOWN", self.confirm_shutdown, "#5F5FDF"),
-            ("EXIT APP", self.quit_app, "#5F5FDF"),
+            ("REBOOT", self.confirm_reboot, "#7F3AED"),
+            ("SHUTDOWN", self.confirm_shutdown, "#7F3AED"),
+            ("EXIT APP", self.quit_app, "#7F3AED"),
         ]
 
         for i, (name, callback, color) in enumerate(sys_buttons):
@@ -1053,10 +1107,11 @@ class FitnessRobotUI(tk.Tk):
                 sys_frame,
                 text=name,
                 command=callback,
-                bg_color="#2B2B36",
+                bg_color="#18072B",
+                gradient_color="#0A0214",
                 fg_color=color,
-                outline_color=color,
-                outline_width=2,
+                outline_color=None,
+                outline_width=0,
                 radius=8,
                 font=("Helvetica", 9, "bold"),
                 height=28
@@ -1067,12 +1122,10 @@ class FitnessRobotUI(tk.Tk):
             self.main_container,
             text="🎤 Voice: Say 'FitBot start <exercise>' or 'FitBot follow me'",
             font=("Helvetica", 9, "bold"),
-            fg="#96D75F",
-            bg="#1E1E24"
+            fg="#C6FF34",
+            bg="#000000"
         )
         self.voice_status_label.pack(side="bottom", pady=(2, 2))
-
-        self.start_home_camera()
 
     def update_follower_eyes(self, person_x=None, person_y=None, command="STOP", state="TRACKING", d_zone="GOOD", h_zone="CENTER"):
         """Update the Googly Eyes and UI labels during Person Following mode."""
