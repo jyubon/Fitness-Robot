@@ -648,13 +648,13 @@ class FitnessRobotUI(tk.Tk):
             self.geometry("480x320")
             self.resizable(True, True)
         self.bind("<Escape>", lambda e: self.quit_app())
-        self.configure(bg="#1E1E24")
+        self.configure(bg="#000000")
 
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
-        self.style.configure('.', background='#1E1E24', foreground='#EBEBEF')
+        self.style.configure('.', background='#000000', foreground='#EBEBEF')
 
-        self.main_container = tk.Frame(self, bg="#1E1E24")
+        self.main_container = tk.Frame(self, bg="#000000")
         self.main_container.pack(fill="both", expand=True, padx=5, pady=5)
 
         self.exercise_active = False
@@ -818,6 +818,10 @@ class FitnessRobotUI(tk.Tk):
         except Exception:
             pass
 
+        self.configure(bg="#000000")
+        self.main_container.configure(bg="#000000")
+        self.main_container.pack_configure(padx=8, pady=6)
+
         for widget in self.main_container.winfo_children():
             widget.destroy()
 
@@ -827,11 +831,11 @@ class FitnessRobotUI(tk.Tk):
             text=exercise_name,
             font=("Helvetica", 20, "bold"),
             fg="#96D75F",
-            bg="#1E1E24"
+            bg="#000000"
         )
         self.ex_title_label.pack(anchor="w", pady=(5, 10), padx=5)
 
-        self.stats_row_frame = tk.Frame(self.main_container, bg="#1E1E24")
+        self.stats_row_frame = tk.Frame(self.main_container, bg="#000000")
         self.stats_row_frame.pack(anchor="w", fill="x", pady=5, padx=5)
         self.stat_cards = {}
 
@@ -840,7 +844,7 @@ class FitnessRobotUI(tk.Tk):
             text="",
             font=("Helvetica", 14, "bold"),
             fg="#FF3B30",
-            bg="#1E1E24",
+            bg="#000000",
             wraplength=450,
             justify="left",
             anchor="w"
@@ -852,14 +856,14 @@ class FitnessRobotUI(tk.Tk):
             text="Aligning and tracking...",
             font=("Helvetica", 14, "bold"),
             fg="#EBEBEF",
-            bg="#1E1E24",
+            bg="#000000",
             wraplength=450,
             justify="left",
             anchor="w"
         )
         self.feedback_label.pack(anchor="w", fill="x", pady=10, padx=5)
 
-        self.bottom_bar = tk.Frame(self.main_container, bg="#1E1E24")
+        self.bottom_bar = tk.Frame(self.main_container, bg="#000000")
         self.bottom_bar.pack(fill="x", side="bottom", pady=10)
 
         self.start_btn = RoundedButton(
@@ -867,7 +871,7 @@ class FitnessRobotUI(tk.Tk):
             text="Start",
             command=self.set_start_clicked,
             bg_color="#96D75F",
-            fg_color="#1E1E24",
+            fg_color="#000000",
             radius=10,
             width=100,
             height=35,
@@ -893,7 +897,7 @@ class FitnessRobotUI(tk.Tk):
             text="🎤 Voice: Say \"FitBot <command>\"",
             font=("Helvetica", 9, "bold"),
             fg="#96D75F",
-            bg="#1E1E24",
+            bg="#000000",
             wraplength=230,
         )
         self.voice_status_label.pack(side="top", pady=5)
@@ -926,7 +930,7 @@ class FitnessRobotUI(tk.Tk):
         for widget in self.main_container.winfo_children():
             widget.destroy()
 
-        top_bar = tk.Frame(self.main_container, bg="#1E1E24")
+        top_bar = tk.Frame(self.main_container, bg="#000000")
         top_bar.pack(fill="x", pady=2)
         tk.Label(top_bar, text="🤖 FITBOT FACE • Touch anywhere to exit", font=("Helvetica", 10, "bold"), fg="#50AFDF", bg="#1E1E24").pack(side="left", padx=10)
         RoundedButton(top_bar, text="HOME", command=self.show_home_screen, bg_color="#FF9500", fg_color="#FFFFFF", radius=8, width=70, height=26, font=("Helvetica", 9, "bold")).pack(side="right", padx=10)
@@ -1044,17 +1048,15 @@ class FitnessRobotUI(tk.Tk):
         self.stop_home_camera()
         self.home_eyes = None
 
-        # Title Header with #C6FF34 text & #7F3AED violet outline on #000000
-        title_canvas = OutlinedLabel(
+        # Title Header in solid Lime #C6FF34 without outline
+        title_label = tk.Label(
             self.main_container,
             text="CHOOSE YOUR WORKOUT",
             font=("Helvetica", 16, "bold"),
             fg="#C6FF34",
-            outline_color="#7F3AED",
-            height=32,
-            bg_color="#000000"
+            bg="#000000"
         )
-        title_canvas.pack(pady=(4, 6))
+        title_label.pack(pady=(6, 6))
 
         # Exercise Grid - 4 Exercise Modes in 2x2 Grid (Border removed, #7F3AED to #1E0638 gradient, #C6FF34 text)
         grid_frame = tk.Frame(self.main_container, bg="#000000")
@@ -1152,7 +1154,7 @@ class FitnessRobotUI(tk.Tk):
             if label not in self.stat_cards:
                 card = RoundedFrame(
                     self.stats_row_frame,
-                    bg_color="#2B2B36",
+                    bg_color="#000000",
                     border_color=color,
                     border_width=2,
                     radius=10,
@@ -1162,10 +1164,10 @@ class FitnessRobotUI(tk.Tk):
                 card.pack(side="left", padx=3)
                 card.pack_propagate(False)
 
-                lbl = tk.Label(card, text=f"{label}:", font=("Helvetica", 10, "bold"), fg=color, bg="#2B2B36")
+                lbl = tk.Label(card, text=f"{label}:", font=("Helvetica", 10, "bold"), fg=color, bg="#000000")
                 lbl.pack(anchor="w", padx=10, pady=(10, 2))
 
-                val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 18, "bold"), fg="#FFFFFF", bg="#2B2B36")
+                val_lbl = tk.Label(card, text=str(value), font=("Helvetica", 18, "bold"), fg="#FFFFFF", bg="#000000")
                 val_lbl.pack(anchor="w", padx=10)
 
                 self.stat_cards[label] = (card, val_lbl, lbl)
@@ -1252,17 +1254,17 @@ class FitnessRobotUI(tk.Tk):
             text=f"SESSION SUMMARY: {summary['exercise'].upper()}",
             font=("Helvetica", 14, "bold"),
             fg="#96D75F",
-            bg="#1E1E24"
+            bg="#000000"
         )
         title_label.pack(pady=(5, 10))
 
-        card_container = tk.Frame(self.main_container, bg="#2B2B36", height=150)
+        card_container = tk.Frame(self.main_container, bg="#000000", height=150)
         card_container.pack(fill="x", padx=10, pady=5)
         card_container.pack_propagate(False)
 
-        canvas = tk.Canvas(card_container, bg="#2B2B36", highlightthickness=0)
+        canvas = tk.Canvas(card_container, bg="#000000", highlightthickness=0)
         scrollbar = tk.Scrollbar(card_container, orient="vertical", command=canvas.yview)
-        card_frame = tk.Frame(canvas, bg="#2B2B36", padx=10, pady=10)
+        card_frame = tk.Frame(canvas, bg="#000000", padx=10, pady=10)
 
         card_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=card_frame, anchor="nw", width=420)
@@ -1271,16 +1273,16 @@ class FitnessRobotUI(tk.Tk):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 12, "bold"), fg="#50AFDF", bg="#2B2B36").pack(anchor="w", pady=(0, 5))
+        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 12, "bold"), fg="#50AFDF", bg="#000000").pack(anchor="w", pady=(0, 5))
 
         for metric, val in summary['metrics']:
-            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 10), fg="#EBEBEF", bg="#2B2B36")
+            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 10), fg="#EBEBEF", bg="#000000")
             lbl.pack(anchor="w", pady=1)
 
         if summary.get('errors'):
-            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 12, "bold"), fg="#E5B05E", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
+            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 12, "bold"), fg="#E5B05E", bg="#000000").pack(anchor="w", pady=(10, 5))
             for err in set(summary['errors']):
-                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 10), fg="#E5B05E", bg="#2B2B36", wraplength=380, justify="left")
+                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 10), fg="#E5B05E", bg="#000000", wraplength=380, justify="left")
                 lbl.pack(anchor="w", pady=1)
         else:
             tk.Label(card_frame, text="✅ Perfect posture! No mistakes detected.", font=("Helvetica", 10, "italic"), fg="#96D75F", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
