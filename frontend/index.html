@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Fitness Robot • AI Training System</title>
+  <title>Fitness Robot | Dashboard</title>
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png">
@@ -134,7 +134,8 @@
         <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
           <div class="flex items-center justify-between">
             <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">🤖 Robot &amp; Camera Link</span>
-            <span id="robotConnectStatusBadge" class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-white/5 text-white/40 border border-white/10">Disconnected</span>
+            <span id="robotConnectStatusBadge"
+              class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-white/5 text-white/40 border border-white/10">Disconnected</span>
           </div>
           <div class="flex gap-2">
             <input id="cameraUrl" type="text" placeholder="http://fitness.local:8081/stream"
@@ -178,6 +179,8 @@
             </div>
           </div>
         </div>
+
+
       </div>
     </div>
   </header>
@@ -249,6 +252,15 @@
         <!-- Error Container -->
         <div id="authError"
           class="mt-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs hidden text-center">
+        </div>
+
+        <!-- Admin Portal Direct Link -->
+        <div class="mt-4 pt-3 border-t border-white/10 text-center">
+          <a href="admin.html"
+            class="inline-flex items-center gap-1.5 text-xs text-indigo-400/80 hover:text-indigo-300 font-bold hover:underline transition-colors">
+            <span>🛡️ Administrator Portal</span>
+            <span>→</span>
+          </a>
         </div>
       </div>
 
@@ -1167,7 +1179,9 @@
         <div class="text-[10px] font-black uppercase tracking-widest text-red-400">Connection Denied</div>
         <h3 class="text-xl font-black text-white mt-1">Robot In Use</h3>
         <p class="text-xs text-white/60 mt-2 leading-relaxed">
-          The robot is currently connected to another account (<span id="robotBusyAccount" class="font-bold text-red-300">another user</span>). Only one account can connect at a time. Please wait until they disconnect before connecting.
+          The robot is currently connected to another account (<span id="robotBusyAccount"
+            class="font-bold text-red-300">another user</span>). Only one account can connect at a time. Please wait
+          until they disconnect before connecting.
         </p>
       </div>
 

@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Fitness Robot • Phone Step Counter</title>
+  <title>Fitness Robot | Step Tracker</title>
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png">
@@ -243,7 +243,8 @@
     <!-- Sync status & Links -->
     <div class="flex items-center justify-between px-2 text-xs text-white/40">
       <span id="syncNotice">Cloud Sync: Ready</span>
-      <a id="goToDashboardLink" href="index.html?tab=steps&subtab=steps#steps" onclick="goToDashboard(event)" class="text-lime-400 hover:text-lime-300 hover:underline flex items-center gap-1.5 font-bold transition-colors">
+      <a id="goToDashboardLink" href="index.html?tab=steps&subtab=steps#steps" onclick="goToDashboard(event)"
+        class="text-lime-400 hover:text-lime-300 hover:underline flex items-center gap-1.5 font-bold transition-colors">
         <span>Go to Dashboard</span>
         <span>→</span>
       </a>
@@ -279,7 +280,7 @@
         if (link && saved) {
           link.href = saved;
         }
-      } catch (_) {}
+      } catch (_) { }
     })();
 
     function goToDashboard(e) {
@@ -304,7 +305,7 @@
           window.location.href = refUrl.toString();
           return;
         }
-      } catch (_) {}
+      } catch (_) { }
       window.location.href = 'index.html?tab=steps&subtab=steps#steps';
     }
 

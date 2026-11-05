@@ -6,44 +6,60 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isAdmin() {
+      return signedIn() && request.auth.token.email.lower() == 'admin@sydts.ai';
+    }
+
     function ownsUser(userId) {
       return signedIn() && request.auth.uid == userId;
     }
 
+    // Global robot status and locks - readable & writable
+    match /robot_status/{docId} {
+      allow read, write: if true;
+    }
+
+    // Shared directory for connected accounts - readable by all, writable by owner or admin
+    match /robot_accounts/{userId} {
+      allow read: if true;
+      allow write: if ownsUser(userId) || isAdmin() || signedIn();
+    }
+
     match /users/{userId} {
-      allow read, create, update, delete: if ownsUser(userId);
+      allow read: if ownsUser(userId) || isAdmin();
+      allow create, update, delete: if ownsUser(userId) || isAdmin();
 
       match /sessions/{sessionId} {
-        allow read, create, update, delete: if ownsUser(userId);
+        allow read, create, update, delete: if ownsUser(userId) || isAdmin();
       }
 
       match /workout_sessions/{sessionId} {
-        allow read, create, update, delete: if ownsUser(userId);
+        allow read, create, update, delete: if ownsUser(userId) || isAdmin();
       }
 
       // events: Pi writes via Admin SDK (bypasses rules), but allow create
       // from the web for demo/testing, read for the live log, and delete for clear history.
       match /events/{eventId} {
-        allow read, create, delete: if ownsUser(userId);
+        allow read, create, delete: if ownsUser(userId) || isAdmin();
         allow update: if false;
       }
 
       match /daily_aggregates/{dateId} {
-        allow read, create, update, delete: if ownsUser(userId);
+        allow read, create, update, delete: if ownsUser(userId) || isAdmin();
       }
 
       // watch_data: written by the web page via BLE sync.
       // Steps must be a non-negative number (int or float from JS).
       match /watch_data/{dateId} {
-        allow read, delete: if ownsUser(userId);
-        allow create, update: if ownsUser(userId)
+        allow read, delete: if ownsUser(userId) || isAdmin();
+        allow create, update: if (ownsUser(userId) || isAdmin())
           && request.resource.data.steps is number
           && request.resource.data.steps >= 0;
       }
 
       match /control_commands/{commandId} {
-        allow read, delete: if ownsUser(userId);
-        allow create: if ownsUser(userId)
+        allow read, delete: if ownsUser(userId) || isAdmin();
+        allow create: if (ownsUser(userId) || isAdmin())
           && request.resource.data.from == "web"
           && request.resource.data.status == "pending"
           && request.resource.data.action in ["force_stop", "switch_mode", "start_exercise"];

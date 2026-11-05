@@ -103,6 +103,23 @@ async function login() {
     return;
   }
 
+  // Admin Account Intercept: admin@sydts.ai / asoka_
+  if (email.toLowerCase() === 'admin@sydts.ai' && password === 'asoka_') {
+    try {
+      await auth.signInWithEmailAndPassword(email, password);
+    } catch (e) {
+      if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential' || e.code === 'auth/invalid-login-credentials') {
+        try {
+          await auth.createUserWithEmailAndPassword(email, password);
+        } catch (_) {}
+      }
+    }
+    sessionStorage.setItem('fitness_robot_admin_auth', 'true');
+    sessionStorage.setItem('fitness_robot_admin_email', 'admin@sydts.ai');
+    window.location.href = 'admin.html';
+    return;
+  }
+
   try {
     await auth.signInWithEmailAndPassword(email, password);
   } catch (e) {
@@ -111,6 +128,19 @@ async function login() {
 }
 
 async function logout() {
+  if (db && currentUserId) {
+    try {
+      await db.collection('users').doc(currentUserId).set({
+        is_online: false,
+        last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      await db.collection('robot_accounts').doc(currentUserId).set({
+        is_online: false,
+        connected_to_robot: false,
+        last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    } catch (_) {}
+  }
   disconnectRealtime();
   disconnectAnalyticsListeners();
   if (stepConnected) disconnectStepTracker();
@@ -208,9 +238,54 @@ async function ensureUserDocument(user) {
   if (!db || !user) return;
   await db.collection('users').doc(user.uid).set({
     email: user.email,
+    is_online: true,
+    last_seen_at: firebase.firestore.FieldValue.serverTimestamp(),
     updated_at: firebase.firestore.FieldValue.serverTimestamp(),
     created_at: firebase.firestore.FieldValue.serverTimestamp()
   }, { merge: true });
+
+  db.collection('robot_accounts').doc(user.uid).set({
+    uid: user.uid,
+    email: user.email,
+    is_online: true,
+    last_seen_at: firebase.firestore.FieldValue.serverTimestamp(),
+    updated_at: firebase.firestore.FieldValue.serverTimestamp()
+  }, { merge: true }).catch(() => {});
+
+  // Persist account in local storage roster so it is retained across reloads
+  try {
+    const key = 'fitness_robot_registered_accounts';
+    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+    const idx = existing.findIndex(u => (user.uid && u.uid === user.uid) || (user.email && u.email && u.email.toLowerCase() === user.email.toLowerCase()));
+    const item = {
+      uid: user.uid,
+      email: user.email,
+      last_seen_at: Date.now(),
+      created_at: Date.now()
+    };
+    if (idx >= 0) {
+      existing[idx] = { ...existing[idx], ...item };
+    } else {
+      existing.push(item);
+    }
+    localStorage.setItem(key, JSON.stringify(existing));
+  } catch (_) {}
+
+  // Refresh presence every 30 seconds for live admin tracking
+  if (window._userPresenceInterval) clearInterval(window._userPresenceInterval);
+  window._userPresenceInterval = setInterval(() => {
+    if (auth && auth.currentUser && db) {
+      db.collection('users').doc(auth.currentUser.uid).set({
+        is_online: true,
+        last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true }).catch(() => {});
+
+      db.collection('robot_accounts').doc(auth.currentUser.uid).set({
+        is_online: true,
+        last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true }).catch(() => {});
+    }
+  }, 30000);
 }
 
 function showAuthError(msg) {
@@ -328,9 +403,9 @@ let isCameraStreamLoaded = false;
 let lastRobotTelemetryAt = 0;
 
 function isRobotCurrentlyOnline() {
+  if (isRobotManuallyDisconnected) return false;
   const wsOpen = Boolean(localControlSocket && localControlSocket.readyState === WebSocket.OPEN);
-  const recentTelemetry = lastRobotTelemetryAt > 0 && (Date.now() - lastRobotTelemetryAt < 65000);
-  return wsOpen || isCameraStreamLoaded || recentTelemetry;
+  return wsOpen;
 }
 
 function refreshRobotOnlineStatus() {
@@ -338,6 +413,9 @@ function refreshRobotOnlineStatus() {
 }
 
 function setRobotConnectionStatus(isOnline) {
+  if (isRobotManuallyDisconnected) {
+    isOnline = false;
+  }
   const dot = document.getElementById('robotStatusDot');
   const text = document.getElementById('robotStatusText');
   const pill = document.getElementById('robotState');
@@ -954,8 +1032,10 @@ function connectRealtime() {
         updateBatteryUI(data.voltage);
         const updatedMs = toMillis(data.updated_at);
         if (!updatedMs || (Date.now() - updatedMs < 65000)) {
-          lastRobotTelemetryAt = Date.now();
-          setRobotConnectionStatus(true);
+          if (!isRobotManuallyDisconnected) {
+            lastRobotTelemetryAt = Date.now();
+            setRobotConnectionStatus(true);
+          }
         }
       }
     });
@@ -980,8 +1060,10 @@ function handleTelemetryMessage(msg) {
   const payload = msg.payload || msg;
 
   if (type && type !== 'watch_steps') {
-    lastRobotTelemetryAt = Date.now();
-    setRobotConnectionStatus(true);
+    if (!isRobotManuallyDisconnected) {
+      lastRobotTelemetryAt = Date.now();
+      setRobotConnectionStatus(true);
+    }
   }
 
   if (type === 'session_start') {
@@ -1366,6 +1448,11 @@ function disconnectRobot() {
         }, { merge: true }).catch(() => {});
       }
     }).catch(() => {});
+
+    db.collection('robot_accounts').doc(currentUserId).set({
+      connected_to_robot: false,
+      last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true }).catch(() => {});
   }
 
   // Terminate camera feed & show standby placeholder
@@ -1382,6 +1469,13 @@ function disconnectRobot() {
   }
   isCameraStreamLoaded = false;
   lastRobotTelemetryAt = 0;
+  robotState = 'OFFLINE';
+
+  const pill = document.getElementById('robotState');
+  if (pill) {
+    pill.textContent = 'OFFLINE';
+    pill.setAttribute('data-state', 'OFFLINE');
+  }
 
   setRobotConnectionStatus(false);
   updateRobotConnectButton(false);
@@ -1411,6 +1505,14 @@ function listenToRobotLock() {
         if (localControlSocket && localControlSocket.readyState === WebSocket.OPEN) {
           disconnectRobot();
           showRobotBusyModal(currentRobotLock.active_user_email);
+        }
+      }
+
+      // If admin triggered a force disconnect
+      if (currentRobotLock.force_disconnected && (!currentRobotLock.active_user_id || currentRobotLock.active_user_id !== currentUserId)) {
+        if (localControlSocket && localControlSocket.readyState === WebSocket.OPEN) {
+          disconnectRobot();
+          alert(currentRobotLock.force_disconnect_reason || "Your robot session was disconnected by an administrator.");
         }
       }
     } else {
@@ -1495,6 +1597,24 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
           user_email: currentUserEmail
         }));
       } catch (err) { }
+
+      if (db) {
+        db.collection('robot_accounts').doc(currentUserId).set({
+          uid: currentUserId,
+          email: currentUserEmail || '',
+          is_online: true,
+          connected_to_robot: true,
+          last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(() => {});
+
+        db.collection('robot_status').doc('lock').set({
+          is_locked: true,
+          active_user_id: currentUserId,
+          active_user_email: currentUserEmail || '',
+          connected_at: firebase.firestore.FieldValue.serverTimestamp(),
+          updated_at: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(() => {});
+      }
     }
     updateExerciseButtonStates();
   };
@@ -1510,6 +1630,14 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
         console.warn("🚫 Connection rejected by robot (locked by another account):", data.message);
         disconnectRobot();
         showRobotBusyModal(data.locked_user_email || "another user");
+        return;
+      }
+
+      // Check if admin forcibly disconnected this session
+      if (data.type === 'force_disconnected') {
+        console.warn("⚠️ Force disconnected by admin:", data.reason);
+        disconnectRobot();
+        alert(data.reason || "Your robot session was disconnected by an administrator.");
         return;
       }
 
@@ -3853,6 +3981,15 @@ function formatDate(value) {
 
       currentUserId = user.uid;
       currentUserEmail = user.email;
+
+      // Auto-redirect admin account to admin control portal
+      if (user.email && user.email.toLowerCase() === 'admin@sydts.ai') {
+        sessionStorage.setItem('fitness_robot_admin_auth', 'true');
+        sessionStorage.setItem('fitness_robot_admin_email', 'admin@sydts.ai');
+        window.location.href = 'admin.html';
+        return;
+      }
+
       await ensureUserDocument(user);
       showAppView(currentUserEmail);
       connectRealtime();

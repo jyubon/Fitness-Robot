@@ -61,12 +61,20 @@ def set_active_user(user_id, user_email=None):
                 "connected_at": firestore.SERVER_TIMESTAMP,
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
+            db.collection("robot_accounts").document(str(user_id)).set({
+                "uid": str(user_id),
+                "email": user_email or "",
+                "is_online": True,
+                "connected_to_robot": True,
+                "last_seen_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
         except Exception as e:
             print(f"⚠️ Could not set Firestore robot lock: {e}")
 
 def clear_active_user():
     """Clear active user lock when disconnected so another account can connect."""
     global _resolved_firebase_uid
+    prev_uid = _resolved_firebase_uid
     _resolved_firebase_uid = None
     print("🔓 Active user lock cleared from session manager.")
     if db is not None:
@@ -78,6 +86,11 @@ def clear_active_user():
                 "disconnected_at": firestore.SERVER_TIMESTAMP,
                 "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
+            if prev_uid:
+                db.collection("robot_accounts").document(str(prev_uid)).set({
+                    "connected_to_robot": False,
+                    "last_seen_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
             print("🔓 Firestore robot lock released.")
         except Exception as e:
             print(f"⚠️ Could not release Firestore robot lock: {e}")

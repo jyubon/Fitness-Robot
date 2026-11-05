@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>FitBot | Admin Portal</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Firebase Compat Libraries -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+
+  <style>
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #040507;
+      background-image:
+        radial-gradient(circle at 15% 10%, rgba(99, 102, 241, 0.14) 0%, transparent 40%),
+        radial-gradient(circle at 85% 15%, rgba(6, 182, 212, 0.12) 0%, transparent 35%),
+        radial-gradient(circle at 50% 90%, rgba(239, 68, 68, 0.08) 0%, transparent 45%),
+        linear-gradient(180deg, #05060b 0%, #070913 50%, #040508 100%);
+      background-attachment: fixed;
+      background-repeat: no-repeat;
+      background-size: cover;
+      color: #f1f5f9;
+      min-height: 100vh;
+    }
+
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .glass {
+      background: rgba(13, 17, 28, 0.72);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .glass:hover {
+      border-color: rgba(255, 255, 255, 0.14);
+    }
+
+    .glow-indigo {
+      box-shadow: 0 0 25px -4px rgba(99, 102, 241, 0.35);
+    }
+
+    .glow-red {
+      box-shadow: 0 0 25px -4px rgba(239, 68, 68, 0.35);
+    }
+
+    .glow-emerald {
+      box-shadow: 0 0 25px -4px rgba(16, 185, 129, 0.35);
+    }
+  </style>
+</head>
+
+<body class="selection:bg-indigo-500 selection:text-white flex flex-col min-h-screen">
+
+  <!-- ========================================================================= -->
+  <!-- ADMIN LOGIN MODAL (Displayed if user not signed in as admin@sydts.ai) -->
+  <!-- ========================================================================= -->
+  <div id="adminAuthModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+    <div
+      class="glass max-w-md w-full rounded-3xl p-6 sm:p-8 space-y-5 border border-indigo-500/30 glow-indigo text-center">
+      <div
+        class="w-16 h-16 mx-auto rounded-3xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-3xl">
+        🛡️
+      </div>
+      <div>
+        <div class="text-[10px] font-black uppercase tracking-widest text-indigo-400">Restricted Access</div>
+        <h2 class="text-xl sm:text-2xl font-black text-white mt-1">Admin Portal</h2>
+        <p class="text-xs text-white/50 mt-1.5">
+          Authenticate with administrator credentials to manage connected web accounts and robot hardware sessions.
+        </p>
+      </div>
+
+      <div class="space-y-3.5 text-left">
+        <div>
+          <label class="block text-[11px] font-bold text-white/60 mb-1">Admin Email</label>
+          <input id="adminEmailInput" type="email" value="admin@sydts.ai"
+            class="w-full px-3.5 py-2.5 rounded-xl bg-black/50 border border-white/10 text-white text-sm focus:outline-none focus:border-indigo-400 font-mono" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-bold text-white/60 mb-1">Admin Password</label>
+          <input id="adminPassInput" type="password" value="asoka_"
+            class="w-full px-3.5 py-2.5 rounded-xl bg-black/50 border border-white/10 text-white text-sm focus:outline-none focus:border-indigo-400 font-mono" />
+        </div>
+        <div id="adminLoginError"
+          class="hidden text-xs text-red-400 bg-red-500/10 border border-red-500/20 p-2.5 rounded-xl"></div>
+      </div>
+
+      <button onclick="handleAdminLogin()"
+        class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-indigo-500 via-purple-500 to-cyan-500 text-white font-black text-sm shadow-lg shadow-indigo-500/25 active:scale-95 transition-all">
+        Authenticate &amp; Access Portal
+      </button>
+
+      <div class="pt-2">
+        <a href="index.html" class="text-xs text-white/40 hover:text-white/70 hover:underline">
+          ← Return to Athlete Dashboard
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- MAIN ADMIN PORTAL (Visible once authorized) -->
+  <!-- ========================================================================= -->
+  <div id="adminDashboardView" class="hidden flex-1 flex flex-col">
+
+    <!-- Header -->
+    <header
+      class="w-full border-b border-white/10 bg-black/40 backdrop-blur-xl px-4 sm:px-8 py-4 flex items-center justify-between sticky top-0 z-40">
+      <div class="flex items-center gap-2.5">
+        <h1 class="text-base sm:text-lg font-black tracking-tight text-white">Admin Portal</h1>
+        <span
+          class="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-500/20 border border-indigo-500/40 text-indigo-300">
+          Root Admin
+        </span>
+      </div>
+
+      <!-- Right Header Actions -->
+      <div class="flex items-center gap-3">
+        <div
+          class="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-white/70">
+          <span class="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
+          <span id="adminSessionLabel">admin@sydts.ai</span>
+        </div>
+
+        <button onclick="handleAdminLogout()"
+          class="px-3.5 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 font-bold text-xs active:scale-95 transition-all">
+          Sign Out
+        </button>
+      </div>
+    </header>
+
+    <!-- Content Area -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+
+      <!-- Top Row: Robot Hardware Status & Currently Connected Account Card -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+
+        <!-- 1. Robot Telemetry & Host Config Card (Left on Desktop, Top on Mobile) -->
+        <div
+          class="lg:col-span-5 glass rounded-3xl p-5 sm:p-6 flex flex-col justify-between border border-white/10 space-y-4">
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <span class="text-xl">📡</span>
+                <span class="text-xs font-black uppercase tracking-wider text-cyan-400">Robot Hardware Telemetry</span>
+              </div>
+              <span id="robotOnlineStatusPill"
+                class="text-xs font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30">
+                OFFLINE
+              </span>
+            </div>
+
+            <!-- Host Link -->
+            <div class="space-y-1.5 mb-3">
+              <label class="text-[10px] font-bold text-white/50 uppercase tracking-wider">Robot Host Endpoint</label>
+              <div class="flex gap-2">
+                <input id="adminRobotHost" type="text" value="fitness.local" placeholder="fitness.local"
+                  class="flex-1 px-3 py-2 rounded-xl bg-black/50 border border-white/10 text-xs font-mono text-white focus:outline-none focus:border-cyan-400" />
+                <button onclick="applyRobotHostChange()"
+                  class="px-3 py-2 rounded-xl bg-cyan-500 text-black font-extrabold text-xs hover:bg-cyan-400 transition-all">
+                  Sync
+                </button>
+              </div>
+              <div class="flex gap-1.5 pt-1 text-[10px] text-white/40">
+                <span>Presets:</span>
+                <button onclick="setAdminHost('fitness.local')"
+                  class="hover:text-white underline">fitness.local</button>
+                <span>•</span>
+                <button onclick="setAdminHost('192.168.1.100')"
+                  class="hover:text-white underline">192.168.1.100</button>
+                <span>•</span>
+                <button onclick="setAdminHost('localhost')" class="hover:text-white underline">localhost</button>
+              </div>
+            </div>
+
+            <!-- Telemetry Metrics Grid -->
+            <div class="grid grid-cols-2 gap-3 pt-2">
+              <div class="p-3 rounded-2xl bg-black/30 border border-white/10">
+                <div class="text-[10px] font-bold uppercase text-white/40">Battery Voltage</div>
+                <div id="adminBatteryV" class="text-xl font-black text-amber-400 tabular-nums mt-0.5">— V</div>
+                <div id="adminBatteryPct" class="text-[10px] font-mono text-white/50 mt-0.5">— %</div>
+              </div>
+
+              <div class="p-3 rounded-2xl bg-black/30 border border-white/10">
+                <div class="text-[10px] font-bold uppercase text-white/40">Robot Routine</div>
+                <div id="adminRobotRoutine" class="text-xl font-black text-red-400 truncate mt-0.5">OFFLINE</div>
+                <div id="adminRobotClients" class="text-[10px] font-mono text-white/50 mt-0.5">WS Port 8001</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pt-2 border-t border-white/10 flex items-center justify-between text-xs text-white/40">
+            <span>WebSocket Channel:</span>
+            <span id="adminWsStatus" class="font-mono text-cyan-300">Connecting...</span>
+          </div>
+        </div>
+
+        <!-- 2. Robot Active Lock Card (Right on Desktop, Below Telemetry on Mobile) -->
+        <div
+          class="lg:col-span-7 glass rounded-3xl p-5 sm:p-6 relative overflow-hidden flex flex-col justify-between border border-white/10">
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-2">
+                <span class="text-xl">🤖</span>
+                <span class="text-xs font-black uppercase tracking-wider text-indigo-400">Current Robot User &amp; Session Lock</span>
+              </div>
+            </div>
+
+            <!-- Active User Display Details -->
+            <div id="activeUserBox" class="p-4 sm:p-5 rounded-2xl bg-black/40 border border-white/10 space-y-3">
+              <div class="flex items-start justify-between">
+                <div>
+                  <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">Connected Account</div>
+                  <div id="activeUserEmail" class="text-lg sm:text-2xl font-black text-white tracking-tight mt-0.5">
+                    No account currently connected
+                  </div>
+                  <div id="activeUserId" class="text-xs font-mono text-white/40 mt-0.5">
+                    Robot is available for any athlete
+                  </div>
+                </div>
+                <div id="activeUserPulse"
+                  class="hidden w-10 h-10 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center justify-center text-xl flex-shrink-0">
+                  🔒
+                </div>
+              </div>
+
+              <div id="activeUserMetadata" class="hidden grid grid-cols-2 gap-3 pt-2 border-t border-white/10 text-xs">
+                <div>
+                  <span class="text-white/40">Connected Since:</span>
+                  <div id="activeUserSince" class="font-semibold text-white/90">—</div>
+                </div>
+                <div>
+                  <span class="text-white/40">Current Exercise:</span>
+                  <div id="activeUserExercise" class="font-bold text-cyan-400 truncate">None (Standby)</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Disconnect Action Button (Prominent) -->
+          <div class="mt-5">
+            <button id="adminDisconnectBtn" onclick="confirmForceDisconnect()" disabled
+              class="w-full py-4 rounded-2xl bg-red-600/40 text-white/40 font-black text-sm tracking-wide flex items-center justify-center gap-2 cursor-not-allowed transition-all">
+              <span>⚡</span>
+              <span>FORCE DISCONNECT ACCOUNT FROM ROBOT</span>
+            </button>
+            <p class="text-[11px] text-white/40 text-center mt-2">
+              Forcefully kicks the connected user, releases the hardware lock, and resets the robot for other accounts.
+            </p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Section: Connected Web App Accounts Directory -->
+      <div class="glass rounded-3xl p-5 sm:p-6 border border-white/10 space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-base sm:text-lg font-black text-white flex items-center gap-2">
+              <span>👥</span>
+              <span>Web App Accounts Directory</span>
+            </h2>
+            <p class="text-xs text-white/40 mt-0.5">
+              Live roster of user accounts registered with the web app and their real-time connection status.
+            </p>
+          </div>
+
+          <!-- Search / Filter & Refresh -->
+          <div class="flex items-center gap-2">
+            <input id="userSearchInput" type="text" placeholder="Filter by email..." oninput="renderUserTable()"
+              class="px-3.5 py-1.5 rounded-xl bg-black/40 border border-white/10 text-xs text-white placeholder-white/30 focus:outline-none focus:border-indigo-400 w-44 sm:w-56" />
+            <button onclick="refreshUserData()"
+              class="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-white transition-all">
+              ↻ Refresh
+            </button>
+          </div>
+        </div>
+
+        <!-- Table Container -->
+        <div class="overflow-x-auto rounded-2xl border border-white/10 bg-black/30">
+          <table class="w-full text-left text-xs">
+            <thead
+              class="bg-black/60 text-white/40 uppercase font-black tracking-wider text-[10px] border-b border-white/10">
+              <tr>
+                <th class="py-3 px-4">Account</th>
+                <th class="py-3 px-4">Web Presence</th>
+                <th class="py-3 px-4">Last Seen</th>
+                <th class="py-3 px-4 text-right">Administrative Action</th>
+              </tr>
+            </thead>
+            <tbody id="userTableBody" class="divide-y divide-white/5">
+              <tr>
+                <td colspan="4" class="py-8 text-center text-white/40">
+                  Loading connected accounts from database...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Section: Real-Time Admin Audit & Diagnostic Log -->
+      <div class="glass rounded-3xl p-5 border border-white/10 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="text-base">📋</span>
+            <h3 class="text-sm font-black text-white uppercase tracking-wider">Live Audit &amp; Event Stream</h3>
+          </div>
+          <button onclick="clearAdminLog()"
+            class="text-xs px-2.5 py-1 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 text-white/60 transition-all">
+            Clear Log
+          </button>
+        </div>
+        <div id="adminLogContainer"
+          class="h-36 overflow-y-auto bg-black/50 rounded-2xl p-3 font-mono text-[11px] text-white/60 space-y-1 border border-white/10">
+          <div>[System] Admin portal initialized. Listening to Firestore and robot WebSocket...</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Force Disconnect Confirmation Modal -->
+  <div id="confirmDisconnectModal"
+    class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+    <div class="glass max-w-sm w-full rounded-3xl p-6 text-center space-y-4 border border-red-500/40 glow-red">
+      <div
+        class="w-14 h-14 mx-auto rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center justify-center text-3xl">
+        ⚠️
+      </div>
+      <div>
+        <h3 class="text-lg font-black text-white">Disconnect Active User?</h3>
+        <p class="text-xs text-white/60 mt-1 leading-relaxed">
+          Are you sure you want to forcibly disconnect <span id="confirmTargetEmail" class="font-bold text-red-400">the
+            active user</span>?
+          Their exercise session will be stopped and the robot will be released.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 pt-1">
+        <button onclick="closeConfirmModal()"
+          class="py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs transition-all">
+          Cancel
+        </button>
+        <button onclick="executeForceDisconnect()"
+          class="py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs shadow-lg shadow-red-950/50 active:scale-95 transition-all">
+          Yes, Disconnect
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Clear Workout History Confirmation Modal -->
+  <div id="confirmClearHistoryModal"
+    class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+    <div class="glass max-w-sm w-full rounded-3xl p-6 text-center space-y-4 border border-amber-500/40 glow-amber">
+      <div
+        class="w-14 h-14 mx-auto rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-3xl">
+        🗑️
+      </div>
+      <div>
+        <h3 class="text-lg font-black text-white">Clear Workout History?</h3>
+        <p class="text-xs text-white/60 mt-1 leading-relaxed">
+          Are you sure you want to clear workout history for <span id="clearHistoryTargetEmail" class="font-bold text-amber-400">user</span>?
+          All reps, workout sessions, daily aggregates, and step logs will be permanently deleted.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 pt-1">
+        <button onclick="closeClearHistoryModal()"
+          class="py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs transition-all">
+          Cancel
+        </button>
+        <button onclick="submitClearUserHistory()"
+          class="py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs shadow-lg shadow-amber-950/50 active:scale-95 transition-all">
+          Yes, Clear History
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Account Confirmation Modal -->
+  <div id="confirmDeleteAccountModal"
+    class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+    <div class="glass max-w-sm w-full rounded-3xl p-6 text-center space-y-4 border border-red-500/50 glow-red">
+      <div
+        class="w-14 h-14 mx-auto rounded-2xl bg-red-500/20 border border-red-500/40 flex items-center justify-center text-3xl">
+        🚨
+      </div>
+      <div>
+        <h3 class="text-lg font-black text-white">Permanently Delete Account?</h3>
+        <p class="text-xs text-white/60 mt-1 leading-relaxed">
+          Are you sure you want to permanently delete <span id="deleteAccountTargetEmail" class="font-bold text-red-400">user</span>?
+          This will erase their account document, presence, and all associated workout history. This action is irreversible.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 pt-1">
+        <button onclick="closeDeleteAccountModal()"
+          class="py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs transition-all">
+          Cancel
+        </button>
+        <button onclick="submitDeleteUserAccount()"
+          class="py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-xs shadow-lg shadow-red-950/50 active:scale-95 transition-all">
+          Yes, Delete Account
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- JAVASCRIPT LOGIC -->
+  <!-- ========================================================================= -->
+  <script>
+    const ADMIN_CREDENTIALS = {
+      email: 'admin@sydts.ai',
+      pass: 'asoka_'
+    };
+
+    let auth = null;
+    let db = null;
+    let adminWs = null;
+    let adminPollInterval = null;
+    let adminWsHost = (() => {
+      try {
+        const stored = localStorage.getItem('currentCameraUrl');
+        if (stored) {
+          const u = new URL(stored.startsWith('http') ? stored : 'http://' + stored);
+          if (u.hostname) return u.hostname;
+        }
+      } catch (_) { }
+      if (window.location.hostname && window.location.hostname !== '' && window.location.hostname !== '127.0.0.1') {
+        return window.location.hostname;
+      }
+      return 'fitness.local';
+    })();
+
+    let cachedUsers = [];
+    let currentRobotLock = null;
+    let currentRobotRoutine = 'STANDBY';
+    let currentRobotExercise = 'None (Standby)';
+
+    let lockUnsubscribe = null;
+    let batteryUnsubscribe = null;
+    let robotAccountsUnsubscribe = null;
+    let usersUnsubscribe = null;
+
+    let pendingClearHistoryUid = null;
+    let pendingClearHistoryEmail = null;
+    let pendingDeleteAccountUid = null;
+    let pendingDeleteAccountEmail = null;
+
+    const ADMIN_ROSTER_STORAGE_KEY = 'fitness_robot_admin_accounts_roster';
+    const SHARED_ACCOUNTS_STORAGE_KEY = 'fitness_robot_registered_accounts';
+
+    function loadCachedRoster() {
+      const rosterMap = new Map();
+
+      // Always guarantee admin account is present in cached roster
+      const adminEmail = ADMIN_CREDENTIALS.email;
+      rosterMap.set(adminEmail.toLowerCase(), {
+        uid: 'admin_root',
+        email: adminEmail,
+        is_online: true,
+        is_admin: true,
+        connected_to_robot: false,
+        last_seen_at: new Date(),
+        created_at: new Date()
+      });
+
+      // 1. Load from admin roster storage
+      try {
+        const saved = localStorage.getItem(ADMIN_ROSTER_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(acc => {
+              if (!acc || (!acc.email && !acc.uid)) return;
+              const key = (acc.email || acc.uid).toLowerCase();
+              rosterMap.set(key, {
+                uid: acc.uid || key,
+                email: acc.email || 'Athlete',
+                is_online: Boolean(acc.is_admin || acc.is_online),
+                is_admin: Boolean(acc.is_admin || (acc.email && acc.email.toLowerCase() === adminEmail)),
+                connected_to_robot: Boolean(acc.connected_to_robot),
+                last_seen_at: acc.last_seen_at ? new Date(acc.last_seen_at) : null,
+                created_at: acc.created_at ? new Date(acc.created_at) : null
+              });
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load admin roster from storage:", e);
+      }
+
+      // 2. Load from shared registered accounts storage
+      try {
+        const shared = localStorage.getItem(SHARED_ACCOUNTS_STORAGE_KEY);
+        if (shared) {
+          const parsed = JSON.parse(shared);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(acc => {
+              if (!acc || (!acc.email && !acc.uid)) return;
+              const key = (acc.email || acc.uid).toLowerCase();
+              if (!rosterMap.has(key)) {
+                rosterMap.set(key, {
+                  uid: acc.uid || key,
+                  email: acc.email || 'Athlete',
+                  is_online: false,
+                  is_admin: Boolean(acc.email && acc.email.toLowerCase() === adminEmail),
+                  connected_to_robot: false,
+                  last_seen_at: acc.last_seen_at ? new Date(acc.last_seen_at) : null,
+                  created_at: acc.created_at ? new Date(acc.created_at) : null
+                });
+              }
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load shared accounts from storage:", e);
+      }
+
+      cachedUsers = Array.from(rosterMap.values());
+      renderUserTable();
+    }
+
+    function saveCachedRoster() {
+      try {
+        const toSave = cachedUsers.map(u => ({
+          uid: u.uid,
+          email: u.email,
+          is_admin: u.is_admin,
+          is_online: u.is_online,
+          connected_to_robot: u.connected_to_robot,
+          last_seen_at: u.last_seen_at instanceof Date ? u.last_seen_at.toISOString() : u.last_seen_at,
+          created_at: u.created_at instanceof Date ? u.created_at.toISOString() : u.created_at
+        }));
+        localStorage.setItem(ADMIN_ROSTER_STORAGE_KEY, JSON.stringify(toSave));
+      } catch (e) {
+        console.warn("Failed to save roster to localStorage:", e);
+      }
+    }
+
+    function updateRobotRoutineDisplay() {
+      const routineEl = document.getElementById('adminRobotRoutine');
+      if (!routineEl) return;
+
+      const isWsConnected = Boolean(adminWs && adminWs.readyState === WebSocket.OPEN);
+      const isLocked = Boolean(currentRobotLock && currentRobotLock.is_locked);
+      const isExercising = Boolean(
+        currentRobotExercise &&
+        currentRobotExercise !== 'None (Standby)' &&
+        currentRobotExercise !== 'none' &&
+        currentRobotExercise !== '—'
+      );
+
+      if (!isWsConnected) {
+        routineEl.textContent = 'OFFLINE';
+        routineEl.className = 'text-xl font-black text-red-400 truncate mt-0.5';
+      } else if (isLocked || isExercising || currentRobotRoutine === 'IN USE') {
+        routineEl.textContent = 'IN USE';
+        routineEl.className = 'text-xl font-black text-amber-400 truncate mt-0.5';
+      } else {
+        routineEl.textContent = 'STANDBY';
+        routineEl.className = 'text-xl font-black text-emerald-400 truncate mt-0.5';
+      }
+    }
+
+    function formatExercise(ex) {
+      if (!ex || ex === 'None (Standby)' || ex === '—' || ex === 'none') return 'None (Standby)';
+      return ex.replace(/_/g, ' ').toUpperCase();
+    }
+
+    // Pre-populate input host & load cached roster
+    document.addEventListener('DOMContentLoaded', () => {
+      const hostInput = document.getElementById('adminRobotHost');
+      if (hostInput && adminWsHost) {
+        hostInput.value = adminWsHost;
+      }
+      loadCachedRoster();
+      updateRobotRoutineDisplay();
+    });
+
+    // Initialize Firebase
+    if (window.firebaseConfig) {
+      try {
+        firebase.initializeApp(window.firebaseConfig);
+        auth = firebase.auth();
+        db = firebase.firestore();
+
+        auth.onAuthStateChanged(user => {
+          if (user && user.email && user.email.toLowerCase() === ADMIN_CREDENTIALS.email) {
+            grantAdminAccess(user.email);
+          } else {
+            // Check session storage fallback
+            const isAuth = sessionStorage.getItem('fitness_robot_admin_auth') === 'true';
+            const adminEmail = sessionStorage.getItem('fitness_robot_admin_email');
+            if (isAuth && adminEmail === ADMIN_CREDENTIALS.email) {
+              grantAdminAccess(adminEmail);
+            } else {
+              showAdminLogin();
+            }
+          }
+        });
+      } catch (err) {
+        logEvent(`Firebase init error: ${err.message}`);
+      }
+    } else {
+      showAdminLogin();
+    }
+
+    async function handleAdminLogin() {
+      const email = document.getElementById('adminEmailInput').value.trim();
+      const pass = document.getElementById('adminPassInput').value;
+      const errEl = document.getElementById('adminLoginError');
+      errEl.classList.add('hidden');
+
+      if (!email || !pass) {
+        errEl.textContent = 'Please enter admin email and password.';
+        errEl.classList.remove('hidden');
+        return;
+      }
+
+      if (email.toLowerCase() !== ADMIN_CREDENTIALS.email || pass !== ADMIN_CREDENTIALS.pass) {
+        errEl.textContent = 'Invalid administrator credentials. Access denied.';
+        errEl.classList.remove('hidden');
+        return;
+      }
+
+      // Authenticate in Firebase Auth
+      try {
+        if (auth) {
+          try {
+            await auth.signInWithEmailAndPassword(email, pass);
+          } catch (e) {
+            if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential' || e.code === 'auth/invalid-login-credentials') {
+              try {
+                await auth.createUserWithEmailAndPassword(email, pass);
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+
+      sessionStorage.setItem('fitness_robot_admin_auth', 'true');
+      sessionStorage.setItem('fitness_robot_admin_email', ADMIN_CREDENTIALS.email);
+      grantAdminAccess(email);
+    }
+
+    async function grantAdminAccess(email) {
+      document.getElementById('adminAuthModal').classList.add('hidden');
+      document.getElementById('adminDashboardView').classList.remove('hidden');
+      document.getElementById('adminSessionLabel').textContent = email;
+      logEvent(`Administrator session authenticated: ${email}`);
+
+      // Ensure Firebase Auth is signed in as admin
+      if (auth && (!auth.currentUser || auth.currentUser.email.toLowerCase() !== ADMIN_CREDENTIALS.email)) {
+        try {
+          await auth.signInWithEmailAndPassword(ADMIN_CREDENTIALS.email, ADMIN_CREDENTIALS.pass);
+        } catch (_) {}
+      }
+
+      // Ensure admin document exists in Firestore
+      if (db && auth && auth.currentUser) {
+        db.collection('robot_accounts').doc(auth.currentUser.uid).set({
+          uid: auth.currentUser.uid,
+          email: ADMIN_CREDENTIALS.email,
+          is_online: true,
+          is_admin: true,
+          last_seen_at: firebase.firestore.FieldValue.serverTimestamp(),
+          created_at: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(() => {});
+
+        db.collection('users').doc(auth.currentUser.uid).set({
+          email: ADMIN_CREDENTIALS.email,
+          is_online: true,
+          is_admin: true,
+          last_seen_at: firebase.firestore.FieldValue.serverTimestamp(),
+          created_at: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(() => {});
+      }
+
+      // Load cached accounts immediately so offline accounts never disappear
+      loadCachedRoster();
+
+      // Initialize Realtime Listeners
+      initFirestoreListeners();
+      connectAdminWebSocket();
+    }
+
+    function showAdminLogin() {
+      document.getElementById('adminAuthModal').classList.remove('hidden');
+      document.getElementById('adminDashboardView').classList.add('hidden');
+    }
+
+    async function handleAdminLogout() {
+      sessionStorage.removeItem('fitness_robot_admin_auth');
+      sessionStorage.removeItem('fitness_robot_admin_email');
+      if (adminPollInterval) clearInterval(adminPollInterval);
+      if (adminWs) {
+        try { adminWs.close(); } catch (_) {}
+      }
+      if (auth) {
+        try { await auth.signOut(); } catch (_) {}
+      }
+      window.location.href = 'index.html';
+    }
+
+    // ─── Firestore Listeners ───
+    function initFirestoreListeners() {
+      if (!db) return;
+
+      // 1. Listen to Robot Lock
+      if (lockUnsubscribe) lockUnsubscribe();
+      lockUnsubscribe = db.collection('robot_status').doc('lock').onSnapshot(doc => {
+        if (doc.exists) {
+          const d = doc.data();
+          const isLocked = Boolean(d.is_locked);
+          currentRobotLock = {
+            is_locked: isLocked,
+            active_user_id: isLocked ? (d.active_user_id || null) : null,
+            active_user_email: isLocked ? (d.active_user_email || null) : null,
+            connected_at: d.connected_at ? d.connected_at.toDate() : (d.updated_at ? d.updated_at.toDate() : null)
+          };
+          updateRobotLockUI(currentRobotLock, currentRobotExercise);
+          if (isLocked && currentRobotLock.active_user_email) {
+            mergeLiveAccounts([{
+              uid: currentRobotLock.active_user_id || currentRobotLock.active_user_email,
+              email: currentRobotLock.active_user_email,
+              is_online: true,
+              connected_to_robot: true,
+              last_seen_at: currentRobotLock.connected_at || new Date()
+            }]);
+          }
+        } else {
+          currentRobotLock = null;
+          updateRobotLockUI(null, 'None (Standby)');
+        }
+        renderUserTable();
+      }, () => {});
+
+      // 2. Listen to Battery Telemetry
+      if (batteryUnsubscribe) batteryUnsubscribe();
+      batteryUnsubscribe = db.collectionGroup('device_status').onSnapshot(snapshot => {
+        snapshot.forEach(doc => {
+          if (doc.id === 'battery' && doc.data().voltage) {
+            updateBatteryUI(doc.data().voltage);
+          }
+        });
+      }, () => { });
+
+      // 3. Listen to Users Directory
+      refreshUserData();
+    }
+
+    function refreshUserData() {
+      // 0. Ensure cached roster is loaded
+      loadCachedRoster();
+
+      // 1. Prompt immediate WebSocket refresh from robot
+      if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+        try {
+          adminWs.send(JSON.stringify({ action: 'get_status' }));
+          adminWs.send(JSON.stringify({ action: 'get_accounts' }));
+        } catch (_) {}
+      }
+
+      if (!db) return;
+
+      // 2. Ensure Firebase Auth admin credentials are active
+      if (auth && (!auth.currentUser || auth.currentUser.email.toLowerCase() !== ADMIN_CREDENTIALS.email)) {
+        auth.signInWithEmailAndPassword(ADMIN_CREDENTIALS.email, ADMIN_CREDENTIALS.pass).catch(() => {});
+      }
+
+      // A. Realtime sync from shared robot_accounts collection
+      if (robotAccountsUnsubscribe) robotAccountsUnsubscribe();
+      try {
+        robotAccountsUnsubscribe = db.collection('robot_accounts').onSnapshot(snapshot => {
+          const accounts = [];
+          snapshot.forEach(doc => {
+            const d = doc.data();
+            accounts.push({
+              uid: doc.id,
+              email: d.email || 'Anonymous',
+              is_online: Boolean(d.is_online),
+              is_admin: Boolean(d.is_admin || (d.email && d.email.toLowerCase() === ADMIN_CREDENTIALS.email)),
+              connected_to_robot: Boolean(d.connected_to_robot),
+              last_seen_at: d.last_seen_at ? d.last_seen_at.toDate() : (d.updated_at ? d.updated_at.toDate() : null),
+              created_at: d.created_at ? d.created_at.toDate() : null
+            });
+          });
+          if (accounts.length > 0) {
+            mergeLiveAccounts(accounts);
+          }
+        }, err => {
+          console.warn("robot_accounts Firestore sync:", err.message);
+        });
+      } catch (_) { }
+
+      // B. Also sync from main users collection
+      if (usersUnsubscribe) usersUnsubscribe();
+      try {
+        usersUnsubscribe = db.collection('users').onSnapshot(snapshot => {
+          const accounts = [];
+          snapshot.forEach(doc => {
+            const d = doc.data();
+            accounts.push({
+              uid: doc.id,
+              email: d.email || 'Anonymous',
+              is_online: Boolean(d.is_online),
+              is_admin: Boolean(d.is_admin || (d.email && d.email.toLowerCase() === ADMIN_CREDENTIALS.email)),
+              connected_to_robot: Boolean(d.connected_to_robot),
+              last_seen_at: d.last_seen_at ? d.last_seen_at.toDate() : (d.updated_at ? d.updated_at.toDate() : null),
+              created_at: d.created_at ? d.created_at.toDate() : null
+            });
+          });
+          if (accounts.length > 0) {
+            mergeLiveAccounts(accounts);
+          }
+        }, err => {
+          console.warn("Users collection Firestore sync:", err.message);
+        });
+      } catch (_) { }
+
+      logEvent("Accounts directory synchronized.");
+    }
+
+    // ─── Merge Accounts from WebSocket & Firestore ───
+    function mergeLiveAccounts(accounts) {
+      if (!Array.isArray(accounts)) return;
+
+      // Always guarantee admin account is present in cached roster
+      const adminEmail = ADMIN_CREDENTIALS.email;
+      const adminUid = (auth && auth.currentUser && auth.currentUser.email === adminEmail) ? auth.currentUser.uid : 'admin_root';
+      const adminIdx = cachedUsers.findIndex(u => u.email && u.email.toLowerCase() === adminEmail);
+      if (adminIdx === -1) {
+        cachedUsers.unshift({
+          uid: adminUid,
+          email: adminEmail,
+          is_online: true,
+          is_admin: true,
+          connected_to_robot: false,
+          last_seen_at: new Date(),
+          created_at: new Date()
+        });
+      } else {
+        cachedUsers[adminIdx].is_online = true;
+        cachedUsers[adminIdx].is_admin = true;
+        cachedUsers[adminIdx].last_seen_at = new Date();
+      }
+
+      accounts.forEach(acc => {
+        const email = acc.email || acc.user_email;
+        const uid = acc.uid || acc.user_id || email;
+        if (!email && !uid) return;
+
+        const isAdmin = Boolean((email && email.toLowerCase() === adminEmail) || acc.is_admin);
+
+        const existingIdx = cachedUsers.findIndex(u =>
+          (uid && u.uid === uid) ||
+          (email && u.email && u.email.toLowerCase() === email.toLowerCase())
+        );
+
+        const isLocked = Boolean(currentRobotLock && currentRobotLock.is_locked);
+        const activeUid = isLocked ? currentRobotLock.active_user_id : null;
+        const activeEmail = isLocked ? (currentRobotLock.active_user_email || '').toLowerCase() : null;
+
+        const isRobotUser = Boolean(
+          !isAdmin && (
+            acc.connected_to_robot ||
+            (activeUid && uid === activeUid) ||
+            (activeEmail && email && activeEmail === email.toLowerCase())
+          )
+        );
+
+        let lastSeen = null;
+        if (acc.last_seen_at instanceof Date) {
+          lastSeen = acc.last_seen_at;
+        } else if (acc.last_seen_at && acc.last_seen_at.toDate) {
+          lastSeen = acc.last_seen_at.toDate();
+        } else if (typeof acc.last_seen === 'number') {
+          lastSeen = new Date(acc.last_seen * 1000);
+        } else if (acc.last_seen_at) {
+          lastSeen = new Date(acc.last_seen_at);
+        }
+
+        const isRecentlySeen = lastSeen && (Date.now() - lastSeen.getTime() < 180000);
+        const isOnline = Boolean(isAdmin || isRobotUser || (acc.is_online && isRecentlySeen));
+
+        if (existingIdx >= 0) {
+          cachedUsers[existingIdx].is_online = isOnline;
+          cachedUsers[existingIdx].is_admin = isAdmin;
+          cachedUsers[existingIdx].connected_to_robot = isRobotUser;
+          if (lastSeen && (!cachedUsers[existingIdx].last_seen_at || lastSeen > cachedUsers[existingIdx].last_seen_at)) {
+            cachedUsers[existingIdx].last_seen_at = lastSeen;
+          }
+          if (email && (!cachedUsers[existingIdx].email || cachedUsers[existingIdx].email === 'Anonymous')) {
+            cachedUsers[existingIdx].email = email;
+          }
+        } else {
+          cachedUsers.push({
+            uid: uid,
+            email: email || 'Athlete',
+            is_online: isOnline,
+            is_admin: isAdmin,
+            connected_to_robot: isRobotUser,
+            last_seen_at: lastSeen,
+            created_at: acc.created_at || new Date()
+          });
+        }
+      });
+
+      saveCachedRoster();
+      renderUserTable();
+    }
+
+    function updateRobotLockUI(lock, exerciseName) {
+      const isLocked = Boolean(lock && lock.is_locked && (lock.active_user_id || lock.active_user_email));
+      const emailEl = document.getElementById('activeUserEmail');
+      const idEl = document.getElementById('activeUserId');
+      const pulseEl = document.getElementById('activeUserPulse');
+      const metaEl = document.getElementById('activeUserMetadata');
+      const sinceEl = document.getElementById('activeUserSince');
+      const exerciseEl = document.getElementById('activeUserExercise');
+      const btn = document.getElementById('adminDisconnectBtn');
+
+      if (exerciseName) {
+        currentRobotExercise = exerciseName;
+      }
+
+      if (isLocked) {
+        emailEl.textContent = lock.active_user_email || 'Active Athlete';
+        idEl.textContent = lock.active_user_id ? `UID: ${lock.active_user_id}` : 'Active Session';
+        pulseEl.classList.remove('hidden');
+        metaEl.classList.remove('hidden');
+
+        if (exerciseEl) {
+          exerciseEl.textContent = formatExercise(currentRobotExercise);
+        }
+
+        if (lock.connected_at) {
+          if (lock.connected_at instanceof Date) {
+            sinceEl.textContent = lock.connected_at.toLocaleTimeString();
+          } else if (lock.connected_at.toDate) {
+            sinceEl.textContent = lock.connected_at.toDate().toLocaleTimeString();
+          } else {
+            sinceEl.textContent = 'Active now';
+          }
+        } else {
+          sinceEl.textContent = 'Active now';
+        }
+
+        btn.disabled = false;
+        btn.className = 'w-full py-4 rounded-2xl bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-500 hover:to-rose-500 text-white font-black text-sm tracking-wide flex items-center justify-center gap-2 shadow-lg shadow-red-950/60 active:scale-[0.98] transition-all cursor-pointer';
+      } else {
+        emailEl.textContent = 'No account currently connected';
+        idEl.textContent = 'Robot is available for any athlete';
+        pulseEl.classList.add('hidden');
+        metaEl.classList.add('hidden');
+
+        if (exerciseEl) {
+          exerciseEl.textContent = 'None (Standby)';
+        }
+
+        btn.disabled = true;
+        btn.className = 'w-full py-4 rounded-2xl bg-red-600/30 text-white/30 font-black text-sm tracking-wide flex items-center justify-center gap-2 cursor-not-allowed transition-all';
+      }
+
+      // Keep Robot Routine display strictly synchronized: OFFLINE, STANDBY, or IN USE
+      updateRobotRoutineDisplay();
+    }
+
+    function updateBatteryUI(v) {
+      const volt = parseFloat(v);
+      if (isNaN(volt)) return;
+      document.getElementById('adminBatteryV').textContent = `${volt.toFixed(2)} V`;
+      const minV = 9.0;
+      const maxV = 10.6;
+      let pct = Math.round(((volt - minV) / (maxV - minV)) * 100);
+      pct = Math.max(0, Math.min(100, pct));
+      document.getElementById('adminBatteryPct').textContent = `${pct}% charge`;
+    }
+
+    // ─── WebSocket Client to Robot (Port 8001) ───
+    function connectAdminWebSocket() {
+      if (adminWs) {
+        try { adminWs.close(); } catch (_) {}
+      }
+      if (adminPollInterval) {
+        clearInterval(adminPollInterval);
+        adminPollInterval = null;
+      }
+
+      const host = document.getElementById('adminRobotHost').value.trim() || adminWsHost || 'fitness.local';
+      document.getElementById('adminWsStatus').textContent = `Connecting to ws://${host}:8001...`;
+
+      try {
+        adminWs = new WebSocket(`ws://${host}:8001`);
+      } catch (err) {
+        logEvent(`WS creation error: ${err.message}`);
+        updateRobotOnlineUI(false);
+        return;
+      }
+
+      adminWs.onopen = () => {
+        logEvent(`Connected to robot WebSocket at ws://${host}:8001`);
+        document.getElementById('adminWsStatus').textContent = `Connected (ws://${host}:8001)`;
+        updateRobotOnlineUI(true);
+
+        // Immediate status query
+        try {
+          adminWs.send(JSON.stringify({ action: 'get_status' }));
+          adminWs.send(JSON.stringify({ action: 'get_accounts' }));
+        } catch (_) {}
+
+        // Periodic background poll every 3 seconds
+        adminPollInterval = setInterval(() => {
+          if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+            try {
+              adminWs.send(JSON.stringify({ action: 'get_status' }));
+            } catch (_) {}
+          }
+        }, 3000);
+      };
+
+      adminWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === 'battery_voltage' && data.payload && data.payload.voltage) {
+            updateBatteryUI(data.payload.voltage);
+          }
+
+          if (data.type === 'robot_state' && data.payload) {
+            const raw = (data.payload.mode || data.payload.state || 'STANDBY').toUpperCase();
+            currentRobotRoutine = (raw === 'STANDBY' || raw === 'IDLE') ? 'STANDBY' : 'IN USE';
+            if (data.payload.exercise) {
+              currentRobotExercise = data.payload.exercise;
+            }
+            updateRobotLockUI(currentRobotLock, currentRobotExercise);
+            updateRobotRoutineDisplay();
+          }
+
+          if (data.type === 'robot_status_report' || data.type === 'connection_status') {
+            if (data.battery_voltage) updateBatteryUI(data.battery_voltage);
+            if (data.robot_state) {
+              const raw = (data.robot_state.mode || data.robot_state.state || currentRobotRoutine).toUpperCase();
+              currentRobotRoutine = (raw === 'STANDBY' || raw === 'IDLE') ? 'STANDBY' : 'IN USE';
+              if (data.robot_state.exercise) {
+                currentRobotExercise = data.robot_state.exercise;
+              }
+            }
+            if (data.connected_clients_count !== undefined) {
+              document.getElementById('adminRobotClients').textContent = `${data.connected_clients_count} client(s) connected`;
+            }
+
+            // Real-time robot lock state
+            const isLocked = Boolean(data.is_locked || (data.locked_user_email && data.locked_user_email.length > 0) || (data.connected && data.user_email));
+            const activeEmail = data.locked_user_email || (data.connected ? data.user_email : null);
+            const activeId = data.locked_user_id || (data.connected ? data.user_id : null);
+
+            currentRobotLock = {
+              is_locked: isLocked,
+              active_user_email: isLocked ? activeEmail : null,
+              active_user_id: isLocked ? (activeId || activeEmail || 'active_user') : null,
+              connected_at: currentRobotLock?.connected_at || new Date()
+            };
+            updateRobotLockUI(currentRobotLock, currentRobotExercise);
+            updateRobotRoutineDisplay();
+
+            // Real-time live connected accounts roster from the robot (prefer all_accounts to retain offline accounts)
+            const incomingAccounts = (Array.isArray(data.all_accounts) && data.all_accounts.length > 0)
+              ? data.all_accounts
+              : (Array.isArray(data.connected_accounts) ? data.connected_accounts : []);
+            if (incomingAccounts.length > 0) {
+              mergeLiveAccounts(incomingAccounts);
+            } else if (isLocked && activeEmail) {
+              mergeLiveAccounts([{
+                uid: activeId || activeEmail,
+                email: activeEmail,
+                is_online: true,
+                connected_to_robot: true,
+                last_seen_at: new Date()
+              }]);
+            } else {
+              renderUserTable();
+            }
+          }
+
+          if (data.action === 'admin_force_disconnect' || data.action === 'disconnect') {
+            logEvent(`Robot reported disconnection: ${data.disconnected_user || 'Lock cleared'}`);
+            currentRobotLock = { is_locked: false, active_user_email: null, active_user_id: null };
+            updateRobotLockUI(currentRobotLock, 'None (Standby)');
+            cachedUsers.forEach(u => { u.connected_to_robot = false; });
+            renderUserTable();
+          }
+
+          if (data.action === 'admin_delete_account') {
+            logEvent(`Robot acknowledged deletion of user: ${data.deleted_user}`);
+          }
+        } catch (e) {
+          console.error("Error processing admin WS message:", e);
+        }
+      };
+
+      adminWs.onclose = () => {
+        document.getElementById('adminWsStatus').textContent = 'Disconnected';
+        updateRobotOnlineUI(false);
+        if (adminPollInterval) {
+          clearInterval(adminPollInterval);
+          adminPollInterval = null;
+        }
+        setTimeout(() => {
+          if (sessionStorage.getItem('fitness_robot_admin_auth') === 'true') {
+            connectAdminWebSocket();
+          }
+        }, 4000);
+      };
+    }
+
+    function updateRobotOnlineUI(isOnline) {
+      const pill = document.getElementById('robotOnlineStatusPill');
+      if (isOnline) {
+        pill.textContent = 'ONLINE';
+        pill.className = 'text-xs font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 animate-pulse';
+      } else {
+        pill.textContent = 'OFFLINE';
+        pill.className = 'text-xs font-black uppercase tracking-wide px-2.5 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30';
+      }
+      updateRobotRoutineDisplay();
+    }
+
+    function applyRobotHostChange() {
+      const host = document.getElementById('adminRobotHost').value.trim();
+      if (!host) return;
+      adminWsHost = host;
+      connectAdminWebSocket();
+    }
+
+    function setAdminHost(h) {
+      document.getElementById('adminRobotHost').value = h;
+      applyRobotHostChange();
+    }
+
+    // ─── Render Users Directory Table ───
+    function renderUserTable() {
+      const tbody = document.getElementById('userTableBody');
+      if (!tbody) return;
+      const filter = (document.getElementById('userSearchInput')?.value || '').toLowerCase().trim();
+
+      const filtered = cachedUsers.filter(u =>
+        (u.email && u.email.toLowerCase().includes(filter)) ||
+        (u.uid && u.uid.toLowerCase().includes(filter))
+      );
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="4" class="py-8 text-center text-white/40">
+              No registered user accounts match the search criteria.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      const activeLockUid = currentRobotLock && currentRobotLock.is_locked ? currentRobotLock.active_user_id : null;
+      const activeLockEmail = currentRobotLock && currentRobotLock.is_locked ? (currentRobotLock.active_user_email || '').toLowerCase() : null;
+
+      tbody.innerHTML = filtered.map(u => {
+        const isAdmin = Boolean(
+          (u.email && u.email.toLowerCase() === ADMIN_CREDENTIALS.email) ||
+          u.is_admin
+        );
+
+        const isRobotUser = Boolean(
+          !isAdmin && (
+            u.connected_to_robot ||
+            (activeLockUid && u.uid === activeLockUid) ||
+            (activeLockEmail && u.email && u.email.toLowerCase() === activeLockEmail)
+          )
+        );
+
+        const isRecentlySeen = u.last_seen_at && (Date.now() - (u.last_seen_at instanceof Date ? u.last_seen_at.getTime() : new Date(u.last_seen_at).getTime()) < 180000);
+        const isOnline = Boolean(isAdmin || (u.is_online && isRecentlySeen) || isRobotUser);
+
+        const initials = ((u.email || 'US').slice(0, 2)).toUpperCase();
+        let formattedTime = '—';
+        if (isAdmin) {
+          formattedTime = 'Active Now (Admin Session)';
+        } else if (u.last_seen_at) {
+          const d = u.last_seen_at instanceof Date ? u.last_seen_at : new Date(u.last_seen_at);
+          formattedTime = isNaN(d.getTime()) ? 'Active recently' : (d.toLocaleTimeString() + ' ' + d.toLocaleDateString());
+        } else if (isOnline) {
+          formattedTime = 'Just now';
+        }
+
+        return `
+          <tr class="hover:bg-white/[0.03] transition-colors ${isRobotUser ? 'bg-red-500/[0.04]' : ''}">
+            <td class="py-3.5 px-4 flex items-center gap-3">
+              <div class="w-8 h-8 rounded-xl bg-gradient-to-tr ${isAdmin ? 'from-indigo-600 to-purple-600' : (isRobotUser ? 'from-red-500 to-amber-500' : 'from-slate-600 to-slate-400')} p-[1.5px] flex-shrink-0">
+                <div class="w-full h-full bg-[#0a0d17] rounded-[10px] flex items-center justify-center font-bold text-[10px] ${isAdmin ? 'text-indigo-300' : (isRobotUser ? 'text-red-300' : 'text-slate-300')}">
+                  ${initials}
+                </div>
+              </div>
+              <div class="min-w-0">
+                <div class="font-extrabold text-white text-xs truncate flex items-center gap-1.5">
+                  <span>${u.email}</span>
+                  ${isAdmin ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-indigo-500/25 text-indigo-300 border border-indigo-500/40">ADMIN</span>` : ''}
+                </div>
+                <div class="text-[10px] font-mono text-white/40 truncate">${u.uid}</div>
+              </div>
+            </td>
+
+            <td class="py-3.5 px-4">
+              ${isOnline ? `
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  Online
+                </span>
+              ` : `
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium bg-white/5 text-white/40 border border-white/10">
+                  Offline
+                </span>
+              `}
+            </td>
+
+            <td class="py-3.5 px-4 text-white/60 font-mono text-[11px]">
+              ${formattedTime}
+            </td>
+
+            <td class="py-3.5 px-4 text-right">
+              ${isAdmin ? `
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-indigo-500/10 text-indigo-300/80 border border-indigo-500/20">
+                  <span>🛡️</span> Protected Admin
+                </span>
+              ` : `
+                <div class="flex items-center justify-end gap-1.5 flex-wrap">
+                  ${isRobotUser ? `
+                    <button onclick="confirmForceDisconnect('${u.email}')"
+                      class="px-2.5 py-1 rounded-xl bg-red-600/30 hover:bg-red-600 text-red-200 border border-red-500/40 text-[11px] font-bold shadow-sm active:scale-95 transition-all"
+                      title="Forcibly disconnect user from robot">
+                      Disconnect
+                    </button>
+                  ` : ''}
+                  <button onclick="confirmClearUserHistory('${u.uid}', '${u.email}')"
+                    class="px-2.5 py-1 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-[11px] font-bold active:scale-95 transition-all"
+                    title="Clear workout history, daily aggregates, and step logs">
+                    Clear History
+                  </button>
+                  <button onclick="confirmDeleteUserAccount('${u.uid}', '${u.email}')"
+                    class="px-2.5 py-1 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-400 text-[11px] font-bold active:scale-95 transition-all"
+                    title="Permanently delete user profile and data">
+                    Delete
+                  </button>
+                </div>
+              `}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // ─── Force Disconnect Execution ───
+    function confirmForceDisconnect(email) {
+      const target = email || (currentRobotLock ? currentRobotLock.active_user_email : 'active user');
+      document.getElementById('confirmTargetEmail').textContent = target;
+      document.getElementById('confirmDisconnectModal').classList.remove('hidden');
+    }
+
+    function closeConfirmModal() {
+      document.getElementById('confirmDisconnectModal').classList.add('hidden');
+    }
+
+    async function executeForceDisconnect() {
+      closeConfirmModal();
+      logEvent(`Administrator initiated force disconnect for active robot user.`);
+
+      // 1. Send WebSocket signal to robot server
+      if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+        try {
+          adminWs.send(JSON.stringify({
+            action: 'admin_force_disconnect',
+            admin_email: ADMIN_CREDENTIALS.email
+          }));
+          logEvent(`Sent admin_force_disconnect command via WebSocket to robot.`);
+        } catch (e) {
+          logEvent(`Failed to send WS disconnect: ${e.message}`);
+        }
+      }
+
+      // 2. Clear Firestore lock document
+      if (db) {
+        try {
+          await db.collection('robot_status').doc('lock').set({
+            is_locked: false,
+            active_user_id: null,
+            active_user_email: null,
+            force_disconnected: true,
+            force_disconnect_reason: 'Your robot session was disconnected by administrator (admin@sydts.ai).',
+            force_disconnected_by: ADMIN_CREDENTIALS.email,
+            disconnected_at: firebase.firestore.FieldValue.serverTimestamp(),
+            updated_at: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+
+          logEvent(`Firestore robot lock cleared successfully.`);
+        } catch (_) {}
+
+        if (currentRobotLock && currentRobotLock.active_user_id) {
+          try {
+            await db.collection('robot_accounts').doc(currentRobotLock.active_user_id).set({
+              connected_to_robot: false,
+              last_seen_at: firebase.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+          } catch (_) {}
+        }
+      }
+
+      // 3. Update local UI immediately
+      currentRobotLock = { is_locked: false, active_user_email: null, active_user_id: null };
+      updateRobotLockUI(currentRobotLock, 'None (Standby)');
+      cachedUsers.forEach(u => { u.connected_to_robot = false; });
+      renderUserTable();
+      alert('Active user account has been successfully disconnected from the robot.');
+    }
+
+    // ─── Clear User History Action ───
+    function confirmClearUserHistory(uid, email) {
+      if (email && email.toLowerCase() === ADMIN_CREDENTIALS.email) {
+        alert("Action restricted: The administrator account's data cannot be modified or cleared.");
+        return;
+      }
+      pendingClearHistoryUid = uid;
+      pendingClearHistoryEmail = email;
+      document.getElementById('clearHistoryTargetEmail').textContent = email;
+      document.getElementById('confirmClearHistoryModal').classList.remove('hidden');
+    }
+
+    function closeClearHistoryModal() {
+      pendingClearHistoryUid = null;
+      pendingClearHistoryEmail = null;
+      document.getElementById('confirmClearHistoryModal').classList.add('hidden');
+    }
+
+    async function submitClearUserHistory() {
+      const uid = pendingClearHistoryUid;
+      const email = pendingClearHistoryEmail;
+      closeClearHistoryModal();
+      if (!uid || !email) return;
+      await executeClearUserHistory(uid, email);
+    }
+
+    async function executeClearUserHistory(uid, email) {
+      if (email && email.toLowerCase() === ADMIN_CREDENTIALS.email) {
+        alert("Operation blocked: Admin account history cannot be cleared.");
+        return;
+      }
+      logEvent(`Initiating workout history clearance for athlete: ${email} (${uid})...`);
+
+      if (db) {
+        const userDocRef = db.collection('users').doc(uid);
+        const collectionsToClear = ['daily_aggregates', 'sessions', 'events', 'workout_sessions', 'watch_data'];
+
+        for (const collName of collectionsToClear) {
+          try {
+            const snap = await userDocRef.collection(collName).get();
+            if (!snap.empty) {
+              const docs = snap.docs;
+              for (let i = 0; i < docs.length; i += 400) {
+                const batch = db.batch();
+                const slice = docs.slice(i, i + 400);
+                slice.forEach(d => batch.delete(d.ref));
+                try {
+                  await batch.commit();
+                } catch (delErr) {
+                  const resetBatch = db.batch();
+                  slice.forEach(d => {
+                    if (collName === 'daily_aggregates') resetBatch.set(d.ref, { date: d.id, total_reps: 0, exercises: {} });
+                    else if (collName === 'sessions' || collName === 'workout_sessions') resetBatch.set(d.ref, { summary: {}, cleared: true });
+                    else if (collName === 'watch_data') resetBatch.set(d.ref, { steps: 0 });
+                  });
+                  await resetBatch.commit().catch(() => {});
+                }
+              }
+            }
+          } catch (subErr) {
+            console.warn(`Error clearing subcollection ${collName} for user ${uid}:`, subErr);
+          }
+        }
+
+        try {
+          await db.collection('robot_accounts').doc(uid).set({
+            history_cleared_at: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        } catch (_) {}
+      }
+
+      logEvent(`✅ Workout history cleared successfully for ${email}.`);
+      alert(`Workout history for ${email} has been completely cleared.`);
+    }
+
+    // ─── Delete User Account Action ───
+    function confirmDeleteUserAccount(uid, email) {
+      if (email && email.toLowerCase() === ADMIN_CREDENTIALS.email) {
+        alert("Action restricted: The administrator account cannot be deleted.");
+        return;
+      }
+      pendingDeleteAccountUid = uid;
+      pendingDeleteAccountEmail = email;
+      document.getElementById('deleteAccountTargetEmail').textContent = email;
+      document.getElementById('confirmDeleteAccountModal').classList.remove('hidden');
+    }
+
+    function closeDeleteAccountModal() {
+      pendingDeleteAccountUid = null;
+      pendingDeleteAccountEmail = null;
+      document.getElementById('confirmDeleteAccountModal').classList.add('hidden');
+    }
+
+    async function submitDeleteUserAccount() {
+      const uid = pendingDeleteAccountUid;
+      const email = pendingDeleteAccountEmail;
+      closeDeleteAccountModal();
+      if (!uid || !email) return;
+      await executeDeleteUserAccount(uid, email);
+    }
+
+    async function executeDeleteUserAccount(uid, email) {
+      if (email && email.toLowerCase() === ADMIN_CREDENTIALS.email) {
+        alert("Operation blocked: Admin account cannot be deleted.");
+        return;
+      }
+      logEvent(`Initiating permanent deletion of account: ${email} (${uid})...`);
+
+      // 1. If currently using robot, kick connection immediately
+      const isRobotUser = currentRobotLock && (
+        currentRobotLock.active_user_id === uid ||
+        (currentRobotLock.active_user_email && currentRobotLock.active_user_email.toLowerCase() === email.toLowerCase())
+      );
+      if (isRobotUser) {
+        if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+          try {
+            adminWs.send(JSON.stringify({
+              action: 'admin_force_disconnect',
+              admin_email: ADMIN_CREDENTIALS.email
+            }));
+          } catch (_) {}
+        }
+        currentRobotLock = null;
+        updateRobotLockUI(null, 'None (Standby)');
+      }
+
+      // 2. Notify robot WebSocket to purge account from memory roster
+      if (adminWs && adminWs.readyState === WebSocket.OPEN) {
+        try {
+          adminWs.send(JSON.stringify({
+            action: 'admin_delete_account',
+            user_id: uid,
+            user_email: email
+          }));
+        } catch (_) {}
+      }
+
+      // 3. Delete from Firestore
+      if (db) {
+        const userDocRef = db.collection('users').doc(uid);
+        const collectionsToDelete = ['daily_aggregates', 'sessions', 'events', 'workout_sessions', 'watch_data', 'control_commands'];
+
+        for (const coll of collectionsToDelete) {
+          try {
+            const snap = await userDocRef.collection(coll).get();
+            if (!snap.empty) {
+              const batch = db.batch();
+              snap.forEach(d => batch.delete(d.ref));
+              await batch.commit().catch(() => {});
+            }
+          } catch (_) {}
+        }
+
+        try {
+          await userDocRef.delete();
+        } catch (err) {
+          console.warn("Could not delete users doc:", err);
+        }
+
+        try {
+          await db.collection('robot_accounts').doc(uid).delete();
+        } catch (err) {
+          console.warn("Could not delete robot_accounts doc:", err);
+        }
+      }
+
+      // 4. Remove from local cached roster immediately and re-render
+      cachedUsers = cachedUsers.filter(u => u.uid !== uid && (!u.email || u.email.toLowerCase() !== email.toLowerCase()));
+      saveCachedRoster();
+      try {
+        const shared = JSON.parse(localStorage.getItem(SHARED_ACCOUNTS_STORAGE_KEY) || '[]');
+        const filteredShared = shared.filter(u => u.uid !== uid && (!u.email || u.email.toLowerCase() !== email.toLowerCase()));
+        localStorage.setItem(SHARED_ACCOUNTS_STORAGE_KEY, JSON.stringify(filteredShared));
+      } catch (_) {}
+      renderUserTable();
+
+      logEvent(`✅ Account ${email} has been permanently deleted.`);
+      alert(`Account ${email} has been permanently deleted.`);
+    }
+
+    function logEvent(msg) {
+      const container = document.getElementById('adminLogContainer');
+      if (!container) return;
+      const row = document.createElement('div');
+      row.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      container.appendChild(row);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function clearAdminLog() {
+      const container = document.getElementById('adminLogContainer');
+      if (container) container.innerHTML = '';
+    }
+  </script>
+</body>
+
+</html>

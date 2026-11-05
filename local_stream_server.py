@@ -12,6 +12,7 @@ import json
 import asyncio
 import threading
 import queue
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -68,6 +69,82 @@ _ws_loop = None
 _active_user_id = None
 _active_user_email = None
 _client_accounts = {}  # websocket -> {"user_id": uid, "user_email": email}
+_known_accounts = {}   # uid or email -> account metadata
+
+ACCOUNTS_CACHE_FILE = Path(__file__).parent / "known_accounts.json"
+
+def _load_known_accounts():
+    global _known_accounts
+    try:
+        if ACCOUNTS_CACHE_FILE.exists():
+            with open(ACCOUNTS_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    _known_accounts = data
+                    # Mark all accounts as offline upon server startup
+                    for k, item in _known_accounts.items():
+                        item["is_online"] = False
+                        item["connected_to_robot"] = False
+            print(f"[WS] Loaded {len(_known_accounts)} known accounts from {ACCOUNTS_CACHE_FILE.name}")
+    except Exception as e:
+        print(f"[WS] Warning: Failed to load known accounts cache: {e}")
+
+def _save_known_accounts():
+    try:
+        with open(ACCOUNTS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_known_accounts, f, indent=2)
+    except Exception as e:
+        print(f"[WS] Warning: Failed to save known accounts cache: {e}")
+
+_load_known_accounts()
+
+def _build_status_report():
+    """Build comprehensive real-time status report including lock state and all active accounts."""
+    now_ts = time.time()
+    online_keys = set()
+    for acc in _client_accounts.values():
+        uid = acc.get("user_id")
+        email = acc.get("user_email")
+        if uid or email:
+            key = str(uid or email)
+            online_keys.add(key)
+            _known_accounts[key] = {
+                "uid": uid or key,
+                "email": email or key,
+                "is_online": True,
+                "connected_to_robot": bool((uid and uid == _active_user_id) or (email and email == _active_user_email)),
+                "last_seen": now_ts
+            }
+
+    # Mark disconnected accounts offline
+    for k, item in _known_accounts.items():
+        if k not in online_keys:
+            item["is_online"] = False
+            item["connected_to_robot"] = False
+
+    _save_known_accounts()
+
+    accounts_list = list(_known_accounts.values())
+    connected_list = [acc for acc in accounts_list if acc.get("is_online")]
+
+    return {
+        "type": "robot_status_report",
+        "is_locked": _active_user_id is not None,
+        "locked_user_email": _active_user_email,
+        "locked_user_id": _active_user_id,
+        "battery_voltage": _latest_battery_voltage,
+        "robot_state": _latest_robot_state,
+        "connected_clients_count": len(_connected_clients),
+        "connected_accounts": connected_list,
+        "all_accounts": accounts_list,
+        "time": now_ts
+    }
+
+async def _broadcast_status():
+    """Broadcast latest status report to all connected clients."""
+    if _connected_clients:
+        msg = json.dumps(_build_status_report())
+        await _send_to_all_clients(msg)
 
 # ─── 1. HTTP MJPEG Streaming Server ───
 
@@ -147,15 +224,11 @@ async def _ws_handler(websocket):
     try:
         # Import websockets inside handler to handle errors gracefully
         import websockets
-        # Send initial online status update to client upon connection
-        ack = {
-            "status": "connected",
-            "time": time.time(),
-            "type": "connection_status",
-            "is_locked": _active_user_id is not None,
-            "locked_user_email": _active_user_email
-        }
-        await websocket.send(json.dumps(ack))
+        # Send initial complete status report upon connection
+        init_report = _build_status_report()
+        init_report["type"] = "connection_status"
+        init_report["status"] = "connected"
+        await websocket.send(json.dumps(init_report))
         if _latest_battery_voltage is not None:
             await websocket.send(json.dumps({
                 "type": "battery_voltage",
@@ -212,11 +285,15 @@ async def _ws_handler(websocket):
                     "action": action,
                     "type": "connection_status",
                     "connected": True,
+                    "is_locked": True,
+                    "locked_user_id": uid,
+                    "locked_user_email": email,
                     "user_id": uid,
                     "user_email": email,
                     "time": time.time()
                 }
                 await websocket.send(json.dumps(ack))
+                await _broadcast_status()
                 continue
 
             elif action == "disconnect":
@@ -230,16 +307,102 @@ async def _ws_handler(websocket):
                         session_manager.clear_active_user()
                     except Exception as e:
                         print(f"[WS] Error clearing active user: {e}")
+                _client_accounts.pop(websocket, None)
                 ack = {
                     "status": "acknowledged",
                     "action": "disconnect",
                     "type": "connection_status",
                     "connected": False,
+                    "is_locked": False,
                     "time": time.time()
                 }
                 await websocket.send(json.dumps(ack))
+                await _broadcast_status()
                 await websocket.close()
                 return
+
+            elif action == "admin_force_disconnect":
+                admin_email = data.get("admin_email", "admin@sydts.ai")
+                print(f"[WS] ⚠️ ADMIN FORCE DISCONNECT requested by {admin_email}. Kicking user {_active_user_email} ({_active_user_id}).")
+                prev_user_email = _active_user_email
+                prev_user_id = _active_user_id
+
+                # Broadcast force_disconnected to active client sockets
+                kick_msg = json.dumps({
+                    "type": "force_disconnected",
+                    "reason": f"Your robot connection was disconnected by administrator ({admin_email}).",
+                    "time": time.time()
+                })
+                for sock, acc in list(_client_accounts.items()):
+                    if acc.get("user_id") == prev_user_id:
+                        try:
+                            asyncio.create_task(sock.send(kick_msg))
+                            asyncio.create_task(sock.close(code=4001, reason="Disconnected by administrator"))
+                        except Exception:
+                            pass
+
+                _active_user_id = None
+                _active_user_email = None
+                try:
+                    import session_manager
+                    session_manager.clear_active_user()
+                except Exception as e:
+                    print(f"[WS] Error clearing active user during admin disconnect: {e}")
+
+                ack = {
+                    "status": "acknowledged",
+                    "action": "admin_force_disconnect",
+                    "type": "connection_status",
+                    "disconnected_user": prev_user_email,
+                    "is_locked": False,
+                    "time": time.time()
+                }
+                await websocket.send(json.dumps(ack))
+                await _broadcast_status()
+                continue
+
+            elif action == "admin_delete_account":
+                target_uid = data.get("user_id")
+                target_email = data.get("user_email")
+                print(f"[WS] ⚠️ ADMIN DELETE ACCOUNT: target={target_email} ({target_uid})")
+                for k in list(_known_accounts.keys()):
+                    if (target_uid and k == target_uid) or (target_email and k == target_email):
+                        _known_accounts.pop(k, None)
+                _save_known_accounts()
+                for sock, acc in list(_client_accounts.items()):
+                    if (target_uid and acc.get("user_id") == target_uid) or (target_email and acc.get("user_email") == target_email):
+                        try:
+                            kick_msg = json.dumps({
+                                "type": "force_disconnected",
+                                "reason": "Your account was deleted by administrator.",
+                                "time": time.time()
+                            })
+                            asyncio.create_task(sock.send(kick_msg))
+                            asyncio.create_task(sock.close(code=4001, reason="Account deleted by administrator"))
+                        except Exception:
+                            pass
+                        _client_accounts.pop(sock, None)
+                if (target_uid and _active_user_id == target_uid) or (target_email and _active_user_email == target_email):
+                    _active_user_id = None
+                    _active_user_email = None
+                    try:
+                        import session_manager
+                        session_manager.clear_active_user()
+                    except Exception:
+                        pass
+                ack = {
+                    "status": "acknowledged",
+                    "action": "admin_delete_account",
+                    "deleted_user": target_email or target_uid,
+                    "time": time.time()
+                }
+                await websocket.send(json.dumps(ack))
+                await _broadcast_status()
+                continue
+
+            elif action in ("get_status", "get_accounts"):
+                await websocket.send(json.dumps(_build_status_report()))
+                continue
 
             if action == "force_stop":
                 if _start_exercise_event is not None:
@@ -294,6 +457,10 @@ async def _ws_handler(websocket):
                 except Exception:
                     pass
         print(f"[WS] Local Control Client Disconnected: {websocket.remote_address}")
+        try:
+            await _broadcast_status()
+        except Exception:
+            pass
 
 async def _ws_main(host, port):
     import websockets
