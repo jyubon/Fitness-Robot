@@ -1044,17 +1044,15 @@ class FitnessRobotUI(tk.Tk):
         self.stop_home_camera()
         self.home_eyes = None
 
-        # Title Header with #C6FF34 text & #7F3AED violet outline on #000000
-        title_canvas = OutlinedLabel(
+        # Title Header in solid Lime #C6FF34 without outline
+        title_label = tk.Label(
             self.main_container,
             text="CHOOSE YOUR WORKOUT",
             font=("Helvetica", 16, "bold"),
             fg="#C6FF34",
-            outline_color="#7F3AED",
-            height=32,
-            bg_color="#000000"
+            bg="#000000"
         )
-        title_canvas.pack(pady=(4, 6))
+        title_label.pack(pady=(6, 6))
 
         # Exercise Grid - 4 Exercise Modes in 2x2 Grid (Border removed, #7F3AED to #1E0638 gradient, #C6FF34 text)
         grid_frame = tk.Frame(self.main_container, bg="#000000")
