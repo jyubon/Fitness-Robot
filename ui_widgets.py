@@ -1256,51 +1256,73 @@ class FitnessRobotUI(tk.Tk):
             fg="#96D75F",
             bg="#000000"
         )
-        title_label.pack(pady=(5, 10))
+        title_label.pack(pady=(6, 8))
 
-        card_container = tk.Frame(self.main_container, bg="#000000", height=150)
-        card_container.pack(fill="x", padx=10, pady=5)
-        card_container.pack_propagate(False)
+        # Directly pack card_frame without scrollbar
+        card_frame = tk.Frame(self.main_container, bg="#000000")
+        card_frame.pack(fill="both", expand=True, padx=16, pady=(0, 4))
 
-        canvas = tk.Canvas(card_container, bg="#000000", highlightthickness=0)
-        scrollbar = tk.Scrollbar(card_container, orient="vertical", command=canvas.yview)
-        card_frame = tk.Frame(canvas, bg="#000000", padx=10, pady=10)
-
-        card_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=card_frame, anchor="nw", width=420)
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        tk.Label(card_frame, text="Performance Metrics", font=("Helvetica", 12, "bold"), fg="#50AFDF", bg="#000000").pack(anchor="w", pady=(0, 5))
+        tk.Label(
+            card_frame,
+            text="Performance Metrics",
+            font=("Helvetica", 15, "bold"),
+            fg="#50AFDF",
+            bg="#000000"
+        ).pack(anchor="w", pady=(2, 4))
 
         for metric, val in summary['metrics']:
-            lbl = tk.Label(card_frame, text=f"• {metric}: {val}", font=("Helvetica", 10), fg="#EBEBEF", bg="#000000")
-            lbl.pack(anchor="w", pady=1)
+            lbl = tk.Label(
+                card_frame,
+                text=f"• {metric}: {val}",
+                font=("Helvetica", 13, "bold"),
+                fg="#FFFFFF",
+                bg="#000000"
+            )
+            lbl.pack(anchor="w", pady=2, padx=6)
 
         if summary.get('errors'):
-            tk.Label(card_frame, text="Form Warnings / Mistakes", font=("Helvetica", 12, "bold"), fg="#E5B05E", bg="#000000").pack(anchor="w", pady=(10, 5))
+            tk.Label(
+                card_frame,
+                text="Form Warnings / Mistakes",
+                font=("Helvetica", 15, "bold"),
+                fg="#E5B05E",
+                bg="#000000"
+            ).pack(anchor="w", pady=(8, 4))
             for err in set(summary['errors']):
-                lbl = tk.Label(card_frame, text=f"⚠️ {err}", font=("Helvetica", 10), fg="#E5B05E", bg="#000000", wraplength=380, justify="left")
-                lbl.pack(anchor="w", pady=1)
+                lbl = tk.Label(
+                    card_frame,
+                    text=f"⚠️ {err}",
+                    font=("Helvetica", 13, "bold"),
+                    fg="#E5B05E",
+                    bg="#000000",
+                    wraplength=440,
+                    justify="left"
+                )
+                lbl.pack(anchor="w", pady=2, padx=6)
         else:
-            tk.Label(card_frame, text="✅ Perfect posture! No mistakes detected.", font=("Helvetica", 10, "italic"), fg="#96D75F", bg="#2B2B36").pack(anchor="w", pady=(10, 5))
+            tk.Label(
+                card_frame,
+                text="✓ Perfect posture! No mistakes detected.",
+                font=("Helvetica", 14, "bold"),
+                fg="#C6FF34",
+                bg="#000000"
+            ).pack(anchor="w", pady=(10, 6), padx=4)
 
         btn = RoundedButton(
             self.main_container,
             text="BACK TO MENU",
-            command=self.show_home_screen,
-            bg_color="#2B2B36",
-            fg_color="#96D75F",
-            outline_color="#96D75F",
-            outline_width=2,
-            radius=10,
-            font=("Helvetica", 12, "bold"),
-            width=180,
-            height=35
+            command=self.show_exercise_dashboard,
+            bg_color="#7F3AED",
+            gradient_color="#1E0638",
+            fg_color="#C6FF34",
+            outline_color=None,
+            outline_width=0,
+            radius=12,
+            font=("Helvetica", 13, "bold"),
+            width=200,
+            height=38
         )
-        btn.pack(pady=10)
+        btn.pack(pady=(4, 8))
 
     def confirm_shutdown(self):
         if messagebox.askyesno("Shutdown", "Are you sure you want to shutdown the Raspberry Pi?"):
