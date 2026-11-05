@@ -1547,16 +1547,20 @@ async function sendStartExercise() {
 }
 
 async function switchMode(mode) {
-  if (robotState === 'ACTIVE') {
-    appendExerciseLog("⚠️ Exercise is currently active. Stop current exercise first before switching.", true);
-    const select = document.getElementById('fitnessExerciseSelect');
-    if (select && currentExercise) select.value = currentExercise;
+  if (robotState === 'ACTIVE' && currentExercise === mode) {
     return;
   }
 
   currentExercise = mode;
   resetExerciseUI(currentExercise);
   syncExerciseUI(currentExercise);
+
+  robotState = 'ACTIVE';
+  const pill = document.getElementById('robotState');
+  if (pill) {
+    pill.textContent = 'ACTIVE';
+    pill.setAttribute('data-state', 'ACTIVE');
+  }
   updateExerciseButtonStates();
 
   const mapping = {
@@ -1566,10 +1570,13 @@ async function switchMode(mode) {
     plank: 'PLANK',
     person_follow: 'PERSON_FOLLOW'
   };
+  const targetMode = mapping[mode] || mode.toUpperCase();
+
   await sendControlCommand({
     action: 'switch_mode',
-    mode: mapping[mode] || mode.toUpperCase()
-  }, `Selected ${formatExercise(mode)}. Robot entering FOLLOWING mode...`);
+    mode: targetMode,
+    exercise: targetMode
+  }, `Selected ${formatExercise(mode)}. Robot switching to exercise counting...`);
 }
 
 function updateModeButtons(exerciseName) {

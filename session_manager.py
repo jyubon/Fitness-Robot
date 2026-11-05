@@ -468,37 +468,60 @@ def _control_listener():
     processed = set()
     while True:
         try:
-            user_ref = _firebase_user_ref()
-            if user_ref is None:
+            if db is None:
                 time.sleep(1.0)
                 continue
 
-            commands = user_ref.collection("control_commands").where("status", "==", "pending").stream()
+            # Query collection_group across all users, with fallback to user_ref
+            commands = []
+            try:
+                commands = list(db.collection_group("control_commands").where("status", "==", "pending").stream())
+            except Exception:
+                user_ref = _firebase_user_ref()
+                if user_ref is not None:
+                    try:
+                        commands = list(user_ref.collection("control_commands").where("status", "==", "pending").stream())
+                    except Exception:
+                        commands = []
+
             for doc in commands:
                 if doc.id in processed:
                     continue
 
                 data = doc.to_dict() or {}
+                # Automatically track active user ID from Firestore document path if available
+                try:
+                    parent_doc = doc.reference.parent.parent
+                    if parent_doc and parent_doc.id:
+                        set_active_user(parent_doc.id)
+                except Exception:
+                    pass
+
                 action = str(data.get("action") or "").lower()
+                mode = data.get("mode") or data.get("exercise")
+
                 if action == "force_stop":
                     start_exercise.clear()
                     force_stop.set()
-                elif action == "switch_mode":
-                    force_stop.clear()
-                    start_exercise.clear()
-                    mode = data.get("mode")
-                    if mode:
-                        remote_mode_queue.put(("switch", str(mode).upper()))
-                elif action == "start_exercise":
+                elif action in ("switch_mode", "start_exercise", "start", "select_exercise"):
                     force_stop.clear()
                     start_exercise.set()
+                    if mode:
+                        remote_mode_queue.put(("switch", str(mode).upper()))
+                elif action.upper() in ("BICEP_CURLS", "BICEP_CURL", "PUSHUPS", "PUSH_UPS", "SQUATS", "SQUAT", "PLANK"):
+                    force_stop.clear()
+                    start_exercise.set()
+                    remote_mode_queue.put(("switch", action.upper()))
 
                 processed.add(doc.id)
-                doc.reference.set({
-                    "status": "processed",
-                    "processed_at": firestore.SERVER_TIMESTAMP,
-                    "processed_by": "raspi"
-                }, merge=True)
+                try:
+                    doc.reference.set({
+                        "status": "processed",
+                        "processed_at": firestore.SERVER_TIMESTAMP,
+                        "processed_by": "raspi"
+                    }, merge=True)
+                except Exception:
+                    pass
         except Exception:
             pass
         time.sleep(0.5)

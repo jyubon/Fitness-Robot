@@ -120,8 +120,46 @@ class StreamingHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 # Client closed browser tab or disconnected
                 pass
+        elif self.path in ('/api/control', '/control', '/switch_mode'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(b'{"status": "ready"}')
         else:
             self.send_error(404)
+
+    def do_POST(self):
+        global _force_stop_event, _remote_mode_queue, _start_exercise_event
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length) if length > 0 else b'{}'
+        try:
+            data = json.loads(body.decode('utf-8'))
+        except Exception:
+            data = {}
+
+        action = data.get("action") or ""
+        mode = data.get("mode") or data.get("exercise")
+
+        if action == "force_stop":
+            if _start_exercise_event: _start_exercise_event.clear()
+            if _force_stop_event: _force_stop_event.set()
+        elif action in ("switch_mode", "start_exercise", "start", "select_exercise"):
+            if _force_stop_event: _force_stop_event.clear()
+            if _start_exercise_event: _start_exercise_event.set()
+            if mode and _remote_mode_queue:
+                _remote_mode_queue.put(("switch", str(mode).upper()))
+        elif str(action).upper() in ("BICEP_CURLS", "PUSHUPS", "SQUATS", "PLANK"):
+            if _force_stop_event: _force_stop_event.clear()
+            if _start_exercise_event: _start_exercise_event.set()
+            if _remote_mode_queue:
+                _remote_mode_queue.put(("switch", str(action).upper()))
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "ok", "action": action, "mode": mode}).encode('utf-8'))
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle HTTP requests in separate threads for multiple clients."""
@@ -179,26 +217,37 @@ async def _ws_handler(websocket):
                 else:
                     print("[WS] ERROR: Force Stop requested, but no event handler configured.")
 
-            elif action == "switch_mode":
+            elif action in ("switch_mode", "select_exercise"):
                 if _force_stop_event is not None:
                     _force_stop_event.clear()
                 if _start_exercise_event is not None:
-                    _start_exercise_event.clear()
-                mode = data.get("mode")
+                    _start_exercise_event.set()
+                mode = data.get("mode") or data.get("exercise")
                 if mode and _remote_mode_queue is not None:
                     _remote_mode_queue.put(("switch", str(mode).upper()))
                     print(f"[WS] Mode Switch request put in queue: {mode.upper()}")
                 else:
                     print(f"[WS] ERROR: Mode Switch requested to {mode}, but no queue configured.")
 
-            elif action == "start_exercise":
+            elif action in ("start_exercise", "start"):
                 if _force_stop_event is not None:
                     _force_stop_event.clear()
                 if _start_exercise_event is not None:
                     _start_exercise_event.set()
                     print("[WS] Start Exercise signal set.")
-                else:
-                    print("[WS] ERROR: Start Exercise requested, but no event handler configured.")
+                mode = data.get("exercise") or data.get("mode")
+                if mode and _remote_mode_queue is not None:
+                    _remote_mode_queue.put(("switch", str(mode).upper()))
+                    print(f"[WS] Start Exercise mode switch put in queue: {mode.upper()}")
+
+            elif str(action).upper() in ("BICEP_CURLS", "BICEP_CURL", "PUSHUPS", "PUSH_UPS", "SQUATS", "SQUAT", "PLANK"):
+                if _force_stop_event is not None:
+                    _force_stop_event.clear()
+                if _start_exercise_event is not None:
+                    _start_exercise_event.set()
+                if _remote_mode_queue is not None:
+                    _remote_mode_queue.put(("switch", str(action).upper()))
+                    print(f"[WS] Direct exercise action put in queue: {str(action).upper()}")
 
             elif action == "identify":
                 uid = data.get("user_id")
