@@ -34,7 +34,8 @@ class PushupsRunner(ExerciseRunner):
     def count_pushups(self, shoulder, elbow, wrist, neck, hip, ankle):
         elbow_angle = calculate_angle(shoulder, elbow, wrist)
         hip_angle = calculate_angle(neck, hip, ankle)
-        is_body_straight = hip_angle >= 165.0
+        # Straight body line target: ideal is 180°, allowing range between 150° and 180° for human tolerance
+        is_body_straight = 150.0 < hip_angle <= 180.0
 
         if is_body_straight:
             if elbow_angle < 110 and self.pushup_stage == 'up':
