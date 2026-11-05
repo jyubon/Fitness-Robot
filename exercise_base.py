@@ -210,6 +210,7 @@ class ExerciseRunner:
         reset_tracking_state()
         pause_request.clear()
         resume_request.clear()
+        start_exercise.clear()
         exercise_executing.set()
         self.home_clicked = False
 
@@ -469,6 +470,7 @@ class ExerciseRunner:
                     pass
         finally:
             exercise_executing.clear()
+            start_exercise.clear()
             force_stop.clear()
             send_command("STOP")
             try:
