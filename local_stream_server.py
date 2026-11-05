@@ -62,9 +62,12 @@ _remote_mode_queue = None
 _latest_battery_voltage = None
 _latest_robot_state = None
 
-# Active local WebSocket clients
+# Active local WebSocket clients & user account locks
 _connected_clients = set()
 _ws_loop = None
+_active_user_id = None
+_active_user_email = None
+_client_accounts = {}  # websocket -> {"user_id": uid, "user_email": email}
 
 # ─── 1. HTTP MJPEG Streaming Server ───
 
@@ -138,14 +141,20 @@ def _run_http_server(host, port):
 # ─── 2. WebSockets Control Server ───
 
 async def _ws_handler(websocket):
-    global _force_stop_event, _remote_mode_queue, _connected_clients
+    global _force_stop_event, _remote_mode_queue, _connected_clients, _active_user_id, _active_user_email, _client_accounts
     print(f"[WS] Local Control Client Connected: {websocket.remote_address}")
     _connected_clients.add(websocket)
     try:
         # Import websockets inside handler to handle errors gracefully
         import websockets
         # Send initial online status update to client upon connection
-        ack = {"status": "connected", "time": time.time(), "type": "connection_status"}
+        ack = {
+            "status": "connected",
+            "time": time.time(),
+            "type": "connection_status",
+            "is_locked": _active_user_id is not None,
+            "locked_user_email": _active_user_email
+        }
         await websocket.send(json.dumps(ack))
         if _latest_battery_voltage is not None:
             await websocket.send(json.dumps({
@@ -169,6 +178,68 @@ async def _ws_handler(websocket):
 
             action = data.get("action")
             print(f"[WS] Command Received: {data}")
+
+            if action == "identify":
+                uid = data.get("user_id")
+                email = data.get("user_email")
+
+                # If the robot is already connected to another account, reject this connection!
+                if _active_user_id is not None and uid and uid != _active_user_id:
+                    print(f"[WS] ⚠️ REJECTED: Account '{email}' ({uid}) attempted to connect, but robot is already connected to '{_active_user_email}' ({_active_user_id}).")
+                    err_resp = {
+                        "type": "connection_rejected",
+                        "status": "rejected",
+                        "error": "account_locked",
+                        "message": f"Robot is currently connected to another account ({_active_user_email}). Only one account can connect at a time.",
+                        "locked_user_email": _active_user_email
+                    }
+                    await websocket.send(json.dumps(err_resp))
+                    await websocket.close(code=4003, reason="Robot locked by another account")
+                    return
+
+                # Lock to this account
+                _active_user_id = uid
+                _active_user_email = email
+                _client_accounts[websocket] = {"user_id": uid, "user_email": email}
+                try:
+                    import session_manager
+                    session_manager.set_active_user(uid, email)
+                except Exception as e:
+                    print(f"[WS] Error setting active user: {e}")
+
+                ack = {
+                    "status": "acknowledged",
+                    "action": action,
+                    "type": "connection_status",
+                    "connected": True,
+                    "user_id": uid,
+                    "user_email": email,
+                    "time": time.time()
+                }
+                await websocket.send(json.dumps(ack))
+                continue
+
+            elif action == "disconnect":
+                uid = data.get("user_id")
+                if _active_user_id == uid or not uid:
+                    print(f"[WS] Disconnect requested by active user: {_active_user_email}")
+                    _active_user_id = None
+                    _active_user_email = None
+                    try:
+                        import session_manager
+                        session_manager.clear_active_user()
+                    except Exception as e:
+                        print(f"[WS] Error clearing active user: {e}")
+                ack = {
+                    "status": "acknowledged",
+                    "action": "disconnect",
+                    "type": "connection_status",
+                    "connected": False,
+                    "time": time.time()
+                }
+                await websocket.send(json.dumps(ack))
+                await websocket.close()
+                return
 
             if action == "force_stop":
                 if _start_exercise_event is not None:
@@ -200,15 +271,6 @@ async def _ws_handler(websocket):
                 else:
                     print("[WS] ERROR: Start Exercise requested, but no event handler configured.")
 
-            elif action == "identify":
-                uid = data.get("user_id")
-                email = data.get("user_email")
-                try:
-                    import session_manager
-                    session_manager.set_active_user(uid, email)
-                except Exception as e:
-                    print(f"[WS] Error setting active user: {e}")
-
             # Send acknowledgement back to client
             ack = {"status": "acknowledged", "action": action, "time": time.time()}
             await websocket.send(json.dumps(ack))
@@ -218,6 +280,19 @@ async def _ws_handler(websocket):
         print(f"[WS] ERROR: Connection Error: {e}", file=sys.stderr)
     finally:
         _connected_clients.discard(websocket)
+        disconnected_info = _client_accounts.pop(websocket, None)
+        if disconnected_info and disconnected_info.get("user_id") == _active_user_id:
+            # Check if any other socket from the same user is still open
+            still_active = any(acc.get("user_id") == _active_user_id for acc in _client_accounts.values())
+            if not still_active:
+                print(f"[WS] All connections for active user {_active_user_email} closed. Releasing robot lock.")
+                _active_user_id = None
+                _active_user_email = None
+                try:
+                    import session_manager
+                    session_manager.clear_active_user()
+                except Exception:
+                    pass
         print(f"[WS] Local Control Client Disconnected: {websocket.remote_address}")
 
 async def _ws_main(host, port):

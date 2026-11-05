@@ -271,6 +271,7 @@ function showAppView(email) {
   }
   ensureLocalWebSocketConnected();
   refreshRobotOnlineStatus();
+  updateRobotConnectButton(Boolean(localControlSocket && localControlSocket.readyState === WebSocket.OPEN));
   setWatchConnectionStatus(stepConnected);
 
   if (localControlSocket && localControlSocket.readyState === 1 && currentUserId) {
@@ -366,6 +367,8 @@ function setRobotConnectionStatus(isOnline) {
       pill.setAttribute('data-state', 'OFFLINE');
     }
   }
+
+  updateRobotConnectButton(isOnline);
 }
 
 function setWatchConnectionStatus(isOnline) {
@@ -958,15 +961,18 @@ function connectRealtime() {
     });
 
   appendSystemLog('Connected to Firebase telemetry');
+  listenToRobotLock();
 }
 
 function disconnectRealtime() {
   if (telemetryUnsubscribe) telemetryUnsubscribe();
   if (watchUnsubscribe) watchUnsubscribe();
   if (batteryUnsubscribe) batteryUnsubscribe();
+  if (robotLockUnsubscribe) robotLockUnsubscribe();
   telemetryUnsubscribe = null;
   watchUnsubscribe = null;
   batteryUnsubscribe = null;
+  robotLockUnsubscribe = null;
 }
 
 function handleTelemetryMessage(msg) {
@@ -1255,13 +1261,168 @@ function clearLog() {
   clearSystemLog();
 }
 
-// ---------- Control ----------
+// ---------- Control & Robot Link ----------
 
 let localControlSocket = null;
 let localControlHost = null;
 let localReconnectTimer = null;
+let isRobotManuallyDisconnected = false;
+let robotLockUnsubscribe = null;
+let currentRobotLock = null;
+
+function updateRobotConnectButton(isConnected, isConnecting = false) {
+  const btn = document.getElementById('robotConnectBtn');
+  const badge = document.getElementById('robotConnectStatusBadge');
+  if (!btn) return;
+
+  if (isConnected) {
+    btn.textContent = 'Disconnect';
+    btn.className = 'px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-extrabold text-xs shadow-md shadow-red-950/40 active:scale-95 transition-all';
+    btn.title = 'Disconnect from robot';
+    if (badge) {
+      badge.textContent = 'Connected';
+      badge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30';
+    }
+  } else if (isConnecting) {
+    btn.textContent = 'Connecting...';
+    btn.className = 'px-4 py-2 rounded-xl bg-yellow-500/20 border border-yellow-400/40 text-yellow-300 font-bold text-xs cursor-wait';
+    btn.title = 'Connecting to robot...';
+    if (badge) {
+      badge.textContent = 'Connecting...';
+      badge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-yellow-500/15 text-yellow-300 border border-yellow-500/30';
+    }
+  } else {
+    btn.textContent = 'Connect';
+    btn.className = 'px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all';
+    btn.title = 'Connect to robot and stream';
+    if (badge) {
+      badge.textContent = 'Disconnected';
+      badge.className = 'text-[10px] px-2 py-0.5 rounded-full font-bold bg-white/5 text-white/40 border border-white/10';
+    }
+  }
+}
+
+function toggleRobotConnection() {
+  const isConnected = Boolean(localControlSocket && localControlSocket.readyState === WebSocket.OPEN);
+  if (isConnected) {
+    disconnectRobot();
+  } else {
+    connectRobot();
+  }
+}
+
+function connectRobot() {
+  // If robot is currently locked by a different user in Firestore, reject connection immediately
+  if (currentRobotLock && currentRobotLock.is_locked && currentRobotLock.active_user_id && currentRobotLock.active_user_id !== currentUserId) {
+    showRobotBusyModal(currentRobotLock.active_user_email || "another user");
+    updateRobotConnectButton(false);
+    return;
+  }
+
+  isRobotManuallyDisconnected = false;
+  updateRobotConnectButton(false, true);
+  setCameraStream(true);
+}
+
+function disconnectRobot() {
+  isRobotManuallyDisconnected = true;
+  if (localReconnectTimer) {
+    clearTimeout(localReconnectTimer);
+    localReconnectTimer = null;
+  }
+
+  // Notify robot over WebSocket that this user is intentionally disconnecting to release the lock immediately
+  if (localControlSocket && localControlSocket.readyState === WebSocket.OPEN) {
+    try {
+      localControlSocket.send(JSON.stringify({
+        action: 'disconnect',
+        user_id: currentUserId,
+        user_email: currentUserEmail
+      }));
+    } catch (_) {}
+  }
+
+  if (localControlSocket) {
+    try {
+      const oldSocket = localControlSocket;
+      oldSocket.onopen = null;
+      oldSocket.onmessage = null;
+      oldSocket.onerror = null;
+      oldSocket.onclose = null;
+      oldSocket.close();
+    } catch (_) {}
+    localControlSocket = null;
+  }
+
+  // Release Firestore lock if currently owned by this user
+  if (db && currentUserId) {
+    db.collection('robot_status').doc('lock').get().then(doc => {
+      if (doc.exists && doc.data().active_user_id === currentUserId) {
+        db.collection('robot_status').doc('lock').set({
+          active_user_id: null,
+          active_user_email: null,
+          is_locked: false,
+          updated_at: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
+  // Terminate camera feed & show standby placeholder
+  const img = document.getElementById('cameraFeed');
+  const placeholder = document.getElementById('cameraPlaceholder');
+  if (img) {
+    img.src = '';
+    img.classList.add('hidden');
+    img.removeAttribute('data-stream-url');
+  }
+  if (placeholder) {
+    placeholder.classList.remove('hidden');
+    placeholder.innerHTML = '<div class="text-white/40">Robot disconnected.<br>Press Connect in Settings to re-establish link.</div>';
+  }
+  isCameraStreamLoaded = false;
+  lastRobotTelemetryAt = 0;
+
+  setRobotConnectionStatus(false);
+  updateRobotConnectButton(false);
+  appendSystemLog("Disconnected from robot");
+}
+
+function showRobotBusyModal(lockedEmail) {
+  const modal = document.getElementById('robotBusyModal');
+  const span = document.getElementById('robotBusyAccount');
+  if (span) span.textContent = lockedEmail || 'another account';
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeRobotBusyModal() {
+  const modal = document.getElementById('robotBusyModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function listenToRobotLock() {
+  if (!db) return;
+  if (robotLockUnsubscribe) robotLockUnsubscribe();
+  robotLockUnsubscribe = db.collection('robot_status').doc('lock').onSnapshot(doc => {
+    if (doc.exists) {
+      currentRobotLock = doc.data();
+      // If another account locks the robot while we are connected, gracefully disconnect and notify
+      if (currentRobotLock.is_locked && currentRobotLock.active_user_id && currentRobotLock.active_user_id !== currentUserId) {
+        if (localControlSocket && localControlSocket.readyState === WebSocket.OPEN) {
+          disconnectRobot();
+          showRobotBusyModal(currentRobotLock.active_user_email);
+        }
+      }
+    } else {
+      currentRobotLock = null;
+    }
+  }, err => {
+    console.warn("Could not listen to robot lock:", err);
+  });
+}
 
 function ensureLocalWebSocketConnected() {
+  if (isRobotManuallyDisconnected) return;
   const urlToUse = currentCameraUrl || DEFAULT_CAMERA_URL;
   if (!urlToUse) return;
   try {
@@ -1289,6 +1450,7 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
   ) {
     if (localControlSocket.readyState === WebSocket.OPEN) {
       setRobotConnectionStatus(true);
+      updateRobotConnectButton(true);
     }
     return;
   }
@@ -1313,6 +1475,7 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
   } catch (err) {
     console.warn("⚠️ Could not create local WebSocket:", err);
     refreshRobotOnlineStatus();
+    updateRobotConnectButton(false);
     return;
   }
   localControlSocket = ws;
@@ -1323,6 +1486,7 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
     appendSystemLog("Connected to local robot control channel");
     lastRobotTelemetryAt = Date.now();
     setRobotConnectionStatus(true);
+    updateRobotConnectButton(true);
     if (currentUserId) {
       try {
         ws.send(JSON.stringify({
@@ -1340,8 +1504,18 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
     try {
       const data = JSON.parse(event.data);
       console.log("📩 Received response from local robot:", data);
+
+      // Check if robot rejected connection because it is in use by another account
+      if (data.type === 'connection_rejected' || (data.status === 'rejected' && data.error === 'account_locked')) {
+        console.warn("🚫 Connection rejected by robot (locked by another account):", data.message);
+        disconnectRobot();
+        showRobotBusyModal(data.locked_user_email || "another user");
+        return;
+      }
+
       lastRobotTelemetryAt = Date.now();
       setRobotConnectionStatus(true);
+      updateRobotConnectButton(true);
       if (data.type) {
         handleTelemetryMessage(data);
       }
@@ -1350,16 +1524,25 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (localControlSocket !== ws) return;
-    console.log("❌ Local WebSocket control channel closed");
+    console.log("❌ Local WebSocket control channel closed", event ? `${event.code} ${event.reason}` : '');
     localControlSocket = null;
     refreshRobotOnlineStatus();
+    updateRobotConnectButton(false);
 
-    // Automatically attempt to reconnect while user is signed in
-    if (currentUserId && localControlHost) {
+    // If closed because robot was locked by another user, do not auto-reconnect
+    if (event && (event.code === 4003 || event.reason === "Robot locked by another account")) {
+      isRobotManuallyDisconnected = true;
+      return;
+    }
+
+    // Automatically attempt to reconnect while user is signed in and not manually disconnected
+    if (!isRobotManuallyDisconnected && currentUserId && localControlHost) {
       localReconnectTimer = setTimeout(() => {
-        connectLocalWebSocket(localControlHost, false);
+        if (!isRobotManuallyDisconnected) {
+          connectLocalWebSocket(localControlHost, false);
+        }
       }, 4000);
     }
   };
@@ -1643,6 +1826,7 @@ function normalizeUrl(input) {
 }
 
 function setCameraStream(forceReload = false) {
+  if (isRobotManuallyDisconnected && !forceReload) return;
   const cameraUrlEl = document.getElementById('cameraUrl');
   const rawUrl = (cameraUrlEl ? cameraUrlEl.value.trim() : '') || currentCameraUrl;
   if (!rawUrl) return;
@@ -1666,6 +1850,7 @@ function setCameraStream(forceReload = false) {
       img.classList.remove('hidden');
       if (placeholder) placeholder.classList.add('hidden');
       setRobotConnectionStatus(true);
+      updateRobotConnectButton(true);
     };
     img.onerror = () => {
       isCameraStreamLoaded = false;
@@ -1691,6 +1876,7 @@ function setCameraStream(forceReload = false) {
 }
 
 function startCameraStreamIfNeeded() {
+  if (isRobotManuallyDisconnected) return;
   if (!currentCameraUrl) return;
   const cameraUrlInput = document.getElementById('cameraUrl');
   if (cameraUrlInput && cameraUrlInput.value.trim() !== currentCameraUrl) {
@@ -1711,7 +1897,7 @@ function setCameraPreset(url) {
   const input = document.getElementById('cameraUrl');
   if (input) {
     input.value = url;
-    setCameraStream(true);
+    connectRobot();
   }
 }
 
@@ -3640,6 +3826,7 @@ function formatDate(value) {
 (function init() {
   renderStepHistory();
   updateMobileTrackerLink();
+  updateRobotConnectButton(false);
   if (!navigator.bluetooth) {
     const button = document.getElementById('stepConnectBtn');
     if (button) button.disabled = true;
@@ -3649,6 +3836,7 @@ function formatDate(value) {
   if (auth) {
     auth.onAuthStateChanged(async (user) => {
       if (!user) {
+        disconnectRobot();
         disconnectRealtime();
         document.getElementById('authView').classList.remove('hidden');
         document.getElementById('appView').classList.add('hidden');

@@ -130,18 +130,18 @@
       </div>
 
       <div class="space-y-3.5">
-        <!-- Video Stream Config -->
+        <!-- Robot & Stream Connection Config -->
         <div class="p-3.5 bg-black/40 rounded-2xl border border-white/10 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">📹 Video Stream URL</span>
-            <span class="text-[10px] text-white/40">MJPEG Camera</span>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-cyan-400">🤖 Robot &amp; Camera Link</span>
+            <span id="robotConnectStatusBadge" class="text-[10px] px-2 py-0.5 rounded-full font-bold bg-white/5 text-white/40 border border-white/10">Disconnected</span>
           </div>
           <div class="flex gap-2">
             <input id="cameraUrl" type="text" placeholder="http://fitness.local:8081/stream"
               class="flex-1 bg-black/50 border border-white/15 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-cyan-400 text-white">
-            <button onclick="setCameraStream(true)"
-              class="px-3.5 py-2 rounded-xl bg-cyan-500 text-black font-bold text-xs hover:bg-cyan-400 active:scale-95 transition-all">
-              Update
+            <button id="robotConnectBtn" onclick="toggleRobotConnection()"
+              class="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-black font-extrabold text-xs shadow-md active:scale-95 transition-all">
+              Connect
             </button>
           </div>
           <div class="flex flex-wrap gap-1.5 pt-0.5">
@@ -1148,6 +1148,32 @@
       <button onclick="closeBatteryChargeModal()"
         class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-400 to-yellow-500 text-black font-extrabold text-sm shadow-lg shadow-amber-500/25 active:scale-95 transition-all">
         Got It, I'll Charge the Robot
+      </button>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- ROBOT OCCUPIED / LOCKED BY ANOTHER ACCOUNT MODAL -->
+  <!-- ========================================================================= -->
+  <div id="robotBusyModal"
+    class="hidden fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+    <div
+      class="glass glass-card rounded-3xl p-6 sm:p-7 max-w-sm w-full text-center border border-red-500/30 shadow-2xl space-y-4">
+      <div
+        class="w-16 h-16 mx-auto rounded-3xl bg-red-500/15 border border-red-500/30 flex items-center justify-center text-3xl">
+        🔒
+      </div>
+      <div>
+        <div class="text-[10px] font-black uppercase tracking-widest text-red-400">Connection Denied</div>
+        <h3 class="text-xl font-black text-white mt-1">Robot In Use</h3>
+        <p class="text-xs text-white/60 mt-2 leading-relaxed">
+          The robot is currently connected to another account (<span id="robotBusyAccount" class="font-bold text-red-300">another user</span>). Only one account can connect at a time. Please wait until they disconnect before connecting.
+        </p>
+      </div>
+
+      <button onclick="closeRobotBusyModal()"
+        class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-red-600 to-rose-600 text-white font-extrabold text-sm shadow-lg shadow-red-950/50 active:scale-95 transition-all">
+        I Understand
       </button>
     </div>
   </div>

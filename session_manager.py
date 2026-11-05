@@ -52,6 +52,35 @@ def set_active_user(user_id, user_email=None):
         return
     _resolved_firebase_uid = user_id
     print(f"✅ Firebase active user synced from client: {user_id} ({user_email})")
+    if db is not None:
+        try:
+            db.collection("robot_status").document("lock").set({
+                "active_user_id": user_id,
+                "active_user_email": user_email or "",
+                "is_locked": True,
+                "connected_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+        except Exception as e:
+            print(f"⚠️ Could not set Firestore robot lock: {e}")
+
+def clear_active_user():
+    """Clear active user lock when disconnected so another account can connect."""
+    global _resolved_firebase_uid
+    _resolved_firebase_uid = None
+    print("🔓 Active user lock cleared from session manager.")
+    if db is not None:
+        try:
+            db.collection("robot_status").document("lock").set({
+                "active_user_id": None,
+                "active_user_email": None,
+                "is_locked": False,
+                "disconnected_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            print("🔓 Firestore robot lock released.")
+        except Exception as e:
+            print(f"⚠️ Could not release Firestore robot lock: {e}")
 
 def _resolve_firebase_user_id():
     """Resolve dashboard account while keeping explicit UID authoritative."""
