@@ -727,7 +727,7 @@ class FitnessRobotUI(tk.Tk):
             if not self.winfo_exists():
                 return
             if not remote_mode_queue.empty():
-                cmd_type, cmd_val = remote_mode_queue.get()
+                cmd_type, cmd_val = remote_mode_queue.get_nowait()
                 if cmd_type == "switch":
                     print(f"[GUI] Remote mode switch received: {cmd_val}")
                     if self.exercise_active:
@@ -735,6 +735,9 @@ class FitnessRobotUI(tk.Tk):
                         force_stop.set()
                     else:
                         self.launch_by_name(cmd_val)
+            elif start_exercise.is_set() and not self.exercise_active:
+                start_exercise.clear()
+                self.launch_bicep_curls()
 
             # Update voice status indicator on UI
             if get_voice_state is not None and hasattr(self, 'voice_status_label'):
@@ -759,10 +762,14 @@ class FitnessRobotUI(tk.Tk):
                                 self.voice_status_label.configure(text="🎤 Voice: Standby", fg="#96D75F")
                 except Exception:
                     pass
-
-            self.after(200, self.check_remote_commands)
-        except (tk.TclError, Exception):
-            pass
+        except Exception as e:
+            print(f"[GUI] Error in check_remote_commands: {e}")
+        finally:
+            try:
+                if self.winfo_exists():
+                    self.after(200, self.check_remote_commands)
+            except Exception:
+                pass
 
     def launch_by_name(self, name):
         if hasattr(self, 'summary_timer_id') and self.summary_timer_id is not None:
@@ -774,15 +781,15 @@ class FitnessRobotUI(tk.Tk):
 
         force_stop.clear()
         name = str(name).upper().replace("-", "_").replace(" ", "_")
-        if name in ("BICEP_CURLS", "BICEP_CURL"):
+        if "BICEP" in name or "CURL" in name:
             self.launch_bicep_curls()
-        elif name in ("PUSHUPS", "PUSH_UPS"):
+        elif "PUSH" in name:
             self.launch_pushups()
-        elif name in ("SQUATS", "SQUAT"):
+        elif "SQUAT" in name:
             self.launch_squats()
-        elif name == "PLANK":
+        elif "PLANK" in name:
             self.launch_plank()
-        elif name in ("PERSON_FOLLOW", "PERSON_TRACKING", "FOLLOWING", "FOLLOW", "FOLLOW_ME"):
+        elif "FOLLOW" in name or "PERSON" in name:
             self.launch_person_follow()
         else:
             print(f"[GUI] Unknown remote mode: {name}")
@@ -814,13 +821,18 @@ class FitnessRobotUI(tk.Tk):
 
     def show_exercise_screen(self, exercise_name):
         try:
-            publish_robot_state("FOLLOWING")
+            # ── EXHIBITION MODE: State ACTIVE immediately (positioning bypassed) ──
+            # publish_robot_state("FOLLOWING")
+            publish_robot_state("ACTIVE")
         except Exception:
             pass
 
         self.configure(bg="#000000")
         self.main_container.configure(bg="#000000")
         self.main_container.pack_configure(padx=8, pady=6)
+
+        self.stop_home_camera()
+        self.home_eyes = None
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -853,7 +865,7 @@ class FitnessRobotUI(tk.Tk):
 
         self.feedback_label = tk.Label(
             self.main_container,
-            text="Aligning and tracking...",
+            text="",
             font=("Helvetica", 14, "bold"),
             fg="#EBEBEF",
             bg="#000000",
@@ -866,18 +878,20 @@ class FitnessRobotUI(tk.Tk):
         self.bottom_bar = tk.Frame(self.main_container, bg="#000000")
         self.bottom_bar.pack(fill="x", side="bottom", pady=10)
 
-        self.start_btn = RoundedButton(
-            self.bottom_bar,
-            text="Start",
-            command=self.set_start_clicked,
-            bg_color="#96D75F",
-            fg_color="#000000",
-            radius=10,
-            width=100,
-            height=35,
-            font=("Helvetica", 12, "bold")
-        )
-        self.start_btn.pack(side="left", padx=10)
+        # ── EXHIBITION MODE: Start button commented out for reuse later ──
+        # self.start_btn = RoundedButton(
+        #     self.bottom_bar,
+        #     text="Start",
+        #     command=self.set_start_clicked,
+        #     bg_color="#96D75F",
+        #     fg_color="#000000",
+        #     radius=10,
+        #     width=100,
+        #     height=35,
+        #     font=("Helvetica", 12, "bold")
+        # )
+        # self.start_btn.pack(side="left", padx=10)
+        self.start_btn = None
 
         self.home_btn = RoundedButton(
             self.bottom_bar,
@@ -1239,7 +1253,8 @@ class FitnessRobotUI(tk.Tk):
                 pass
             self.summary_timer_id = None
 
-        self.summary_timer_id = self.after(60000, self.show_home_screen)
+        # Display summary for 5 seconds after exercise, then return to eyes screen
+        self.summary_timer_id = self.after(5000, self.show_home_screen)
 
         for widget in self.main_container.winfo_children():
             widget.destroy()
@@ -1310,8 +1325,8 @@ class FitnessRobotUI(tk.Tk):
 
         btn = RoundedButton(
             self.main_container,
-            text="BACK TO MENU",
-            command=self.show_exercise_dashboard,
+            text="BACK TO EYES",
+            command=self.show_home_screen,
             bg_color="#7F3AED",
             gradient_color="#1E0638",
             fg_color="#C6FF34",

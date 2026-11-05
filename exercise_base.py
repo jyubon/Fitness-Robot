@@ -98,7 +98,9 @@ class ExerciseRunner:
         self.rest_start_time = None
         self.lost_start_time = None
         self.set_incremented_while_lost = False
-        self.waiting_for_start = True
+        # ── EXHIBITION MODE: Positioning phase commented out for reuse later ──
+        # self.waiting_for_start = True
+        self.waiting_for_start = False
 
         self.last_session_summary = None
 
@@ -216,7 +218,9 @@ class ExerciseRunner:
         hand_landmarker = None
         session_started = False
         force_stop.clear()
-        self.waiting_for_start = True
+        # ── EXHIBITION MODE: Positioning phase commented out for reuse later ──
+        # self.waiting_for_start = True
+        self.waiting_for_start = False
 
         window_name = self.exercise_title
         if self.ui is None:
@@ -240,7 +244,13 @@ class ExerciseRunner:
             landmarker = create_pose_landmarker(det_conf=0.7, track_conf=0.7)
             hand_landmarker = create_hand_landmarker()
 
-            publish_robot_state("FOLLOWING", exercise=self.exercise_key)
+            # ── EXHIBITION MODE: State ACTIVE immediately (positioning bypassed) ──
+            # publish_robot_state("FOLLOWING", exercise=self.exercise_key)
+            publish_robot_state("ACTIVE", exercise=self.exercise_key)
+            if not session_started:
+                publish_session_start(self.exercise_key)
+                session_started = True
+            play_audio_track(14)
 
             failed_reads = 0
             while cap.isOpened():
@@ -280,67 +290,60 @@ class ExerciseRunner:
                     results = self.last_results
 
                 # 3. Waiting for start phase (following user)
-                if self.waiting_for_start:
-                    if self.home_clicked or (self.ui is not None and getattr(self.ui, 'home_clicked', False)):
-                        break
-                    if start_exercise.is_set():
-                        play_audio_track(14)
-                        send_command("STOP")
-                        reset_tracking_state()
-                        self.waiting_for_start = False
-                        start_exercise.clear()
-                        if self.ui is not None and hasattr(self.ui, 'hide_start_button'):
-                            self.ui.hide_start_button()
-                        if not session_started:
-                            publish_session_start(self.exercise_key)
-                            session_started = True
-                        publish_robot_state("ACTIVE", exercise=self.exercise_key)
-                    else:
-                        if results and results.pose_landmarks:
-                            self.lost_start_time = None
-                            draw_skeleton(image, results)
-                            robot_status = adjust_robot_position(
-                                self.exercise_key.upper(), results,
-                                in_exercise_mode=False,
-                                get_pt_fn=get_pt,
-                                get_body_height_fn=get_body_height
-                            )
-                        else:
-                            robot_status = adjust_robot_position(
-                                self.exercise_key.upper(), None,
-                                in_exercise_mode=False,
-                                get_pt_fn=get_pt,
-                                get_body_height_fn=get_body_height
-                            )
-
-                        if robot_status == "LOST_TIMEOUT":
-                            send_command("STOP")
-                            if not self._handle_person_lost():
-                                break
-
-                        if self.ui is not None and hasattr(self.ui, 'update_follower_eyes'):
-                            if results and results.pose_landmarks:
-                                lm = results.pose_landmarks[0]
-                                nose = get_pt(lm, 0)
-                                person_x = (lm[23].x + lm[24].x) / 2 if len(lm) > 24 else lm[0].x
-                                person_y = nose[1] if nose else 0.5
-                                self.ui.update_follower_eyes(person_x, person_y, command="FORWARD", state="FOLLOWING")
-                            else:
-                                self.ui.update_follower_eyes(person_x=None, person_y=None, command="SEARCH", state="SEARCHING")
-
-                        draw_follow_phase_overlay(image, self.view_position)
-                        local_stream_server.update_frame(image)
-
-                        if self.ui is not None:
-                            self.ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press Start", ACCENT_CYAN)
-                            self.ui.update()
-                        else:
-                            img_copy = image.copy()
-                            draw_home_button(img_copy)
-                            cv2.imshow(window_name, img_copy)
-                            if cv2.waitKey(10) & 0xFF == ord('q') or self.home_clicked:
-                                break
-                        continue
+                # ── EXHIBITION MODE: Positioning phase commented out for reuse later ──
+                # if self.waiting_for_start:
+                #     if self.home_clicked or (self.ui is not None and getattr(self.ui, 'home_clicked', False)):
+                #         break
+                #     if start_exercise.is_set():
+                #         play_audio_track(14)
+                #         send_command("STOP")
+                #         reset_tracking_state()
+                #         self.waiting_for_start = False
+                #         start_exercise.clear()
+                #         if self.ui is not None and hasattr(self.ui, 'hide_start_button'):
+                #             self.ui.hide_start_button()
+                #         if not session_started:
+                #             publish_session_start(self.exercise_key)
+                #             session_started = True
+                #         publish_robot_state("ACTIVE", exercise=self.exercise_key)
+                #     else:
+                #         if results and results.pose_landmarks:
+                #             self.lost_start_time = None
+                #             draw_skeleton(image, results)
+                #             robot_status = "TRACKING"
+                #             send_command("STOP")
+                #         else:
+                #             robot_status = "TRACKING"
+                #             send_command("STOP")
+                #
+                #         if robot_status == "LOST_TIMEOUT":
+                #             send_command("STOP")
+                #             if not self._handle_person_lost():
+                #                 break
+                #
+                #         if self.ui is not None and hasattr(self.ui, 'update_follower_eyes'):
+                #             if results and results.pose_landmarks:
+                #                 lm = results.pose_landmarks[0]
+                #                 nose = get_pt(lm, 0)
+                #                 person_x = (lm[23].x + lm[24].x) / 2 if len(lm) > 24 else lm[0].x
+                #                 person_y = nose[1] if nose else 0.5
+                #                 self.ui.update_follower_eyes(person_x, person_y, command="FORWARD", state="FOLLOWING")
+                #             else:
+                #                 self.ui.update_follower_eyes(person_x=None, person_y=None, command="SEARCH", state="SEARCHING")
+                #
+                #         draw_follow_phase_overlay(image, self.view_position)
+                #         local_stream_server.update_frame(image)
+                #
+                #         if self.ui is not None:
+                #             self.ui.update_feedback("🤖 ROBOT FOLLOWING...\nGet in Position and Press Start", ACCENT_CYAN)
+                #             self.ui.update()
+                #         else:
+                #             img_copy = image.copy()
+                #             draw_home_button(img_copy)
+                #             cv2.imshow(window_name, img_copy)
+                #             if cv2.waitKey(10) & 0xFF == ord('q') or self.home_clicked:
+                #                 break
+                #         continue
 
                 # 4. Hand detection (gestures: thumbs-up pause, open palm stop)
                 if hand_landmarker is not None:
