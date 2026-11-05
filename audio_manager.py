@@ -48,13 +48,13 @@ COMMAND_VOICE_FILE_MAP = {
     "PUSHUPS":      "025_starting_pushups.mp3",
     "SQUATS":       "026_starting_squats.mp3",
     "PLANK":        "027_starting_plank.mp3",
-    "ROTATE":       "029_rotating.mp3",
-    "ROTATE_LEFT":  "030_turning_left.mp3",
-    "ROTATE_RIGHT": "031_turning_right.mp3",
-    "MOVE_LEFT":    "032_moving_left.mp3",
-    "MOVE_RIGHT":   "033_moving_right.mp3",
-    "FORWARD":      "034_moving_forward.mp3",
-    "BACKWARD":     "035_moving_backward.mp3",
+    "ROTATE":       "028_rotating.mp3",
+    "ROTATE_LEFT":  "029_turning_left.mp3",
+    "ROTATE_RIGHT": "030_turning_right.mp3",
+    "MOVE_LEFT":    "031_moving_left.mp3",
+    "MOVE_RIGHT":   "032_moving_right.mp3",
+    "FORWARD":      "033_moving_forward.mp3",
+    "BACKWARD":     "034_moving_backward.mp3",
 }
 
 # ─── Reply Text Substring -> ElevenLabs MP3 Map (fallback when called via speak_text(text)) ───
