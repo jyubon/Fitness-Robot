@@ -398,9 +398,8 @@ class SquatsRunner(ExerciseRunner):
             self.ui.update_feedback("\n".join(feedback_msgs), feedback_color)
 
     def process_missing_frame(self, image, img_w, img_h):
-        log_session_error("Align horizontally GET IN POSITION.")
         if self.ui is not None:
-            self.ui.update_feedback("⚠️ Positioning... Stand in front of camera.", ACCENT_ORANGE)
+            self.ui.update_feedback("⚠️ Stand in front of camera.", ACCENT_ORANGE)
 
     def build_session_summary(self):
         return {
