@@ -52,7 +52,7 @@ def _serial_read_worker():
                         publish_form_error("Sudden block detected! Obstacle in path.")
                     except Exception:
                         pass
-                    play_audio_track(16)
+                    # Voice command play_audio_track(16) removed for person following
 
                 # Parse Battery Voltage
                 if ",VOLT:" in line or "VOLT:" in line:
