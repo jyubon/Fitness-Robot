@@ -5,6 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>Fitness Robot | Dashboard</title>
 
   <!-- Favicon -->
@@ -462,6 +463,10 @@
             <span>👟</span>
             <span>Steps</span>
           </button>
+          <button id="btnSubtabDemo" onclick="switchFitnessSubtab('demo')" class="subtab-btn">
+            <span>🎬</span>
+            <span>Demo</span>
+          </button>
         </div>
 
         <!-- ================================================================= -->
@@ -616,15 +621,28 @@
 
                 <!-- Set & Reps Dual Card -->
                 <div id="repsAndSetsBox" class="grid grid-cols-2 gap-3 mt-4">
+                  <!-- Current Set Card (Always visible for all exercises including plank) -->
                   <div class="p-3.5 rounded-2xl bg-black/30 border border-white/10">
                     <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">CURRENT SET</div>
                     <div id="currentSet" class="text-4xl sm:text-5xl font-black tabular-nums text-white mt-1">—</div>
                   </div>
-                  <div class="p-3.5 rounded-2xl bg-black/30 border border-white/10">
+
+                  <!-- Completed Reps Card (Hidden for Plank) -->
+                  <div id="repsCard" class="p-3.5 rounded-2xl bg-black/30 border border-white/10">
                     <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">COMPLETED REPS</div>
                     <div id="currentReps" class="text-4xl sm:text-5xl font-black tabular-nums text-emerald-400 mt-1">—
                     </div>
                     <div id="repsDetail" class="text-xs text-white/50 font-mono mt-0.5"></div>
+                  </div>
+
+                  <!-- Plank Hold Timer Box (Shown for Plank in place of Completed Reps) -->
+                  <div id="plankTimeBox"
+                    class="hidden p-3.5 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-between">
+                    <div>
+                      <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">PLANK HOLD TIME</div>
+                      <div id="plankTime" class="font-mono text-3xl sm:text-4xl font-bold tabular-nums text-cyan-400 mt-1">—</div>
+                    </div>
+                    <div class="text-3xl opacity-30 flex-shrink-0">⏱️</div>
                   </div>
                 </div>
 
@@ -678,16 +696,6 @@
                       </div>
                     </div>
                   </div>
-                </div>
-
-                <!-- Plank Hold Timer Box (Appears when plank is selected; hidden in other times) -->
-                <div id="plankTimeBox"
-                  class="hidden mt-3 p-3.5 rounded-2xl bg-black/30 border border-white/10 flex items-center justify-between">
-                  <div>
-                    <div class="text-[10px] font-bold uppercase tracking-wider text-white/40">PLANK HOLD TIME</div>
-                    <div id="plankTime" class="font-mono text-3xl font-bold tabular-nums text-cyan-400 mt-0.5">—</div>
-                  </div>
-                  <div class="text-3xl opacity-30">⏱️</div>
                 </div>
               </div>
 
@@ -833,6 +841,110 @@
                 <div class="text-white/30">Ready to pair with wearable device...</div>
               </div>
             </div>
+          </div>
+
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- SUB-TAB 3: DEMO VIEW -->
+        <!-- ================================================================= -->
+        <div id="subtabDemoView" class="hidden space-y-4 sm:space-y-6">
+
+          <!-- Section Banner -->
+          <div class="glass glass-card rounded-3xl p-4 sm:p-6 border border-white/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div class="flex items-center gap-3.5">
+              <div class="w-12 h-12 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-2xl flex-shrink-0 shadow-lg shadow-cyan-500/10">
+                🎬
+              </div>
+              <div>
+                <h2 class="text-base sm:text-lg font-black text-white tracking-tight">Exercise Video Demos</h2>
+                <p class="text-xs text-white/50 mt-0.5">
+                  Master proper movement mechanics and avoid common mistakes for AI pose tracking accuracy.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video Demos Responsive Grid (1 col on mobile, 2 cols on tablet, 4 cols on desktop) -->
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-6 items-stretch">
+
+            <!-- 1. Bicep Curls -->
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between border border-white/10 hover:border-cyan-500/30 transition-all group">
+              <div>
+                <div class="flex items-center gap-2 mb-3">
+                  <span class="text-xl flex-shrink-0">💪</span>
+                  <h3 class="text-sm font-extrabold text-white truncate tracking-wide">Bicep Curls</h3>
+                </div>
+                <div class="w-full max-w-[340px] sm:max-w-[360px] mx-auto aspect-[9/16] rounded-2xl overflow-hidden bg-black/60 border border-white/10 shadow-2xl relative">
+                  <video class="w-full h-full object-cover rounded-2xl" controls playsinline preload="metadata">
+                    <source src="Bicep%20Curl.mp4" type="video/mp4">
+                    <source src="Bicep Curl.mp4" type="video/mp4">
+                    Your browser does not support HTML5 video.
+                  </video>
+                </div>
+              </div>
+              <div class="pt-3 mt-3 border-t border-white/10 text-[11px] text-white/50 leading-relaxed">
+                <span class="text-cyan-400 font-bold">Key Focus:</span> Pin elbows to sides, maintain upright torso, and complete full extension on each rep.
+              </div>
+            </div>
+
+            <!-- 2. Push-ups -->
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between border border-white/10 hover:border-indigo-500/30 transition-all group">
+              <div>
+                <div class="flex items-center gap-2 mb-3">
+                  <span class="text-xl flex-shrink-0">🧘</span>
+                  <h3 class="text-sm font-extrabold text-white truncate tracking-wide">Push-ups</h3>
+                </div>
+                <div class="w-full max-w-[340px] sm:max-w-[360px] mx-auto aspect-[9/16] rounded-2xl overflow-hidden bg-black/60 border border-white/10 shadow-2xl relative">
+                  <video class="w-full h-full object-cover rounded-2xl" controls playsinline preload="metadata">
+                    <source src="Push-Up.mp4" type="video/mp4">
+                    Your browser does not support HTML5 video.
+                  </video>
+                </div>
+              </div>
+              <div class="pt-3 mt-3 border-t border-white/10 text-[11px] text-white/50 leading-relaxed">
+                <span class="text-indigo-400 font-bold">Key Focus:</span> 45-degree elbow angle, chest touches floor, and full lockout at top of repetition.
+              </div>
+            </div>
+
+            <!-- 3. Squats -->
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between border border-white/10 hover:border-amber-500/30 transition-all group">
+              <div>
+                <div class="flex items-center gap-2 mb-3">
+                  <span class="text-xl flex-shrink-0">🏋️</span>
+                  <h3 class="text-sm font-extrabold text-white truncate tracking-wide">Squats</h3>
+                </div>
+                <div class="w-full max-w-[340px] sm:max-w-[360px] mx-auto aspect-[9/16] rounded-2xl overflow-hidden bg-black/60 border border-white/10 shadow-2xl relative">
+                  <video class="w-full h-full object-cover rounded-2xl" controls playsinline preload="metadata">
+                    <source src="Squat.mp4" type="video/mp4">
+                    Your browser does not support HTML5 video.
+                  </video>
+                </div>
+              </div>
+              <div class="pt-3 mt-3 border-t border-white/10 text-[11px] text-white/50 leading-relaxed">
+                <span class="text-amber-400 font-bold">Key Focus:</span> Hips back and down, knees track over toes, keep weight on heels, and descend to parallel.
+              </div>
+            </div>
+
+            <!-- 4. Plank -->
+            <div class="glass glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between border border-white/10 hover:border-emerald-500/30 transition-all group">
+              <div>
+                <div class="flex items-center gap-2 mb-3">
+                  <span class="text-xl flex-shrink-0">⏱️</span>
+                  <h3 class="text-sm font-extrabold text-white truncate tracking-wide">Plank</h3>
+                </div>
+                <div class="w-full max-w-[340px] sm:max-w-[360px] mx-auto aspect-[9/16] rounded-2xl overflow-hidden bg-black/60 border border-white/10 shadow-2xl relative">
+                  <video class="w-full h-full object-cover rounded-2xl" controls playsinline preload="metadata">
+                    <source src="Plank.mp4" type="video/mp4">
+                    Your browser does not support HTML5 video.
+                  </video>
+                </div>
+              </div>
+              <div class="pt-3 mt-3 border-t border-white/10 text-[11px] text-white/50 leading-relaxed">
+                <span class="text-emerald-400 font-bold">Key Focus:</span> Neutral spine from head to heels, active core engagement, and prevent hips from sagging.
+              </div>
+            </div>
+
           </div>
 
         </div>

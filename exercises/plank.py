@@ -107,21 +107,24 @@ class PlankRunner(ExerciseRunner):
                     is_looking_around = True
 
             if is_horizontal:
+                was_in_plank = self.in_plank
                 elapsed_time = self.count_plank_time(neck, hip, ankle)
                 if not self.is_mid_workout_rest:
                     self.plank_timer += elapsed_time
                     if self.in_plank:
                         self.current_set_time += elapsed_time
-                        if self.current_set_time >= 30.0:
-                            try:
-                                publish_set_complete("plank", self.current_set, 30)
-                            except Exception:
-                                pass
-                            self.current_set += 1
-                            self.current_set_time = 0.0
-                            print(f"\n✅ Plank Set completed! Total sets: {self.current_set - 1}")
-                            if self.current_set == 3:
-                                self.trigger_mid_workout_rest()
+                    elif was_in_plank and self.current_set_time >= 3.0:
+                        # Person stopped doing the plank -> Mark set complete!
+                        hold_duration = round(self.current_set_time, 1)
+                        try:
+                            publish_set_complete("plank", self.current_set, hold_duration)
+                        except Exception:
+                            pass
+                        print(f"\n✅ Plank Set {self.current_set} completed! Held for {hold_duration}s")
+                        self.current_set += 1
+                        self.current_set_time = 0.0
+                        if (self.current_set - 1) % 3 == 0:
+                            self.trigger_mid_workout_rest()
 
                 try:
                     publish_plank_time(self.plank_timer)
@@ -133,6 +136,17 @@ class PlankRunner(ExerciseRunner):
                 if is_looking_around:
                     log_session_error("Look in front of you")
             else:
+                if self.in_plank and self.current_set_time >= 3.0:
+                    hold_duration = round(self.current_set_time, 1)
+                    try:
+                        publish_set_complete("plank", self.current_set, hold_duration)
+                    except Exception:
+                        pass
+                    print(f"\n✅ Plank Set {self.current_set} completed! Held for {hold_duration}s")
+                    self.current_set += 1
+                    self.current_set_time = 0.0
+                    if (self.current_set - 1) % 3 == 0:
+                        self.trigger_mid_workout_rest()
                 self.in_plank = False
                 self.start_time = None
                 log_session_error("Align horizontally GET IN POSITION.")
@@ -167,6 +181,19 @@ class PlankRunner(ExerciseRunner):
             self.ui.update_feedback("\n".join(feedback_msgs), feedback_color)
 
     def process_missing_frame(self, image, img_w, img_h):
+        if self.in_plank and self.current_set_time >= 3.0:
+            hold_duration = round(self.current_set_time, 1)
+            try:
+                publish_set_complete("plank", self.current_set, hold_duration)
+            except Exception:
+                pass
+            print(f"\n✅ Plank Set {self.current_set} completed! Held for {hold_duration}s")
+            self.current_set += 1
+            self.current_set_time = 0.0
+            if (self.current_set - 1) % 3 == 0:
+                self.trigger_mid_workout_rest()
+        self.in_plank = False
+        self.start_time = None
         log_session_error("Align horizontally GET IN POSITION.")
         if self.ui is not None:
             self.ui.update_feedback("⚠️ Positioning... Lie down in front of camera.", ACCENT_ORANGE)

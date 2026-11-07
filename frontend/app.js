@@ -383,8 +383,20 @@ function navigateFromUrl() {
       switchFitnessSubtab('steps');
       return true;
     }
+    if (tabParam === 'demo' || tabParam === 'demos' || tabParam === 'video' || tabParam === 'videos') {
+      currentFitnessSubtab = 'demo';
+      showTab('steps');
+      switchFitnessSubtab('demo');
+      return true;
+    }
     if (tabParam === 'fitness' || tabParam === 'exercises') {
-      currentFitnessSubtab = (subtabParam === 'steps' || subtabParam === 'step') ? 'steps' : 'exercises';
+      if (subtabParam === 'demo' || subtabParam === 'demos' || subtabParam === 'video') {
+        currentFitnessSubtab = 'demo';
+      } else if (subtabParam === 'steps' || subtabParam === 'step') {
+        currentFitnessSubtab = 'steps';
+      } else {
+        currentFitnessSubtab = 'exercises';
+      }
       showTab('steps');
       switchFitnessSubtab(currentFitnessSubtab);
       return true;
@@ -585,34 +597,53 @@ function switchFitnessSubtab(subtab) {
   currentFitnessSubtab = subtab;
   const exercisesView = document.getElementById('subtabExercisesView');
   const stepsView = document.getElementById('subtabStepsView');
+  const demoView = document.getElementById('subtabDemoView');
   const btnExercises = document.getElementById('btnSubtabExercises');
   const btnSteps = document.getElementById('btnSubtabSteps');
+  const btnDemo = document.getElementById('btnSubtabDemo');
 
   const startBtn = document.getElementById('startExerciseBtn');
+
+  // Hide all subtab views
+  if (exercisesView) exercisesView.classList.add('hidden');
+  if (stepsView) stepsView.classList.add('hidden');
+  if (demoView) demoView.classList.add('hidden');
+
+  // Reset button active states
+  if (btnExercises) {
+    btnExercises.classList.remove('subtab-btn-active');
+    btnExercises.classList.add('text-white/60');
+  }
+  if (btnSteps) {
+    btnSteps.classList.remove('subtab-btn-active');
+    btnSteps.classList.add('text-white/60');
+  }
+  if (btnDemo) {
+    btnDemo.classList.remove('subtab-btn-active');
+    btnDemo.classList.add('text-white/60');
+  }
 
   if (subtab === 'exercises') {
     if (startBtn) startBtn.classList.remove('hidden');
     if (exercisesView) exercisesView.classList.remove('hidden');
-    if (stepsView) stepsView.classList.add('hidden');
     if (btnExercises) {
       btnExercises.classList.add('subtab-btn-active');
       btnExercises.classList.remove('text-white/60');
     }
-    if (btnSteps) {
-      btnSteps.classList.remove('subtab-btn-active');
-      btnSteps.classList.add('text-white/60');
-    }
     if (isCameraActive || isDesktop()) {
       startCameraStreamIfNeeded();
     }
-  } else {
+  } else if (subtab === 'demo') {
     if (startBtn) startBtn.classList.add('hidden');
-    if (exercisesView) exercisesView.classList.add('hidden');
-    if (stepsView) stepsView.classList.remove('hidden');
-    if (btnExercises) {
-      btnExercises.classList.remove('subtab-btn-active');
-      btnExercises.classList.add('text-white/60');
+    if (demoView) demoView.classList.remove('hidden');
+    if (btnDemo) {
+      btnDemo.classList.add('subtab-btn-active');
+      btnDemo.classList.remove('text-white/60');
     }
+  } else {
+    // Default to steps subtab
+    if (startBtn) startBtn.classList.add('hidden');
+    if (stepsView) stepsView.classList.remove('hidden');
     if (btnSteps) {
       btnSteps.classList.add('subtab-btn-active');
       btnSteps.classList.remove('text-white/60');
@@ -718,6 +749,7 @@ function createEmptyDailyExercises(dateStr) {
         sessionRawCount: 0
       },
       plank: {
+        set: 1,
         plankTimeS: 0,
         sessionRawPlank: 0
       }
@@ -876,6 +908,7 @@ function syncExerciseUI(exercise) {
   }
 
   const setEl = document.getElementById('currentSet');
+  const repsCard = document.getElementById('repsCard');
   const repsEl = document.getElementById('currentReps');
   const detailEl = document.getElementById('repsDetail');
   const plankBox = document.getElementById('plankTimeBox');
@@ -884,14 +917,16 @@ function syncExerciseUI(exercise) {
 
   if (exercise === 'plank') {
     if (plankBox) plankBox.classList.remove('hidden');
+    if (repsCard) repsCard.classList.add('hidden');
     if (bicepBox) bicepBox.classList.add('hidden');
-    if (setEl) setEl.textContent = '—';
-    if (repsEl) repsEl.textContent = '—';
+    const pl = exMap.plank;
+    if (setEl) setEl.textContent = pl?.set || 1;
     if (detailEl) detailEl.textContent = '';
-    const pTime = Math.round(Number(exMap.plank?.plankTimeS || 0));
+    const pTime = Math.round(Number(pl?.plankTimeS || 0));
     if (plankEl) plankEl.textContent = pTime > 0 ? formatSeconds(pTime) : '0s';
   } else if (exercise === 'bicep_curls') {
     if (plankBox) plankBox.classList.add('hidden');
+    if (repsCard) repsCard.classList.remove('hidden');
     if (bicepBox) bicepBox.classList.remove('hidden');
     const bc = exMap.bicep_curls;
     if (setEl) setEl.textContent = bc.set || 1;
@@ -904,6 +939,7 @@ function syncExerciseUI(exercise) {
     updateBicepArmUI(bc.leftInSet, bc.rightInSet, bc.set);
   } else if (exercise === 'pushups' || exercise === 'squats') {
     if (plankBox) plankBox.classList.add('hidden');
+    if (repsCard) repsCard.classList.remove('hidden');
     if (bicepBox) bicepBox.classList.add('hidden');
     const st = exMap[exercise] || { set: 1, repsInSet: 0, totalReps: 0 };
     if (setEl) setEl.textContent = st.set || 1;
@@ -913,6 +949,7 @@ function syncExerciseUI(exercise) {
     }
   } else {
     if (plankBox) plankBox.classList.add('hidden');
+    if (repsCard) repsCard.classList.remove('hidden');
     if (bicepBox) bicepBox.classList.add('hidden');
     if (setEl) setEl.textContent = '—';
     if (repsEl) repsEl.textContent = '—';
@@ -938,7 +975,7 @@ function showTab(tab) {
 
   // Start button in Fitness section
   if (btnStart) {
-    if (tab === 'steps') {
+    if (tab === 'steps' && (!currentFitnessSubtab || currentFitnessSubtab === 'exercises')) {
       btnStart.classList.remove('hidden');
     } else {
       btnStart.classList.add('hidden');
@@ -1254,6 +1291,26 @@ function handleTelemetryMessage(msg) {
     const plankEl = document.getElementById('plankTime');
     if (plankEl) plankEl.textContent = formatSeconds(Math.round(pl.plankTimeS));
     recordLivePlank(pl.plankTimeS);
+
+    // Track active hold duration for the current set
+    window._plankCurrentHoldS = (window._plankCurrentHoldS || 0) + deltaSec;
+    if (window._plankStopDebounceTimer) {
+      clearTimeout(window._plankStopDebounceTimer);
+    }
+    // A set is marked when the person stops doing the plank (no hold progress for 2.5s)
+    window._plankStopDebounceTimer = setTimeout(() => {
+      if (window._plankCurrentHoldS >= 3.0) {
+        const holdSec = Math.round(window._plankCurrentHoldS);
+        window._plankCurrentHoldS = 0;
+        const currentExMap = ensureDailyExerciseState();
+        const currentPlank = currentExMap.plank;
+        const finishedSet = currentPlank.set || 1;
+        currentPlank.set = finishedSet + 1;
+        saveDailyExerciseState();
+        appendExerciseLog(`🎉 Plank: Set ${finishedSet} Complete! Held for ${holdSec}s.`);
+        syncExerciseUI('plank');
+      }
+    }, 2500);
     return;
   }
 
@@ -1306,6 +1363,19 @@ function handleTelemetryMessage(msg) {
         saveDailyExerciseState();
       }
       syncExerciseUI(ex);
+    } else if (ex === 'plank') {
+      if (window._plankStopDebounceTimer) {
+        clearTimeout(window._plankStopDebounceTimer);
+        window._plankStopDebounceTimer = null;
+      }
+      window._plankCurrentHoldS = 0;
+      const pl = exMap.plank;
+      const finishedSet = pl.set || 1;
+      pl.set = finishedSet + 1;
+      saveDailyExerciseState();
+      const holdTimeMsg = (payload.reps || payload.duration || payload.hold_time) ? ` (Held for ${payload.reps || payload.duration || payload.hold_time}s)` : '';
+      appendExerciseLog(`🎉 Plank: Set ${finishedSet} Complete!${holdTimeMsg}`);
+      syncExerciseUI('plank');
     }
     return;
   }
