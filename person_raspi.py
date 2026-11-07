@@ -60,6 +60,8 @@ from session_manager import (
     force_stop,
     remote_mode_queue,
     start_exercise,
+    pause_request,
+    resume_request,
     exercise_executing,
     publish_event,
     publish_session_start,
@@ -401,7 +403,9 @@ if __name__ == "__main__":
         local_stream_server.start_servers(
             force_stop_event=force_stop,
             remote_mode_queue=remote_mode_queue,
-            start_exercise_event=start_exercise
+            start_exercise_event=start_exercise,
+            pause_request_event=pause_request,
+            resume_request_event=resume_request
         )
         print("Local HTTP/WS servers started successfully.")
     except Exception as e:

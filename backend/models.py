@@ -96,5 +96,7 @@ class WeeklyAnalytics(BaseModel):
 # --- Control commands (from UI to Pi) ---
 
 class ControlCommand(BaseModel):
-    action: str  # "force_stop" | "switch_mode"
-    mode: Optional[str] = None  # when action == "switch_mode"
+    action: str  # "force_stop" | "switch_mode" | "start_exercise" | "pause" | "resume" | "mute" | "unmute" | "set_mute"
+    mode: Optional[str] = None
+    exercise: Optional[str] = None
+    muted: Optional[bool] = None

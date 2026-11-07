@@ -60,6 +60,9 @@ _latest_frame = None
 # References to the main application's coordination objects
 _force_stop_event = None
 _remote_mode_queue = None
+_start_exercise_event = None
+_pause_request_event = None
+_resume_request_event = None
 _latest_battery_voltage = None
 _latest_robot_state = None
 
@@ -127,6 +130,12 @@ def _build_status_report():
     accounts_list = list(_known_accounts.values())
     connected_list = [acc for acc in accounts_list if acc.get("is_online")]
 
+    try:
+        import audio_manager
+        is_muted = audio_manager.is_feedback_muted()
+    except Exception:
+        is_muted = False
+
     return {
         "type": "robot_status_report",
         "is_locked": _active_user_id is not None,
@@ -134,6 +143,7 @@ def _build_status_report():
         "locked_user_id": _active_user_id,
         "battery_voltage": _latest_battery_voltage,
         "robot_state": _latest_robot_state,
+        "is_muted": is_muted,
         "connected_clients_count": len(_connected_clients),
         "connected_accounts": connected_list,
         "all_accounts": accounts_list,
@@ -210,7 +220,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        global _force_stop_event, _remote_mode_queue, _start_exercise_event
+        global _force_stop_event, _remote_mode_queue, _start_exercise_event, _pause_request_event, _resume_request_event
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length) if length > 0 else b'{}'
         try:
@@ -218,21 +228,52 @@ class StreamingHandler(BaseHTTPRequestHandler):
         except Exception:
             data = {}
 
-        action = data.get("action") or ""
+        action = str(data.get("action") or "").lower()
         mode = data.get("mode") or data.get("exercise")
 
         if action == "force_stop":
             if _start_exercise_event: _start_exercise_event.clear()
             if _force_stop_event: _force_stop_event.set()
+            # Drain remote_mode_queue so the exercise doesn't restart repeatedly
+            if _remote_mode_queue:
+                while not _remote_mode_queue.empty():
+                    try:
+                        _remote_mode_queue.get_nowait()
+                    except Exception:
+                        break
+        elif action == "pause":
+            if _pause_request_event: _pause_request_event.set()
+            if _resume_request_event: _resume_request_event.clear()
+        elif action == "resume":
+            if _resume_request_event: _resume_request_event.set()
+            if _pause_request_event: _pause_request_event.clear()
+        elif action in ("mute", "unmute", "set_mute"):
+            muted = data.get("muted") if "muted" in data else (action == "mute")
+            try:
+                import audio_manager
+                audio_manager.set_feedback_muted(muted)
+                broadcast_telemetry("mute_state", {"muted": muted})
+            except Exception as e:
+                print(f"[HTTP] Error setting mute: {e}")
         elif action in ("switch_mode", "start_exercise", "start", "select_exercise"):
             if _force_stop_event: _force_stop_event.clear()
             if _start_exercise_event: _start_exercise_event.set()
             if mode and _remote_mode_queue:
+                while not _remote_mode_queue.empty():
+                    try:
+                        _remote_mode_queue.get_nowait()
+                    except Exception:
+                        break
                 _remote_mode_queue.put(("switch", str(mode).upper()))
         elif str(action).upper() in ("BICEP_CURLS", "PUSHUPS", "SQUATS", "PLANK"):
             if _force_stop_event: _force_stop_event.clear()
             if _start_exercise_event: _start_exercise_event.set()
             if _remote_mode_queue:
+                while not _remote_mode_queue.empty():
+                    try:
+                        _remote_mode_queue.get_nowait()
+                    except Exception:
+                        break
                 _remote_mode_queue.put(("switch", str(action).upper()))
 
         self.send_response(200)
@@ -279,6 +320,15 @@ async def _ws_handler(websocket):
                 "payload": _latest_robot_state,
                 "ts": time.time()
             }))
+        try:
+            import audio_manager
+            await websocket.send(json.dumps({
+                "type": "mute_state",
+                "payload": {"muted": audio_manager.is_feedback_muted()},
+                "ts": time.time()
+            }))
+        except Exception:
+            pass
         
         async for message in websocket:
             try:
@@ -287,7 +337,7 @@ async def _ws_handler(websocket):
                 print(f"[WS] ERROR: Received invalid JSON: {message}")
                 continue
 
-            action = data.get("action")
+            action = str(data.get("action") or "").lower()
             print(f"[WS] Command Received: {data}")
 
             if action == "identify":
@@ -450,6 +500,37 @@ async def _ws_handler(websocket):
                     print("[WS] Force Stop signal set.")
                 else:
                     print("[WS] ERROR: Force Stop requested, but no event handler configured.")
+                # Drain the mode queue so no queued switches re-launch after stopping
+                if _remote_mode_queue is not None:
+                    while not _remote_mode_queue.empty():
+                        try:
+                            _remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
+
+            elif action == "pause":
+                if _pause_request_event is not None:
+                    _pause_request_event.set()
+                if _resume_request_event is not None:
+                    _resume_request_event.clear()
+                print("[WS] Pause signal set.")
+
+            elif action == "resume":
+                if _resume_request_event is not None:
+                    _resume_request_event.set()
+                if _pause_request_event is not None:
+                    _pause_request_event.clear()
+                print("[WS] Resume signal set.")
+
+            elif action in ("mute", "unmute", "set_mute"):
+                muted = data.get("muted") if "muted" in data else (action == "mute")
+                try:
+                    import audio_manager
+                    audio_manager.set_feedback_muted(muted)
+                    broadcast_telemetry("mute_state", {"muted": muted})
+                    print(f"[WS] Feedback mute state set to: {muted}")
+                except Exception as e:
+                    print(f"[WS] Error setting mute: {e}")
 
             elif action in ("switch_mode", "select_exercise"):
                 if _force_stop_event is not None:
@@ -458,6 +539,11 @@ async def _ws_handler(websocket):
                     _start_exercise_event.set()
                 mode = data.get("mode") or data.get("exercise")
                 if mode and _remote_mode_queue is not None:
+                    while not _remote_mode_queue.empty():
+                        try:
+                            _remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
                     _remote_mode_queue.put(("switch", str(mode).upper()))
                     print(f"[WS] Mode Switch request put in queue: {mode.upper()}")
                 else:
@@ -471,6 +557,11 @@ async def _ws_handler(websocket):
                     print("[WS] Start Exercise signal set.")
                 mode = data.get("exercise") or data.get("mode")
                 if mode and _remote_mode_queue is not None:
+                    while not _remote_mode_queue.empty():
+                        try:
+                            _remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
                     _remote_mode_queue.put(("switch", str(mode).upper()))
                     print(f"[WS] Start Exercise mode switch put in queue: {mode.upper()}")
 
@@ -480,6 +571,11 @@ async def _ws_handler(websocket):
                 if _start_exercise_event is not None:
                     _start_exercise_event.set()
                 if _remote_mode_queue is not None:
+                    while not _remote_mode_queue.empty():
+                        try:
+                            _remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
                     _remote_mode_queue.put(("switch", str(action).upper()))
                     print(f"[WS] Direct exercise action put in queue: {str(action).upper()}")
 
@@ -563,20 +659,35 @@ def broadcast_telemetry(event_type, payload):
         msg = json.dumps({"type": event_type, "payload": payload, "ts": time.time()})
         asyncio.run_coroutine_threadsafe(_send_to_all_clients(msg), _ws_loop)
 
-def start_servers(force_stop_event=None, remote_mode_queue=None, start_exercise_event=None, host="0.0.0.0", http_port=8081, ws_port=8001):
+def start_servers(force_stop_event=None, remote_mode_queue=None, start_exercise_event=None, pause_request_event=None, resume_request_event=None, host="0.0.0.0", http_port=8081, ws_port=8001):
     """
     Start the local MJPEG HTTP server and WS remote control server in background threads.
     :param force_stop_event: threading.Event to toggle on force stop.
     :param remote_mode_queue: queue.Queue to receive switch mode commands.
     :param start_exercise_event: threading.Event to trigger start exercise.
+    :param pause_request_event: threading.Event to trigger pause.
+    :param resume_request_event: threading.Event to trigger resume.
     :param host: host IP address to bind to (defaults to all interfaces: 0.0.0.0).
     :param http_port: Port number for the HTTP MJPEG stream (default 8081).
     :param ws_port: Port number for the WebSocket server (default 8001).
     """
-    global _force_stop_event, _remote_mode_queue, _start_exercise_event
+    global _force_stop_event, _remote_mode_queue, _start_exercise_event, _pause_request_event, _resume_request_event
     _force_stop_event = force_stop_event
     _remote_mode_queue = remote_mode_queue
     _start_exercise_event = start_exercise_event
+    _pause_request_event = pause_request_event
+    _resume_request_event = resume_request_event
+
+    # Fallback to importing from session_manager if events were not explicitly passed
+    if _pause_request_event is None or _resume_request_event is None:
+        try:
+            import session_manager
+            if _pause_request_event is None:
+                _pause_request_event = getattr(session_manager, 'pause_request', None)
+            if _resume_request_event is None:
+                _resume_request_event = getattr(session_manager, 'resume_request', None)
+        except Exception:
+            pass
 
     # Spin up MJPEG Stream HTTP Server
     http_thread = threading.Thread(target=_run_http_server, args=(host, http_port), daemon=True)

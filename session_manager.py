@@ -545,14 +545,44 @@ def _control_listener():
                 if action == "force_stop":
                     start_exercise.clear()
                     force_stop.set()
+                    while not remote_mode_queue.empty():
+                        try:
+                            remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
+                elif action == "pause":
+                    resume_request.clear()
+                    pause_request.set()
+                elif action == "resume":
+                    pause_request.clear()
+                    resume_request.set()
+                elif action in ("mute", "unmute", "set_mute"):
+                    muted = data.get("muted") if "muted" in data else (action == "mute")
+                    try:
+                        import audio_manager
+                        audio_manager.set_feedback_muted(muted)
+                        publish_event("mute_state", {"muted": muted})
+                    except Exception as e:
+                        print(f"[Control] Error setting mute from Firestore: {e}")
                 elif action in ("switch_mode", "start_exercise", "start", "select_exercise"):
                     force_stop.clear()
                     start_exercise.set()
                     if mode:
+                        # Purge stale queued switches before adding new mode to avoid multiple restarts
+                        while not remote_mode_queue.empty():
+                            try:
+                                remote_mode_queue.get_nowait()
+                            except Exception:
+                                break
                         remote_mode_queue.put(("switch", str(mode).upper()))
                 elif action.upper() in ("BICEP_CURLS", "BICEP_CURL", "PUSHUPS", "PUSH_UPS", "SQUATS", "SQUAT", "PLANK"):
                     force_stop.clear()
                     start_exercise.set()
+                    while not remote_mode_queue.empty():
+                        try:
+                            remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
                     remote_mode_queue.put(("switch", action.upper()))
 
                 processed.add(doc.id)

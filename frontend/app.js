@@ -330,6 +330,10 @@ function showAppView(email) {
   const batteryInd = document.getElementById('batteryIndicator');
   if (batteryInd) batteryInd.classList.remove('hidden');
 
+  const muteBtn = document.getElementById('robotMuteBtn');
+  if (muteBtn) muteBtn.classList.remove('hidden');
+  initMuteState();
+
   const configBtn = document.getElementById('configMenuBtn');
   if (configBtn) configBtn.classList.remove('hidden');
 
@@ -659,7 +663,13 @@ function toggleCameraView(forceState) {
 }
 
 function onExerciseSelectChange(value) {
-  switchMode(value);
+  currentExercise = value;
+  resetExerciseUI(currentExercise);
+  syncExerciseUI(currentExercise);
+  const upperState = (robotState || '').toUpperCase();
+  if (upperState === 'ACTIVE' || upperState === 'PAUSED') {
+    switchMode(value);
+  }
 }
 
 function selectExerciseFromHome(mode, btn) {
@@ -671,7 +681,9 @@ function selectExerciseFromHome(mode, btn) {
   }
   showTab('steps');
   switchFitnessSubtab('exercises');
-  switchMode(mode);
+  currentExercise = mode;
+  resetExerciseUI(mode);
+  syncExerciseUI(mode);
 }
 
 function getDailyExerciseStorageKey() {
@@ -1083,6 +1095,8 @@ function handleTelemetryMessage(msg) {
   if (type === 'session_end') {
     const activeSec = Number(payload.active_duration_s || 0);
     appendExerciseLog(`Session ended. Active: ${activeSec.toFixed(1)}s`);
+    isExercisePaused = false;
+    updatePauseButtonUI(false);
     resetSessionBaselines(currentExercise);
     recordLiveSessionEnd(activeSec, payload);
     syncExerciseUI(currentExercise);
@@ -1099,6 +1113,14 @@ function handleTelemetryMessage(msg) {
     }
     const prevState = robotState;
     robotState = state;
+
+    if (state === 'PAUSED') {
+      isExercisePaused = true;
+      updatePauseButtonUI(true);
+    } else if (state === 'STOPPED' || state === 'READY') {
+      isExercisePaused = false;
+      updatePauseButtonUI(false);
+    }
 
     if (payload.exercise) {
       if (payload.exercise !== currentExercise) {
@@ -1288,7 +1310,61 @@ function handleTelemetryMessage(msg) {
     return;
   }
 
-  if (['pause', 'resume', 'robot_command'].includes(type)) {
+  if (type === 'mute_state') {
+    const muted = Boolean(payload && payload.muted !== undefined ? payload.muted : msg.muted);
+    if (muted !== isRobotMuted) {
+      isRobotMuted = muted;
+      try {
+        localStorage.setItem('fitbot_feedback_muted', isRobotMuted ? 'true' : 'false');
+      } catch (e) {}
+      updateMuteButtonsUI(isRobotMuted);
+    }
+    return;
+  }
+
+  if (type === 'connection_status' || type === 'robot_status_report') {
+    const reportMuted = (payload && payload.is_muted !== undefined) ? payload.is_muted : msg.is_muted;
+    if (reportMuted !== undefined) {
+      const muted = Boolean(reportMuted);
+      if (muted !== isRobotMuted) {
+        isRobotMuted = muted;
+        try {
+          localStorage.setItem('fitbot_feedback_muted', isRobotMuted ? 'true' : 'false');
+        } catch (e) {}
+        updateMuteButtonsUI(isRobotMuted);
+      }
+    }
+  }
+
+  if (type === 'pause') {
+    isExercisePaused = true;
+    updatePauseButtonUI(true);
+    const pill = document.getElementById('robotState');
+    if (pill) {
+      pill.textContent = 'PAUSED';
+      pill.setAttribute('data-state', 'PAUSED');
+    }
+    robotState = 'PAUSED';
+    updateExerciseButtonStates();
+    appendExerciseLog("⏸️ Workout paused");
+    return;
+  }
+
+  if (type === 'resume') {
+    isExercisePaused = false;
+    updatePauseButtonUI(false);
+    const pill = document.getElementById('robotState');
+    if (pill) {
+      pill.textContent = 'ACTIVE';
+      pill.setAttribute('data-state', 'ACTIVE');
+    }
+    robotState = 'ACTIVE';
+    updateExerciseButtonStates();
+    appendExerciseLog("▶️ Workout resumed");
+    return;
+  }
+
+  if (['robot_command'].includes(type)) {
     appendExerciseLog(`${type}: ${JSON.stringify(payload)}`);
   }
 }
@@ -1616,6 +1692,14 @@ function connectLocalWebSocket(piIp, forceReconnect = false) {
         }, { merge: true }).catch(() => {});
       }
     }
+
+    // Always sync current mute state to robot upon WebSocket connection
+    try {
+      ws.send(JSON.stringify({
+        action: 'set_mute',
+        muted: Boolean(isRobotMuted)
+      }));
+    } catch (err) { }
     updateExerciseButtonStates();
   };
 
@@ -1774,17 +1858,155 @@ function toggleBatteryDisplayMode() {
   }
 }
 
+let isExercisePaused = false;
+let isRobotMuted = false;
+
+function initMuteState() {
+  try {
+    isRobotMuted = localStorage.getItem('fitbot_feedback_muted') === 'true';
+  } catch (e) {
+    isRobotMuted = false;
+  }
+  updateMuteButtonsUI(isRobotMuted);
+}
+
+function updateMuteButtonsUI(muted) {
+  const headerBtn = document.getElementById('robotMuteBtn');
+  const headerIcon = document.getElementById('robotMuteIcon');
+  const headerText = document.getElementById('robotMuteText');
+  const exBtn = document.getElementById('exerciseMuteBtn');
+  const exIcon = document.getElementById('exerciseMuteIcon');
+  const exText = document.getElementById('exerciseMuteText');
+
+  if (headerBtn) {
+    if (muted) {
+      headerBtn.classList.add('bg-rose-500/20', 'border-rose-500/40', 'text-rose-300');
+      headerBtn.classList.remove('bg-white/5', 'border-white/10', 'text-white/80');
+      if (headerIcon) headerIcon.textContent = '🔇';
+      if (headerText) headerText.textContent = 'Muted';
+      headerBtn.title = 'Robot Voice Feedback Muted (Click to Unmute)';
+    } else {
+      headerBtn.classList.remove('bg-rose-500/20', 'border-rose-500/40', 'text-rose-300');
+      headerBtn.classList.add('bg-white/5', 'border-white/10', 'text-white/80');
+      if (headerIcon) headerIcon.textContent = '🔊';
+      if (headerText) headerText.textContent = 'Voice';
+      headerBtn.title = 'Mute Robot Voice Feedback';
+    }
+  }
+
+  if (exBtn) {
+    if (muted) {
+      exBtn.classList.add('bg-rose-500/20', 'border-rose-500/40', 'text-rose-300');
+      exBtn.classList.remove('bg-white/5', 'border-white/15', 'text-white/80');
+      if (exIcon) exIcon.textContent = '🔇';
+      if (exText) exText.textContent = 'Muted';
+      exBtn.title = 'Robot Voice Feedback Muted (Click to Unmute)';
+    } else {
+      exBtn.classList.remove('bg-rose-500/20', 'border-rose-500/40', 'text-rose-300');
+      exBtn.classList.add('bg-white/5', 'border-white/15', 'text-white/80');
+      if (exIcon) exIcon.textContent = '🔊';
+      if (exText) exText.textContent = 'Voice';
+      exBtn.title = 'Mute Robot Voice Feedback';
+    }
+  }
+}
+
+async function toggleRobotMute() {
+  isRobotMuted = !isRobotMuted;
+  try {
+    localStorage.setItem('fitbot_feedback_muted', isRobotMuted ? 'true' : 'false');
+  } catch (e) {}
+
+  updateMuteButtonsUI(isRobotMuted);
+
+  const msg = isRobotMuted
+    ? "🔇 Robot voice feedback muted"
+    : "🔊 Robot voice feedback unmuted";
+  appendExerciseLog(msg);
+
+  await sendControlCommand({
+    action: isRobotMuted ? 'mute' : 'unmute',
+    muted: isRobotMuted
+  }, msg);
+}
+
+function updatePauseButtonUI(paused) {
+  const pauseBtn = document.getElementById('pauseExerciseBtn');
+  const icon = document.getElementById('pauseBtnIcon');
+  const text = document.getElementById('pauseBtnText');
+  if (!pauseBtn) return;
+
+  if (paused) {
+    pauseBtn.className = "w-full py-3.5 sm:py-4.5 rounded-2xl bg-gradient-to-r from-cyan-500 via-blue-500 to-cyan-600 hover:from-cyan-400 hover:to-blue-400 active:scale-[0.98] font-black text-sm sm:text-xl tracking-wider flex items-center justify-center gap-1.5 sm:gap-2 shadow-lg shadow-cyan-950/60 transition-all border border-cyan-400/30 text-white cursor-pointer";
+    if (icon) icon.textContent = "▶️";
+    if (text) text.textContent = "RESUME";
+    pauseBtn.title = "Resume paused workout";
+  } else {
+    pauseBtn.className = "w-full py-3.5 sm:py-4.5 rounded-2xl bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:from-amber-400 hover:to-yellow-400 active:scale-[0.98] font-black text-sm sm:text-xl tracking-wider flex items-center justify-center gap-1.5 sm:gap-2 shadow-lg shadow-amber-950/60 transition-all border border-amber-400/30 text-white cursor-pointer";
+    if (icon) icon.textContent = "⏸️";
+    if (text) text.textContent = "PAUSE";
+    pauseBtn.title = "Pause current workout";
+  }
+}
+
+async function togglePauseExercise() {
+  const upperState = (robotState || '').toUpperCase();
+  const isActive = (upperState === 'ACTIVE' || upperState === 'PAUSED');
+
+  if (!isActive) {
+    appendExerciseLog("⚠️ No workout is currently active. Press START first.", true);
+    return;
+  }
+
+  if (isExercisePaused) {
+    // Resume
+    isExercisePaused = false;
+    robotState = 'ACTIVE';
+    const pill = document.getElementById('robotState');
+    if (pill) {
+      pill.textContent = 'ACTIVE';
+      pill.setAttribute('data-state', 'ACTIVE');
+    }
+    updatePauseButtonUI(false);
+    updateExerciseButtonStates();
+    await sendControlCommand({ action: 'resume' }, 'Workout resumed');
+  } else {
+    // Pause
+    isExercisePaused = true;
+    robotState = 'PAUSED';
+    const pill = document.getElementById('robotState');
+    if (pill) {
+      pill.textContent = 'PAUSED';
+      pill.setAttribute('data-state', 'PAUSED');
+    }
+    updatePauseButtonUI(true);
+    updateExerciseButtonStates();
+    await sendControlCommand({ action: 'pause' }, 'Workout paused');
+  }
+}
+
 function updateExerciseButtonStates() {
   const startBtn = document.getElementById('startExerciseBtn');
+  const pauseBtn = document.getElementById('pauseExerciseBtn');
   const stopBtn = document.getElementById('fitnessStopBtn');
   const upperState = (robotState || '').toUpperCase();
   const select = document.getElementById('fitnessExerciseSelect');
-  const isActive = (upperState === 'ACTIVE');
+  const isActive = (upperState === 'ACTIVE' || upperState === 'PAUSED');
 
   if (startBtn) {
     startBtn.classList.remove('opacity-50', 'opacity-60', 'cursor-not-allowed');
     startBtn.classList.add('opacity-100', 'cursor-pointer');
     startBtn.title = isActive ? 'Restart / trigger start detecting' : `Start detecting ${formatExercise(currentExercise || select?.value || 'exercise')}`;
+  }
+
+  if (pauseBtn) {
+    pauseBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    pauseBtn.classList.add('opacity-100', 'cursor-pointer');
+    if (isExercisePaused) {
+      pauseBtn.title = 'Resume paused workout';
+    } else {
+      pauseBtn.title = isActive ? 'Pause current workout' : 'Pause workout';
+    }
   }
 
   if (stopBtn) {
@@ -1795,11 +2017,12 @@ function updateExerciseButtonStates() {
 }
 
 async function sendForceStop() {
-  const upperState = (robotState || '').toUpperCase();
-
   appendExerciseLog(`⛔ Stopping exercise (${formatExercise(currentExercise)})...`);
 
   robotState = 'STOPPED';
+  isExercisePaused = false;
+  updatePauseButtonUI(false);
+
   const pill = document.getElementById('robotState');
   if (pill) {
     pill.textContent = 'STOPPED';
@@ -1827,6 +2050,9 @@ async function sendStartExercise() {
   appendExerciseLog(`🚀 Starting ${formatExercise(selectedExercise)}! Detecting form and counting reps...`);
 
   robotState = 'ACTIVE';
+  isExercisePaused = false;
+  updatePauseButtonUI(false);
+
   const pill = document.getElementById('robotState');
   if (pill) {
     pill.textContent = 'ACTIVE';
@@ -1842,17 +2068,12 @@ async function sendStartExercise() {
     person_follow: 'PERSON_FOLLOW'
   };
 
-  const upperState = (robotState || '').toUpperCase();
-  const isWaitingInExercise = (upperState === 'FOLLOWING' || upperState === 'LOADING');
-  if (!isWaitingInExercise) {
-    await sendControlCommand({
-      action: 'switch_mode',
-      mode: mapping[selectedExercise] || selectedExercise.toUpperCase()
-    }, `Selected ${formatExercise(selectedExercise)}. Launching exercise...`);
-  }
+  const targetMode = mapping[selectedExercise] || selectedExercise.toUpperCase();
 
+  // Send single unified start / switch command instead of multiple conflicting commands
   await sendControlCommand({
     action: 'start_exercise',
+    mode: targetMode,
     exercise: selectedExercise
   }, `Started ${formatExercise(selectedExercise)}`);
 }
@@ -1867,6 +2088,9 @@ async function switchMode(mode) {
   syncExerciseUI(currentExercise);
 
   robotState = 'ACTIVE';
+  isExercisePaused = false;
+  updatePauseButtonUI(false);
+
   const pill = document.getElementById('robotState');
   if (pill) {
     pill.textContent = 'ACTIVE';
@@ -1911,7 +2135,42 @@ async function sendControlCommand(command, successMessage) {
     }
   }
 
-  // 2. Send via Firestore if database and session exist
+  // 2. Direct HTTP fallback to local robot server (port 8081) if WS is not open
+  if (!sentLocally) {
+    const candidateHosts = new Set();
+    if (localControlHost) candidateHosts.add(localControlHost);
+    try {
+      const u = new URL(normalizeUrl(currentCameraUrl || DEFAULT_CAMERA_URL));
+      if (u.hostname) candidateHosts.add(u.hostname);
+    } catch (_) {}
+    if (window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      candidateHosts.add(window.location.hostname);
+    }
+    candidateHosts.add('fitness.local');
+    candidateHosts.add('localhost');
+    candidateHosts.add('127.0.0.1');
+
+    for (const host of candidateHosts) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        const res = await fetch(`http://${host}:8081/api/control`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(command),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          sentLocally = true;
+          appendExerciseLog(`${successMessage} (Local HTTP)`);
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 3. Send via Firestore if database and session exist
   if (db && currentUserId) {
     try {
       await db.collection('users').doc(currentUserId).collection('control_commands').add({
@@ -3979,6 +4238,8 @@ function formatDate(value) {
         if (configBtn) configBtn.classList.add('hidden');
         const batt = document.getElementById('batteryIndicator');
         if (batt) batt.classList.add('hidden');
+        const muteBtn = document.getElementById('robotMuteBtn');
+        if (muteBtn) muteBtn.classList.add('hidden');
         const cfgDrawer = document.getElementById('configDrawer');
         if (cfgDrawer) cfgDrawer.classList.add('hidden');
         const desktopNav = document.getElementById('desktopNavMenu');
@@ -4042,6 +4303,9 @@ function formatDate(value) {
       navigateFromUrl();
     }
   });
+
+  // Initialize mute button state from persistent storage
+  initMuteState();
 
   // Load any previously permitted wristband Bluetooth devices
   loadPermittedWristbandDevices();

@@ -23,7 +23,7 @@ from config import (
     ACCENT_CYAN,
     ACCENT_RED,
 )
-from audio_manager import play_audio_track
+from audio_manager import play_audio_track, stop_background_music_process
 from session_manager import (
     publish_robot_state,
     publish_session_start,
@@ -216,6 +216,7 @@ class ExerciseRunner:
         resume_request.clear()
         start_exercise.clear()
         exercise_executing.set()
+        stop_background_music_process()
         self.home_clicked = False
 
         cap = None

@@ -259,6 +259,24 @@ def _run_action(intent, text):
         pause_request.clear()
         resume_request.set()
 
+    elif a_type == "mute":
+        try:
+            import audio_manager
+            audio_manager.set_feedback_muted(True)
+            import local_stream_server
+            local_stream_server.broadcast_telemetry("mute_state", {"muted": True})
+        except Exception:
+            pass
+
+    elif a_type == "unmute":
+        try:
+            import audio_manager
+            audio_manager.set_feedback_muted(False)
+            import local_stream_server
+            local_stream_server.broadcast_telemetry("mute_state", {"muted": False})
+        except Exception:
+            pass
+
     elif a_type == "home":
         _execute_stop_motion()
         force_stop.set()

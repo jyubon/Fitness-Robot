@@ -408,13 +408,16 @@ async def send_control(cmd: ControlCommand, user_id: str = Depends(get_current_u
     Broadcast a control command to the user's connected Pi(s).
     The Pi must be subscribed to the control WS for this user.
     """
-    await ws_manager.broadcast_control_to_user(user_id, {
+    payload = {
         "action": cmd.action,
         "mode": cmd.mode,
+        "exercise": cmd.exercise,
+        "muted": cmd.muted,
         "from": "web",
         "ts": datetime.now(timezone.utc).isoformat(),
-    })
-    return {"ok": True, "action": cmd.action, "mode": cmd.mode}
+    }
+    await ws_manager.broadcast_control_to_user(user_id, payload)
+    return {"ok": True, "action": cmd.action, "mode": cmd.mode, "muted": cmd.muted}
 
 
 # --- WebSocket endpoints ---

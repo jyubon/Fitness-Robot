@@ -310,6 +310,22 @@ COMMANDS = [
         "action": {"type": "home"},
         "priority": 2,
     },
+    {
+        "name": "MUTE",
+        "description": "Mute robot audio and voice feedbacks.",
+        "keywords": ["mute", "be quiet", "silence", "mute voice", "turn off sound", "shut up"],
+        "examples": ["mute", "fitbot mute", "be quiet", "mute feedback", "turn off voice"],
+        "action": {"type": "mute"},
+        "priority": 2,
+    },
+    {
+        "name": "UNMUTE",
+        "description": "Unmute robot audio and voice feedbacks.",
+        "keywords": ["unmute", "turn on sound", "enable voice", "speak up", "unmute voice"],
+        "examples": ["unmute", "fitbot unmute", "turn on sound", "enable feedback"],
+        "action": {"type": "unmute"},
+        "priority": 2,
+    },
 
     # ── 5. Normal / Conversational Voice Commands ──────────────────
     {

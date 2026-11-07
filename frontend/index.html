@@ -86,6 +86,13 @@
         <!-- Hidden fallback for JS email lookup -->
         <span id="userEmail" class="hidden"></span>
 
+        <!-- Mute Robot Audio / Voice Feedback Button -->
+        <button id="robotMuteBtn" onclick="toggleRobotMute()" title="Mute Robot Voice Feedback"
+          class="hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 active:scale-95 transition-all cursor-pointer">
+          <span id="robotMuteIcon" class="text-sm sm:text-base leading-none">🔊</span>
+          <span id="robotMuteText" class="hidden sm:inline text-[11px] sm:text-xs font-bold text-white/90">Voice</span>
+        </button>
+
         <!-- Hardware & Stream Config Button (Spanner Key Icon, to the left of battery indicator) -->
         <button id="configMenuBtn" onclick="toggleConfigDrawer()" title="Hardware &amp; Stream Configuration"
           class="hidden p-2 rounded-xl bg-white/5 hover:bg-white/10 active:scale-95 transition-all text-cyan-400 border border-white/10 flex items-center justify-center">
@@ -563,22 +570,36 @@
                       </svg>
                     </div>
                   </div>
+
+                  <!-- Exercise Routine Mute Button -->
+                  <button id="exerciseMuteBtn" onclick="toggleRobotMute()" title="Mute Robot Voice Feedback"
+                    class="h-12 px-3 sm:px-3.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/15 flex items-center justify-center gap-1.5 text-white/80 hover:text-white active:scale-95 transition-all flex-shrink-0 shadow-md cursor-pointer">
+                    <span id="exerciseMuteIcon" class="text-base sm:text-lg">🔊</span>
+                    <span id="exerciseMuteText" class="hidden sm:inline text-xs font-bold text-white/80">Voice</span>
+                  </button>
                 </div>
               </div>
 
-              <!-- 4. Two Buttons: Start and Stop Side by Side -->
-              <div class="grid grid-cols-2 gap-3">
+              <!-- 4. Three Buttons: Start, Pause, and Stop Side by Side -->
+              <div class="grid grid-cols-3 gap-2 sm:gap-3">
                 <!-- Start Button -->
                 <button id="startExerciseBtn" onclick="sendStartExercise()"
-                  class="w-full py-4 sm:py-4.5 rounded-2xl bg-gradient-to-r from-emerald-500 via-green-500 to-emerald-600 hover:from-emerald-400 hover:to-green-400 active:scale-[0.98] font-black text-lg sm:text-2xl tracking-wider flex items-center justify-center gap-2.5 sm:gap-3 shadow-lg shadow-emerald-950/60 transition-all border border-emerald-400/30 text-white">
-                  <span class="text-xl sm:text-2xl">🚀</span>
-                  <span>START</span>
+                  class="w-full py-3.5 sm:py-4.5 rounded-2xl bg-gradient-to-r from-emerald-500 via-green-500 to-emerald-600 hover:from-emerald-400 hover:to-green-400 active:scale-[0.98] font-black text-sm sm:text-xl tracking-wider flex items-center justify-center gap-1.5 sm:gap-2 shadow-lg shadow-emerald-950/60 transition-all border border-emerald-400/30 text-white cursor-pointer">
+                  <span class="text-base sm:text-2xl">🚀</span>
+                  <span id="startBtnText">START</span>
+                </button>
+
+                <!-- Pause / Resume Button -->
+                <button id="pauseExerciseBtn" onclick="togglePauseExercise()"
+                  class="w-full py-3.5 sm:py-4.5 rounded-2xl bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-600 hover:from-amber-400 hover:to-yellow-400 active:scale-[0.98] font-black text-sm sm:text-xl tracking-wider flex items-center justify-center gap-1.5 sm:gap-2 shadow-lg shadow-amber-950/60 transition-all border border-amber-400/30 text-white cursor-pointer">
+                  <span id="pauseBtnIcon" class="text-base sm:text-2xl">⏸️</span>
+                  <span id="pauseBtnText">PAUSE</span>
                 </button>
 
                 <!-- Stop Button -->
                 <button id="fitnessStopBtn" onclick="sendForceStop()"
-                  class="w-full py-4 sm:py-4.5 rounded-2xl bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-500 hover:to-rose-500 active:scale-[0.98] font-black text-lg sm:text-2xl tracking-wider flex items-center justify-center gap-2.5 sm:gap-3 shadow-lg shadow-red-950/60 transition-all border border-red-400/30 text-white">
-                  <span class="text-xl sm:text-2xl">⛔</span>
+                  class="w-full py-3.5 sm:py-4.5 rounded-2xl bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-500 hover:to-rose-500 active:scale-[0.98] font-black text-sm sm:text-xl tracking-wider flex items-center justify-center gap-1.5 sm:gap-2 shadow-lg shadow-red-950/60 transition-all border border-red-400/30 text-white cursor-pointer">
+                  <span class="text-base sm:text-2xl">⛔</span>
                   <span>STOP</span>
                 </button>
               </div>

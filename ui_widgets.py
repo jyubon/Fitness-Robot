@@ -19,7 +19,7 @@ except ImportError:
     cv2 = None
 
 from config import CAMERA_INDEX
-from audio_manager import terminate_current_audio
+from audio_manager import terminate_current_audio, start_background_music, stop_background_music_process
 from session_manager import (
     publish_robot_state,
     force_stop,
@@ -669,6 +669,7 @@ class FitnessRobotUI(tk.Tk):
 
         # Turn on screen: ONLY Googly Eyes displayed
         self.show_eyes_only_screen()
+        start_background_music()
         self.after(200, self.check_remote_commands)
 
     def show_home_screen(self):
@@ -677,9 +678,11 @@ class FitnessRobotUI(tk.Tk):
 
     def run_exercise(self, exercise_name, func):
         global last_session_summary
+        self.current_exercise_name = exercise_name
         self.stop_home_camera()
         self.exercise_active = True
         exercise_executing.set()
+        stop_background_music_process()
         self.home_clicked = False
         force_stop.clear()
         try:
@@ -695,8 +698,10 @@ class FitnessRobotUI(tk.Tk):
             return
         finally:
             self.exercise_active = False
+            self.current_exercise_name = ""
             exercise_executing.clear()
             start_exercise.clear()
+            was_force_stop = force_stop.is_set()
             force_stop.clear()
             try:
                 local_stream_server.update_frame(None)
@@ -707,7 +712,7 @@ class FitnessRobotUI(tk.Tk):
             except tk.TclError:
                 exists = False
             if exists:
-                if self.home_clicked:
+                if self.home_clicked or (was_force_stop and not self.next_remote_mode):
                     self.next_remote_mode = None
                     self.home_clicked = False
                     while not remote_mode_queue.empty():
@@ -743,9 +748,21 @@ class FitnessRobotUI(tk.Tk):
                 cmd_type, cmd_val = remote_mode_queue.get_nowait()
                 if cmd_type == "switch":
                     print(f"[GUI] Remote mode switch received: {cmd_val}")
+                    target_name = str(cmd_val).upper().replace("-", "_").replace(" ", "_")
                     if self.exercise_active:
-                        self.next_remote_mode = cmd_val
-                        force_stop.set()
+                        current_ex = getattr(self, 'current_exercise_name', '').upper().replace("-", "_").replace(" ", "_")
+                        is_same = (
+                            ("BICEP" in current_ex and "BICEP" in target_name) or
+                            ("PUSH" in current_ex and "PUSH" in target_name) or
+                            ("SQUAT" in current_ex and "SQUAT" in target_name) or
+                            ("PLANK" in current_ex and "PLANK" in target_name) or
+                            ("FOLLOW" in current_ex and "FOLLOW" in target_name)
+                        )
+                        if is_same:
+                            print(f"[GUI] Already running {cmd_val}; ignoring duplicate switch command.")
+                        else:
+                            self.next_remote_mode = cmd_val
+                            force_stop.set()
                     else:
                         self.launch_by_name(cmd_val)
 
@@ -1010,6 +1027,7 @@ class FitnessRobotUI(tk.Tk):
 
         # Start camera motion tracking so eyes track people in the room
         self.start_home_camera()
+        start_background_music()
 
     def show_home_screen(self):
         """Alias to show_eyes_only_screen."""
