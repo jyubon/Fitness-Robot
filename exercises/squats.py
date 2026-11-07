@@ -2,6 +2,8 @@
 """
 Squats counter and posture tracker.
 Monitors feet stance width, arm forward extension, squat depth, and knee lateral deviation.
+Includes session start positioning voice sequence, 4-rep positioning evaluation,
+and 2-rep depth form checks.
 """
 
 import time
@@ -10,6 +12,7 @@ from config import (
     ACCENT_GREEN,
     ACCENT_RED,
     ACCENT_ORANGE,
+    ACCENT_CYAN,
 )
 from exercise_base import ExerciseRunner
 from pose_utils import (
@@ -19,6 +22,7 @@ from pose_utils import (
 )
 from ui_overlays import draw_skeleton
 from session_manager import publish_rep, publish_set_complete, log_session_error, session_errors
+from audio_manager import play_audio_sequence, play_command_audio
 
 
 class SquatsRunner(ExerciseRunner):
@@ -42,7 +46,6 @@ class SquatsRunner(ExerciseRunner):
         self.workout_state = "DOING_SET"
         self.set_started = False
 
-        self.arms_incorrect_start_time = None
         self.up_shoulder_y = None
         self.up_hip_y = None
         self.up_wrist_y = None
@@ -54,16 +57,138 @@ class SquatsRunner(ExerciseRunner):
         self.lowered_knees = False
         self.current_hip_angle = 180
 
+        # Session Start Guidance State
+        self.initial_instruction_active = False
+        self.session_start_time = None
+
+        # Requirement 1: Positioning Check after 4 reps
+        self.rep_4_pos_checked = False
+        self.current_stance_ratio = 1.0
+        self.current_stance_ok = True
+        self.stance_fault_count = 0
+        self.stance_good_count = 0
+        self.current_arms_ok = True
+        self.arms_fault_count = 0
+        self.arms_good_count = 0
+        self.active_feet_warning = None
+        self.active_feet_warning_until = 0.0
+        self.active_arms_warning = None
+        self.active_arms_warning_until = 0.0
+
+        # Requirement 2: Depth check for each 2 reps
+        self.depth_error_in_window = False
+        self.min_knee_angle_in_window = 180.0
+        self.last_depth_checked_rep = 0
+        self.active_depth_warning = None
+        self.active_depth_warning_until = 0.0
+
+    def on_session_start(self):
+        """
+        Send posture instructions when starting squats session:
+        1. Keep feet at shoulder distance (006)
+        2. Extend arms directly in front of you (004)
+        """
+        print("📢 [SQUATS START] Sending setup voice instructions: Feet shoulder width + extend arms...")
+        self.initial_instruction_active = True
+        self.session_start_time = time.time()
+        play_audio_sequence([
+            "006_keep_feet_at_shoulder_distance.mp3",
+            "004_extendarms_straight_and_directly_in_front_of_you.mp3"
+        ], force=True)
+        if self.ui is not None:
+            self.ui.update_feedback("Keep feet at shoulder width & extend arms in front", ACCENT_CYAN)
+
+    def _reset_set_checks(self):
+        """Reset positioning and depth checks at the start of a set."""
+        self.rep_4_pos_checked = False
+        self.depth_error_in_window = False
+        self.min_knee_angle_in_window = 180.0
+        self.last_depth_checked_rep = 0
+        self.stance_fault_count = 0
+        self.stance_good_count = 0
+        self.arms_fault_count = 0
+        self.arms_good_count = 0
+        self.active_feet_warning = None
+        self.active_feet_warning_until = 0.0
+        self.active_arms_warning = None
+        self.active_arms_warning_until = 0.0
+        self.active_depth_warning = None
+        self.active_depth_warning_until = 0.0
+
     def on_resume_adjust_timing(self, pause_duration):
         if self.last_rep_time is not None:
             self.last_rep_time += pause_duration
-        if self.arms_incorrect_start_time is not None:
-            self.arms_incorrect_start_time += pause_duration
+        if self.session_start_time is not None:
+            self.session_start_time += pause_duration
+        if self.active_feet_warning_until > 0:
+            self.active_feet_warning_until += pause_duration
+        if self.active_arms_warning_until > 0:
+            self.active_arms_warning_until += pause_duration
+        if self.active_depth_warning_until > 0:
+            self.active_depth_warning_until += pause_duration
 
     def on_set_increment_while_lost(self):
         self.set_finished = False
         self.set_started = False
         self.last_rep_time = None
+        self._reset_set_checks()
+
+    def _evaluate_rep_milestones(self):
+        """Evaluate depth (every 2 reps) and positioning (after 4 reps)."""
+        now = time.time()
+        audio_to_play = []
+
+        # 1. Depth check for each 2 reps (e.g. rep 2, 4, 6, 8)
+        if self.reps_in_set > 0 and self.reps_in_set % 2 == 0:
+            if self.last_depth_checked_rep != self.reps_in_set:
+                self.last_depth_checked_rep = self.reps_in_set
+                if self.depth_error_in_window:
+                    print(f"⚠️ [DEPTH CHECK] Rep {self.reps_in_set}: Wrong form detected (min knee angle {self.min_knee_angle_in_window:.1f}° < 80°)")
+                    self.active_depth_warning = "Don't go too deep in squats"
+                    self.active_depth_warning_until = now + 4.5
+                    log_session_error("Don't go too deep in squats")
+                    audio_to_play.append("002_don't_go_too_deep_in_squats.mp3")
+                else:
+                    print(f"✅ [DEPTH CHECK] Rep {self.reps_in_set}: Good depth maintained ({self.min_knee_angle_in_window:.1f}°)")
+                    self.active_depth_warning = None
+
+                # Reset depth tracking for the next 2 reps window
+                self.depth_error_in_window = False
+                self.min_knee_angle_in_window = 180.0
+
+        # 2. Positioning check after 4 reps
+        if self.reps_in_set == 4 and not self.rep_4_pos_checked:
+            self.rep_4_pos_checked = True
+            print(f"🔍 [POSITION CHECK] Checking posture after 4 reps...")
+
+            # Check feet stance width
+            stance_wrong = (not self.current_stance_ok) or (self.stance_fault_count > self.stance_good_count)
+            if stance_wrong:
+                print(f"⚠️ [POSITION CHECK] Stance incorrect (ratio: {self.current_stance_ratio:.2f})")
+                self.active_feet_warning = "Keep feet at shoulder distance"
+                self.active_feet_warning_until = now + 4.5
+                log_session_error("Keep feet at shoulder distance")
+                audio_to_play.append("006_keep_feet_at_shoulder_distance.mp3")
+            else:
+                print("✅ [POSITION CHECK] Feet stance is correct.")
+                self.active_feet_warning = None
+
+            # Check arm forward extension
+            arms_wrong = (not self.current_arms_ok) or (self.arms_fault_count > self.arms_good_count)
+            if arms_wrong:
+                print("⚠️ [POSITION CHECK] Arm extension incorrect (arms not straight/forward)")
+                self.active_arms_warning = "Extend arms straight and directly in front of you"
+                self.active_arms_warning_until = now + 4.5
+                log_session_error("Extend arms straight and directly in front of you")
+                audio_to_play.append("004_extendarms_straight_and_directly_in_front_of_you.mp3")
+            else:
+                print("✅ [POSITION CHECK] Arm extension is correct.")
+                self.active_arms_warning = None
+
+        # Play all required voice alerts in sequence
+        if audio_to_play:
+            print(f"📢 [VOICE FEEDBACK] Playing feedback sequence: {audio_to_play}")
+            play_audio_sequence(audio_to_play, force=True)
 
     def process_exercise_frame(self, image, results, lm, img_w, img_h):
         L_shoulder = get_pt(lm, 11, use_z=True)
@@ -79,22 +204,23 @@ class SquatsRunner(ExerciseRunner):
         L_ankle = get_pt(lm, 27, use_z=True)
         R_ankle = get_pt(lm, 28, use_z=True)
 
-        feet_warning = None
-        arms_warning = None
-        depth_warning = None
         knees_warning = None
 
-        # 1. Feet width
+        # 1. Track feet width (measured in stage 'up')
         if all([L_shoulder, R_shoulder, L_ankle, R_ankle]):
             shoulder_dist = abs(L_shoulder[0] - R_shoulder[0])
             feet_dist = abs(L_ankle[0] - R_ankle[0])
-            if self.stage == "up":
-                if feet_dist < 0.9 * shoulder_dist or feet_dist > 1.4 * shoulder_dist:
-                    feet_warning = "Keep feet at shoulder distance"
-                    log_session_error("Keep feet at shoulder distance")
+            if shoulder_dist > 1e-3:
+                self.current_stance_ratio = feet_dist / shoulder_dist
+                is_stance_good = (0.9 <= self.current_stance_ratio <= 1.4)
+                self.current_stance_ok = is_stance_good
+                if self.stage == "up":
+                    if is_stance_good:
+                        self.stance_good_count += 1
+                    else:
+                        self.stance_fault_count += 1
 
-        # 2. Arm extension
-        arms_correct = True
+        # 2. Track arm extension
         if all([L_shoulder, R_shoulder, L_elbow, R_elbow, L_wrist, R_wrist]):
             L_elbow_angle = calculate_angle_3d(L_shoulder, L_elbow, L_wrist)
             R_elbow_angle = calculate_angle_3d(R_shoulder, R_elbow, R_wrist)
@@ -108,21 +234,16 @@ class SquatsRunner(ExerciseRunner):
                            (abs(R_wrist[0] - R_shoulder[0]) < 0.35 * shoulder_dist)
             not_together = (wrist_dist >= 0.7 * shoulder_dist)
 
-            if not (elbows_straight and horizontal_level and not_to_sides and not_together):
-                arms_correct = False
+            is_arms_good = (elbows_straight and horizontal_level and not_to_sides and not_together)
+            self.current_arms_ok = is_arms_good
+            if is_arms_good:
+                self.arms_good_count += 1
+            else:
+                self.arms_fault_count += 1
         else:
-            arms_correct = False
+            self.current_arms_ok = False
 
-        if not arms_correct:
-            if self.arms_incorrect_start_time is None:
-                self.arms_incorrect_start_time = time.time()
-            elif time.time() - self.arms_incorrect_start_time > 10.0:
-                arms_warning = "Extend arms straight and directly in front of you"
-                log_session_error("Extend arms straight and directly in front of you")
-        else:
-            self.arms_incorrect_start_time = None
-
-        # 3. Squat reps and depth
+        # 3. Squat reps and depth monitoring
         if all([L_shoulder, L_hip, L_knee, R_shoulder, R_hip, R_knee]):
             L_hip_angle = calculate_angle_3d(L_shoulder, L_hip, L_knee)
             R_hip_angle = calculate_angle_3d(R_shoulder, R_hip, R_knee)
@@ -158,6 +279,7 @@ class SquatsRunner(ExerciseRunner):
                 if curr_knee_y > self.up_knee_y + 0.02 * shoulder_dist:
                     self.lowered_knees = True
 
+            # Rep completion check (transitioning up from down)
             if self.current_hip_angle > self.SQUAT_UP_ANGLE and self.stage == 'down':
                 self.stage = "up"
                 if self.lowered_shoulders and self.lowered_hips and self.lowered_wrists and self.lowered_knees:
@@ -166,6 +288,7 @@ class SquatsRunner(ExerciseRunner):
                             self.current_set += 1
                             self.reps_in_set = 0
                             self.set_finished = False
+                            self._reset_set_checks()
                         self.reps_in_set += 1
                         self.counter += 1
                         print(f"  Rep {self.reps_in_set} completed! Angle: {int(self.down_angle)}")
@@ -176,6 +299,9 @@ class SquatsRunner(ExerciseRunner):
                         except Exception:
                             pass
 
+                        # Evaluate 2-rep depth & 4-rep positioning milestones
+                        self._evaluate_rep_milestones()
+
                         if self.reps_in_set >= 8:
                             print(f"\n✅ Set {self.current_set} Finished! Please rest.")
                             try:
@@ -185,6 +311,7 @@ class SquatsRunner(ExerciseRunner):
                             self.set_finished = True
                             self.set_started = False
                             self.last_rep_time = None
+                            self._reset_set_checks()
                             if self.current_set == 2:
                                 self.trigger_mid_workout_rest()
                                 self.set_finished = False
@@ -195,14 +322,16 @@ class SquatsRunner(ExerciseRunner):
                 self.lowered_knees = False
                 self.down_angle = self.SQUAT_DOWN_ANGLE
 
-        # Depth check
+        # Depth tracking during descent
         if all([L_hip, L_knee, L_ankle, R_hip, R_knee, R_ankle]):
             L_knee_angle = calculate_angle_3d(L_hip, L_knee, L_ankle)
             R_knee_angle = calculate_angle_3d(R_hip, R_knee, R_ankle)
             if self.stage == "down":
-                if L_knee_angle < 80.0 or R_knee_angle < 80.0:
-                    depth_warning = "Don't go too deep in squats"
-                    log_session_error("Don't go too deep in squats")
+                curr_min_knee = min(L_knee_angle, R_knee_angle)
+                if curr_min_knee < self.min_knee_angle_in_window:
+                    self.min_knee_angle_in_window = curr_min_knee
+                if curr_min_knee < 80.0:
+                    self.depth_error_in_window = True
 
         # Knee direction check
         if all([L_hip, L_knee, L_ankle, R_hip, R_knee, R_ankle]):
@@ -226,18 +355,23 @@ class SquatsRunner(ExerciseRunner):
                 self.set_finished = True
                 self.set_started = False
                 self.last_rep_time = None
+                self._reset_set_checks()
                 if self.current_set == 2:
                     self.trigger_mid_workout_rest()
                     self.set_finished = False
 
         draw_skeleton(image, results)
 
+        # Assemble UI display warnings
         warnings = []
-        if arms_warning: warnings.append(arms_warning)
-        if self.stage == "up" and feet_warning: warnings.append(feet_warning)
-        if self.stage == "down":
-            if depth_warning: warnings.append(depth_warning)
-            if knees_warning: warnings.append(knees_warning)
+        if self.active_feet_warning and now_time < self.active_feet_warning_until:
+            warnings.append(self.active_feet_warning)
+        if self.active_arms_warning and now_time < self.active_arms_warning_until:
+            warnings.append(self.active_arms_warning)
+        if self.active_depth_warning and now_time < self.active_depth_warning_until:
+            warnings.append(self.active_depth_warning)
+        if self.stage == "down" and knees_warning:
+            warnings.append(knees_warning)
 
         if self.ui is not None:
             self.ui.update_stat_card("Set", self.current_set)
@@ -249,7 +383,10 @@ class SquatsRunner(ExerciseRunner):
             feedback_color = ACCENT_RED if warnings else ACCENT_GREEN
 
             if not feedback_msgs:
-                if self.set_finished:
+                if self.initial_instruction_active and (self.session_start_time is not None) and (now_time - self.session_start_time < 5.0) and self.reps_in_set == 0:
+                    feedback_msgs.append("Keep feet at shoulder width & extend arms in front")
+                    feedback_color = ACCENT_CYAN
+                elif self.set_finished:
                     feedback_msgs.append("✅ Set finished! Please rest.")
                 elif self.set_started and self.last_rep_time is not None:
                     time_limit = 15.0 if self.reps_in_set >= 6 else 20.0
@@ -261,9 +398,8 @@ class SquatsRunner(ExerciseRunner):
             self.ui.update_feedback("\n".join(feedback_msgs), feedback_color)
 
     def process_missing_frame(self, image, img_w, img_h):
-        log_session_error("Align horizontally GET IN POSITION.")
         if self.ui is not None:
-            self.ui.update_feedback("⚠️ Positioning... Stand in front of camera.", ACCENT_ORANGE)
+            self.ui.update_feedback("⚠️ Stand in front of camera.", ACCENT_ORANGE)
 
     def build_session_summary(self):
         return {

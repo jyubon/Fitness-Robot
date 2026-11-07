@@ -696,6 +696,8 @@ class FitnessRobotUI(tk.Tk):
         finally:
             self.exercise_active = False
             exercise_executing.clear()
+            start_exercise.clear()
+            force_stop.clear()
             try:
                 local_stream_server.update_frame(None)
             except Exception:
@@ -705,10 +707,21 @@ class FitnessRobotUI(tk.Tk):
             except tk.TclError:
                 exists = False
             if exists:
-                if self.next_remote_mode:
+                if self.home_clicked:
+                    self.next_remote_mode = None
+                    self.home_clicked = False
+                    while not remote_mode_queue.empty():
+                        try:
+                            remote_mode_queue.get_nowait()
+                        except Exception:
+                            break
+                    try:
+                        self.show_summary_screen()
+                    except tk.TclError:
+                        pass
+                elif self.next_remote_mode:
                     mode = self.next_remote_mode
                     self.next_remote_mode = None
-                    force_stop.clear()
                     self.launch_by_name(mode)
                 elif exercise_name == "Person Following":
                     # When robot came to a stop after person following -> show exercise selection dashboard!
@@ -735,9 +748,6 @@ class FitnessRobotUI(tk.Tk):
                         force_stop.set()
                     else:
                         self.launch_by_name(cmd_val)
-            elif start_exercise.is_set() and not self.exercise_active:
-                start_exercise.clear()
-                self.launch_bicep_curls()
 
             # Update voice status indicator on UI
             if get_voice_state is not None and hasattr(self, 'voice_status_label'):
@@ -1219,6 +1229,14 @@ class FitnessRobotUI(tk.Tk):
 
     def set_home_clicked(self):
         self.home_clicked = True
+        self.next_remote_mode = None
+        start_exercise.clear()
+        force_stop.clear()
+        while not remote_mode_queue.empty():
+            try:
+                remote_mode_queue.get_nowait()
+            except Exception:
+                break
 
     def set_start_clicked(self):
         start_exercise.set()

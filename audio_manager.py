@@ -71,6 +71,7 @@ _current_audio_process = None
 _process_lock = threading.Lock()
 _audio_lock = threading.Semaphore(1)
 _tts_speaking = threading.Event()
+_cancel_audio_sequence = threading.Event()
 
 
 def is_tts_speaking():
@@ -156,6 +157,7 @@ def speak_text(text, command_name=None, audio_file=None):
 def terminate_current_audio():
     """Terminate the currently active audio playback process immediately."""
     global _current_audio_process
+    _cancel_audio_sequence.set()
     with _process_lock:
         if _current_audio_process is not None:
             try:
@@ -270,6 +272,59 @@ def _play_mp3_background(file_path_str, force=False):
 
     t = threading.Thread(target=run, daemon=False)
     t.start()
+
+
+def play_audio_sequence(items, force=True):
+    """
+    Play a list of audio files or track numbers sequentially in a non-blocking background thread.
+    Each item can be an MP3 filename string or an integer track number (e.g. 14).
+    """
+    if not items:
+        return False
+
+    def _run():
+        _tts_speaking.set()
+        try:
+            if force:
+                terminate_current_audio()
+                _audio_lock.acquire(blocking=True)
+                _cancel_audio_sequence.clear()
+            else:
+                if not _audio_lock.acquire(blocking=False):
+                    return
+            try:
+                track_files = {
+                    13: "013_please_rest_for_a_while.mp3",
+                    14: "014_lets_start_the_workout.mp3",
+                    15: "015_lets_resume_the_workout.mp3",
+                    16: "016_an_obstacle_is_detected.mp3",
+                }
+                for item in items:
+                    if _cancel_audio_sequence.is_set():
+                        break
+                    if isinstance(item, int):
+                        filename = track_files.get(item)
+                    else:
+                        filename = str(item)
+
+                    file_path = _resolve_voice_file(filename)
+                    if file_path and file_path.exists():
+                        if os.name == "nt":
+                            _play_mp3_windows(str(file_path))
+                        else:
+                            _play_mp3_linux(str(file_path))
+                        time.sleep(0.15)
+                    else:
+                        print(f"⚠️ Voice file in sequence not found: {filename}")
+            finally:
+                _audio_lock.release()
+        finally:
+            time.sleep(0.15)
+            _tts_speaking.clear()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True
 
 
 def play_audio_track(track_number):

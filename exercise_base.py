@@ -104,6 +104,10 @@ class ExerciseRunner:
 
         self.last_session_summary = None
 
+    def on_session_start(self):
+        """Hook called when exercise session starts (default: announce start)."""
+        play_audio_track(14)
+
     def on_mouse_click(self, event, x, y, flags, param):
         """Handle click on OpenCV HOME button (390-470, 5-45)."""
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -210,6 +214,7 @@ class ExerciseRunner:
         reset_tracking_state()
         pause_request.clear()
         resume_request.clear()
+        start_exercise.clear()
         exercise_executing.set()
         self.home_clicked = False
 
@@ -250,7 +255,7 @@ class ExerciseRunner:
             if not session_started:
                 publish_session_start(self.exercise_key)
                 session_started = True
-            play_audio_track(14)
+            self.on_session_start()
 
             failed_reads = 0
             while cap.isOpened():
@@ -469,6 +474,7 @@ class ExerciseRunner:
                     pass
         finally:
             exercise_executing.clear()
+            start_exercise.clear()
             force_stop.clear()
             send_command("STOP")
             try:
